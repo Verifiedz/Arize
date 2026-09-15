@@ -4,7 +4,6 @@ services:
     build: . 
     volumes:
       - ../:/workspace
-    environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ./claude-config.json:/root/.claude.json
     stdin_open: true
     tty: true
