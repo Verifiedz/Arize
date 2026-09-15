@@ -1,0 +1,10 @@
+#Will be used to create a volume mount
+services:
+  claude:
+    build: . 
+    volumes:
+      - ../:/workspace
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    stdin_open: true
+    tty: true
