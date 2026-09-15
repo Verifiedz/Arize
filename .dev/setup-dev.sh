@@ -11,10 +11,12 @@ if ! docker info > /dev/null 2>&1; then
 fi
 
 echo "Initializing dev environment"
-
+cd "$(dirname "$0")/.."
 # Ensure the Claude config file exists so Docker mounts it as a file, not a directory
-touch claude-config.json
-
+if [ ! -d "docker/claude-config" ]; then
+	mkdir docker/claude-config
+fi
 # Starting Docker environment via docker-compose.yml
 echo -e "${GREEN}Starting up docker container session...${NC}"
-docker compose run --build --rm claude # note using the -d flag runs it as a detatched process
+docker compose -f docker/docker-compose.yml run --build --rm claude 
+# note using the -d flag runs it as a detatched process

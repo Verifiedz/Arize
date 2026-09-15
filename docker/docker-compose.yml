@@ -4,6 +4,8 @@ services:
     build: . 
     volumes:
       - ../:/workspace
-      - ./claude-config.json:/root/.claude.json
+      - ./claude-config:/.claude
+    environment:
+      - CLAUDE_CONFIG_DIR=/.claude
     stdin_open: true
     tty: true
