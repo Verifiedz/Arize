@@ -162,7 +162,10 @@ crates/
     calendar/    Shared dated entries; registers triggers with the scheduler.
   cli/           Thin client (lib). Command parsing, alias table, output rendering.
   tui/           Thin client (lib). ratatui. Owned by Dev C.
-  app/           The only [[bin]]. Dispatches to daemon / cli / tui.
+  mockd/         Mock daemon (lib): fixtures + scripted events over the real protocol,
+                 so clients build without a daemon. Run as `swe mockd`. Depends on
+                 core and proto only. Owned by Dev A.
+  app/           The only [[bin]]. Dispatches to daemon / mockd / cli / tui.
 docs/
   protocol.md    IPC contract. Change-controlled.
   decisions/     ADRs, one file per decision, numbered.
@@ -177,6 +180,7 @@ store    → core
 modules/*→ core                    ← NOT store, NOT daemon, NOT each other
 daemon   → core, proto, store, modules/*
 cli, tui → core, proto             ← NOT store, NOT daemon, NOT modules
+mockd    → core, proto             ← a server built like a client: no store, no daemon, no modules
 app      → everything
 ```
 
@@ -376,12 +380,15 @@ All values are defaults, overridable in `config.toml`. Modules declare lanes via
 `lanes()`; the queue never hardcodes a module name.
 
 ### 6.2 Ordering and priority
-
+ 
 - **Reordering is within a lane only.** Moving a fetch ahead of a workspace launch is
   meaningless — they do not compete. The queue UI groups by lane.
 - **The currently running task cannot be reordered or displaced.** It can be cancelled.
-- **`Scheduled` is the default source of truth for ordering.** A manual task joins the
-  lane at `Normal` and takes its normal turn.
+- **`Scheduled` and `Normal` share one arrival-order queue.** A task's priority tier
+  records *where it came from* (the scheduler vs. a user or module), not a rank — a
+  scheduled task does not automatically run ahead of a manual one, or vice versa. Both
+  join the lane in the order they were enqueued. The only way to run ahead of anything is
+  `Overridden`, and that always goes through confirmation. See ADR 0003.
 - **Promotion is explicit and confirmed.** Requesting `Overridden` returns
   `confirmation_required` with the list of tasks that would be displaced; the client shows
   that to the user and re-sends with confirmation. Never silent. Always audited in the
@@ -644,26 +651,35 @@ half-finished setup script is actively harmful. A queue that retries would have 
 which is which.
 
 ### 11.3 Degrade, don't drop
-
+ 
 A scheduled task may carry a fallback, **set at trigger-creation time, not invented at
 failure time**:
-
+ 
 ```rust
 pub enum Fallback {
-    NotifyOnly { message: String, priority: NotifyPriority },
+    /// `fallback_op` must be a `notify.*` op (e.g. selecting a sink or template).
+    /// Any other namespace is rejected at `scheduler.add` time, not at failure time.
+    /// A `notify.*` op MUST NOT itself declare a `fallback` — no nested fallbacks.
+    Notify { fallback_op: String, params: Value, priority: NotifyPriority },
 }
 ```
-
+ 
+Fallback is deliberately not "run any op on failure." A fully generic fallback can itself
+fail, which reopens the question of what *its* fallback is. Constraining the target to
+`notify.*` — a namespace whose own failure path already terminates in
+`notifications/failed.jsonl` (§11.3) rather than another fallback — closes that regress
+instead of deferring it. See ADR 0005.
+ 
 If the primary task fails for a structural reason (`workspace_dirty`, `unavailable`), the
 queue additionally enqueues the fallback in the `notify` lane. So a calendar reminder that
 was meant to open a workspace still reaches you as "your 2pm session couldn't launch —
 dirty, see logs" instead of silence.
-
+ 
 `notify` has its own fallback: each `Sink` declares an optional `fallback_sink_id`, tried
 once before giving up. Desktop notification is the sane universal last resort — no network,
 no external account. Deliveries that exhaust every sink append to
 `notifications/failed.jsonl` rather than vanishing.
-
+ 
 ---
 
 ## 12. Agent rules
@@ -703,13 +719,18 @@ Read these before acting on any task in this repo.
 
 | Dev | Owns | Must not touch |
 |---|---|---|
-| A | `daemon/` (registry, bus, queue, scheduler, gateway, IPC, indexer), `store/` | `tui/` |
+| A | `daemon/` (registry, bus, queue, scheduler, gateway, IPC, indexer), `store/`, `mockd/` | `tui/` |
 | B | `modules/*`, `cli/` | `tui/` |
-| C | `tui/` | everything outside `crates/tui` |
+| C | `tui/` | everything outside `crates/tui` ¹ |
 
-Dev C works against `docs/protocol.md` and a **mock daemon** — a fixture binary serving
-canned responses and replaying a scripted event stream. Build it at M1. It is the thing
-that actually decouples the TUI work; without it Dev C is blocked on Dev A daily.
+¹ Exception: Dev C may contribute fixture cases to `crates/mockd/fixtures` by ordinary PR.
+Dev A owns the crate.
+
+Dev C works against `docs/protocol.md` and a **mock daemon** (`swe mockd`, built from
+`crates/mockd`) serving canned responses from `crates/mockd/fixtures` and replaying a
+scripted event stream. Build it at M1. It is the thing that actually decouples the TUI
+work; without it Dev C is blocked on Dev A daily. Dev A owns the crate and its fixtures;
+Dev C adds fixture cases by ordinary PR, as any contributor to a crate they don't own.
 
 `core/` and `proto/` are shared and change-controlled (§4).
 

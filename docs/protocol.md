@@ -31,9 +31,13 @@ Objects must not contain literal newlines — JSON string escaping handles this.
 Chosen for debuggability: a whole session can be driven from a shell.
 
 ```
-$ nc -U ~/.local/share/swe/daemon.sock
+$ socat - UNIX-CONNECT:$SOCK
 {"v":1,"kind":"hello","client":"manual","client_version":"0.0.0"}
 ```
+
+`$SOCK` is the socket path from the Transport table above. `socat` behaves the same on every
+platform. `nc -U $SOCK` also works with the BSD/macOS and OpenBSD netcat, but not with
+netcat-traditional (the `nc` on some Linux distributions), which has no `-U`.
 
 Max line length 8 MiB. A longer line is a protocol error and the daemon closes the
 connection.
@@ -62,7 +66,19 @@ The client sends `hello` first, before anything else. The daemon replies `welcom
 ## Message kinds
 
 Client → daemon: `hello`, `request`, `subscribe`, `unsubscribe`.
-Daemon → client: `welcome`, `response`, `event`.
+Daemon → client: `welcome`, `response`, `event`, `error`.
+
+### `error`
+
+A failure with no request to answer: a rejected handshake, or a line that could not be
+parsed. It has no `id`. See `docs/decisions/0002-error-frame-and-ephemeral-progress.md`.
+
+```jsonc
+{"v":1,"kind":"error","error":{"code":"unsupported_version","message":"…","detail":{"supported":[1]}}}
+```
+
+After a rejected handshake or an over-long line the daemon closes the connection. After an
+unparseable line it keeps the connection open.
 
 ### `request` / `response`
 
@@ -153,7 +169,8 @@ Topic patterns support a trailing `*` on a segment boundary: `records.*`,
 `topics` shape.
 
 The event object is byte-identical to the one appended to
-`$SWE_HOME/events/YYYY-MM-DD.jsonl`. One definition in `swe-core`.
+`$SWE_HOME/events/YYYY-MM-DD.jsonl`. One definition in `swe-core`. The one exception to
+"every streamed event is logged" is `queue.task.progress`, which is streamed only.
 
 **Backpressure:** each connection has a bounded event queue (1024). If a client does not
 drain it, the daemon drops the oldest and sends
@@ -305,6 +322,11 @@ be cancelled. A stale `queue_version` returns `conflict`.
 | `scheduler.pause` | inline | `{"trigger_id"}` | `{"paused":true}` |
 | `scheduler.resume` | inline | `{"trigger_id"}` | `{"paused":false}` |
 
+Schedules are `{"cron": "0 9 * * 1"}` (5 fields, Sunday = 0 or 7, Monday = 1, UTC),
+`{"every": 172800}` (seconds) or `{"once": "2026-10-04T09:00:00Z"}`. A fired task's params
+gain a `scheduled_for` timestamp when they are an object. See
+`docs/decisions/0004-scheduler-semantics.md`.
+
 `catch_up` is **required** on `scheduler.add`. There is no default — `skip`, `run_once` and
 `backfill` behave very differently after a laptop sleeps, and guessing sends duplicate
 emails.
@@ -350,7 +372,9 @@ tolerate unknown topics.
 | `queue.task.cancelled` | Task cancelled before or during execution. |
 | `queue.task.promoted` | A task jumped the lane. Payload lists displaced task ids. |
 | `scheduler.trigger.fired` | Trigger fired and enqueued a task. |
-| `scheduler.trigger.skipped` | Trigger fired while its previous task was still pending. |
+| `scheduler.trigger.skipped` | Trigger fired while its previous task was still pending (`reason: "overlap"`), or its task could not be enqueued (`reason: "enqueue_failed"`). |
+| `scheduler.trigger.missed` | A `catch_up` policy dropped due occurrences. Payload `{trigger_id, count, catch_up}`. |
+| `scheduler.trigger.added` / `.removed` / `.paused` / `.resumed` | Trigger lifecycle. |
 | `workspaces.session.launched` | All launch steps succeeded. |
 | `workspaces.session.dirty` | A launch step failed. Payload carries the failed step and log. |
 | `workspaces.session.forced` | Force relaunch of a dirty workspace, with prior reason. |
@@ -371,21 +395,26 @@ user.
 
 ## Mock daemon
 
-`crates/tui` develops against `swe-mockd`, a fixture binary speaking this protocol, serving
-canned responses from `crates/tui/fixtures/*.json` and replaying a scripted event timeline.
-Built at M1.
+`crates/tui` develops against the mock daemon, `swe mockd`: a subcommand of the `swe` binary
+(`app` is the only binary, CLAUDE.md §3), implemented in `crates/mockd`, which depends on
+`core` and `proto` only. It speaks this protocol, serving canned responses from
+`crates/mockd/fixtures/*.json` and replaying a scripted event timeline. Built at M1. The
+fixture format is documented in `crates/mockd/fixtures/README.md`.
 
 It must be able to simulate, because these are the paths hardest to reach against a real
 daemon: a `confirmation_required` round-trip, a `workspace_dirty` failure, a
 `core.stream.lagged` drop, and a long queued task emitting progress.
 
 ```
-$ swe-mockd --fixtures crates/tui/fixtures --socket /tmp/swe-mock.sock
+$ swe mockd --fixtures crates/mockd/fixtures --socket /tmp/swe-mock.sock
 $ swe tui --socket /tmp/swe-mock.sock
 ```
 
+Both flags are required, so the mock can never silently take over the real daemon's socket.
+
 This is what decouples the TUI work. Dev C should never be blocked waiting for a
-daemon-side op to land — write the fixture, build against it, swap to the real daemon at M5.
+daemon-side op to land — write the fixture (a normal PR to `crates/mockd`), build against it,
+swap to the real daemon at M5.
 
 ---
 
