@@ -1,0 +1,152 @@
+{
+  "responses": [
+    {
+      "op": "workspaces.list",
+      "data": {
+        "workspaces": [
+          {
+            "id": "deep-work",
+            "state": "dirty",
+            "dirty_reason": "step 3/7 tmux-session exited 1"
+          },
+          {
+            "id": "focus",
+            "state": "ready"
+          },
+          {
+            "id": "review",
+            "state": "active"
+          }
+        ]
+      }
+    },
+    {
+      "op": "workspaces.status",
+      "params": {
+        "id": "deep-work"
+      },
+      "data": {
+        "id": "deep-work",
+        "state": "dirty",
+        "dirty_reason": "step 3/7 tmux-session exited 1",
+        "last_session": null,
+        "log": "logs/deep-work-01JD2T.log",
+        "has_cleanup_script": true
+      }
+    },
+    {
+      "op": "workspaces.activate",
+      "params": {
+        "id": "deep-work"
+      },
+      "error": {
+        "code": "workspace_dirty",
+        "message": "workspace 'deep-work' failed setup and was not cleaned up",
+        "detail": {
+          "workspace": "deep-work",
+          "failed_step": "3/7 tmux-session",
+          "failed_at": "2026-09-16T09:12:44Z",
+          "log": "logs/deep-work-01JD2T.log",
+          "has_cleanup_script": true
+        }
+      }
+    },
+    {
+      "op": "workspaces.activate",
+      "params": {
+        "id": "focus"
+      },
+      "data": {
+        "queued": true,
+        "task_id": "01JD2M00000000000000000001",
+        "lane": "workspaces",
+        "position": 0
+      },
+      "emit": [
+        {
+          "after_ms": 30,
+          "topic": "queue.task.started",
+          "payload": {
+            "task_id": "01JD2M00000000000000000001",
+            "lane": "workspaces",
+            "op": "workspaces.activate"
+          }
+        },
+        {
+          "after_ms": 90,
+          "topic": "workspaces.session.dirty",
+          "payload": {
+            "workspace": "focus",
+            "failed_step": "3/7 tmux-session",
+            "log": "logs/focus-01JD2U.log"
+          }
+        },
+        {
+          "after_ms": 100,
+          "topic": "queue.task.failed",
+          "payload": {
+            "task_id": "01JD2M00000000000000000001",
+            "lane": "workspaces",
+            "op": "workspaces.activate",
+            "origin": {
+              "type": "user"
+            },
+            "error": "step 3/7 exited 1",
+            "code": "workspace_dirty",
+            "detail": {
+              "workspace": "focus",
+              "failed_step": "3/7 tmux-session",
+              "failed_at": "2026-09-16T09:12:44Z",
+              "log": "logs/focus-01JD2U.log",
+              "has_cleanup_script": true
+            },
+            "retryable": false,
+            "attempts": 1
+          }
+        }
+      ]
+    },
+    {
+      "op": "workspaces.cleanup",
+      "params": {
+        "id": "deep-work"
+      },
+      "data": {
+        "queued": true,
+        "task_id": "01JD2M00000000000000000002",
+        "lane": "workspaces",
+        "position": 0
+      },
+      "emit": [
+        {
+          "after_ms": 30,
+          "topic": "queue.task.started",
+          "payload": {
+            "task_id": "01JD2M00000000000000000002",
+            "lane": "workspaces",
+            "op": "workspaces.cleanup"
+          }
+        },
+        {
+          "after_ms": 120,
+          "topic": "workspaces.session.cleaned",
+          "payload": {
+            "workspace": "deep-work"
+          }
+        },
+        {
+          "after_ms": 130,
+          "topic": "queue.task.finished",
+          "payload": {
+            "task_id": "01JD2M00000000000000000002",
+            "lane": "workspaces",
+            "op": "workspaces.cleanup",
+            "result": {
+              "state": "ready"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

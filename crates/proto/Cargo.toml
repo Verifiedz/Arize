@@ -1,0 +1,16 @@
+[package]
+name = "swe-proto"
+description = "IPC wire types for docs/protocol.md. Depends on core only."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+swe-core = { path = "../core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
