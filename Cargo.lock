@@ -696,13 +696,27 @@ dependencies = [
 name = "swe"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
+ "swe-cli",
  "swe-core",
  "swe-daemon",
  "swe-mockd",
  "swe-proto",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "swe-cli"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "swe-core",
+ "swe-proto",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

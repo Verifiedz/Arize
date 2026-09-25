@@ -1,13 +1,11 @@
-//! The one binary. Today it dispatches to the daemon and the mock daemon; CLI and TUI dispatch
-//! arrives with their crates. Clients hold no business logic (§2), so nothing else belongs here.
+//! The one binary. `swe daemon` and `swe mockd` run servers; every other command belongs to the
+//! CLI. TUI dispatch arrives with its crate. Clients hold no business logic (§2), so nothing
+//! else belongs here.
 
 use std::process::ExitCode;
 
 use swe_daemon::{Daemon, DaemonConfig};
 use tracing_subscriber::EnvFilter;
-
-const USAGE: &str = "usage: swe daemon    run the daemon in the foreground (Ctrl-C to stop)
-       swe mockd     run the mock daemon for building clients (swe mockd --help)";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -19,10 +17,7 @@ async fn main() -> ExitCode {
     match std::env::args().nth(1).as_deref() {
         Some("daemon") => run_daemon().await,
         Some("mockd") => run_mockd(std::env::args().skip(2).collect()).await,
-        _ => {
-            eprintln!("{USAGE}");
-            ExitCode::from(2)
-        }
+        _ => swe_cli::run(std::env::args().skip(1).collect()).await,
     }
 }
 
