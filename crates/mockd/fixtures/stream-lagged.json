@@ -1,0 +1,36 @@
+{
+  "timeline": [
+    {
+      "after_ms": 100,
+      "topic": "records.item.created",
+      "payload": {
+        "collection": "leetcode",
+        "id": "valid-anagram"
+      }
+    },
+    {
+      "after_ms": 200,
+      "topic": "records.item.updated",
+      "payload": {
+        "collection": "leetcode",
+        "id": "valid-anagram"
+      }
+    },
+    {
+      "after_ms": 300,
+      "topic": "core.stream.lagged",
+      "source": "core",
+      "payload": {
+        "dropped": 37
+      }
+    },
+    {
+      "after_ms": 400,
+      "topic": "records.item.completed",
+      "payload": {
+        "collection": "leetcode",
+        "id": "valid-anagram"
+      }
+    }
+  ]
+}

@@ -1,0 +1,105 @@
+{
+  "responses": [
+    {
+      "op": "fetchers.fetch",
+      "params": {
+        "source": "hn-whoishiring"
+      },
+      "data": {
+        "queued": true,
+        "task_id": "01JD2N00000000000000000001",
+        "lane": "fetchers",
+        "position": 1
+      },
+      "emit": [
+        {
+          "after_ms": 50,
+          "topic": "queue.task.started",
+          "payload": {
+            "task_id": "01JD2N00000000000000000001",
+            "lane": "fetchers",
+            "op": "fetchers.fetch"
+          }
+        },
+        {
+          "after_ms": 150,
+          "topic": "queue.task.progress",
+          "payload": {
+            "task_id": "01JD2N00000000000000000001",
+            "lane": "fetchers",
+            "fraction": 0.2,
+            "note": "page 1 of 5"
+          }
+        },
+        {
+          "after_ms": 250,
+          "topic": "queue.task.progress",
+          "payload": {
+            "task_id": "01JD2N00000000000000000001",
+            "lane": "fetchers",
+            "fraction": 0.4,
+            "note": "page 2 of 5"
+          }
+        },
+        {
+          "after_ms": 300,
+          "topic": "fetchers.item.found",
+          "payload": {
+            "source": "hn-whoishiring",
+            "id": "c-41883"
+          }
+        },
+        {
+          "after_ms": 350,
+          "topic": "queue.task.progress",
+          "payload": {
+            "task_id": "01JD2N00000000000000000001",
+            "lane": "fetchers",
+            "fraction": 0.6,
+            "note": "page 3 of 5"
+          }
+        },
+        {
+          "after_ms": 450,
+          "topic": "queue.task.progress",
+          "payload": {
+            "task_id": "01JD2N00000000000000000001",
+            "lane": "fetchers",
+            "fraction": 0.8,
+            "note": "page 4 of 5"
+          }
+        },
+        {
+          "after_ms": 550,
+          "topic": "queue.task.progress",
+          "payload": {
+            "task_id": "01JD2N00000000000000000001",
+            "lane": "fetchers",
+            "fraction": 1.0,
+            "note": "page 5 of 5"
+          }
+        },
+        {
+          "after_ms": 600,
+          "topic": "fetchers.fetch.finished",
+          "payload": {
+            "source": "hn-whoishiring",
+            "new_items": 12
+          }
+        },
+        {
+          "after_ms": 610,
+          "topic": "queue.task.finished",
+          "payload": {
+            "task_id": "01JD2N00000000000000000001",
+            "lane": "fetchers",
+            "op": "fetchers.fetch",
+            "result": {
+              "new_items": 12
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

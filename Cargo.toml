@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+# Explicit list on purpose: each dev adds their own crates (modules/*, cli, tui) here.
+members = [
+    "crates/core",
+    "crates/proto",
+    "crates/store",
+    "crates/daemon",
+    "crates/mockd",
+    "crates/app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+license = "UNLICENSED"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

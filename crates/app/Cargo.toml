@@ -1,0 +1,24 @@
+[package]
+name = "swe"
+description = "The only binary. Dispatches to the daemon and the mock daemon (CLI/TUI dispatch lands with their crates)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "swe"
+path = "src/main.rs"
+
+[dependencies]
+swe-core = { path = "../core" }
+swe-proto = { path = "../proto" }
+swe-daemon = { path = "../daemon" }
+swe-mockd = { path = "../mockd" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

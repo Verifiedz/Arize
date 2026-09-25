@@ -1,0 +1,311 @@
+{
+  "responses": [
+    {
+      "op": "core.manifest",
+      "data": {
+        "protocol": 1,
+        "lanes": [
+          {
+            "id": "workspaces",
+            "max_concurrent": 1
+          },
+          {
+            "id": "fetchers",
+            "max_concurrent": 8
+          },
+          {
+            "id": "notify",
+            "max_concurrent": 2
+          },
+          {
+            "id": "index",
+            "max_concurrent": 1
+          },
+          {
+            "id": "default",
+            "max_concurrent": 4
+          }
+        ],
+        "modules": [
+          {
+            "id": "records",
+            "version": "0.1.0",
+            "namespace": "records",
+            "commands": [
+              {
+                "op": "records.list",
+                "summary": "List records in a collection",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "records.reindex",
+                "summary": "Rebuild the index for a collection",
+                "params_schema": {},
+                "execution": {
+                  "queued": {
+                    "lane": "index"
+                  }
+                }
+              }
+            ],
+            "topics": [
+              "records.item.created",
+              "records.item.updated",
+              "records.item.completed"
+            ]
+          },
+          {
+            "id": "fetchers",
+            "version": "0.1.0",
+            "namespace": "fetchers",
+            "commands": [
+              {
+                "op": "fetchers.fetch",
+                "summary": "Fetch a source now",
+                "params_schema": {},
+                "execution": {
+                  "queued": {
+                    "lane": "fetchers"
+                  }
+                }
+              }
+            ],
+            "topics": [
+              "fetchers.item.found",
+              "fetchers.fetch.finished",
+              "fetchers.fetch.failed"
+            ]
+          },
+          {
+            "id": "workspaces",
+            "version": "0.1.0",
+            "namespace": "workspaces",
+            "commands": [
+              {
+                "op": "workspaces.list",
+                "summary": "List workspaces and their state",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "workspaces.status",
+                "summary": "Full state of one workspace",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "workspaces.activate",
+                "summary": "Launch a workspace",
+                "params_schema": {},
+                "execution": {
+                  "queued": {
+                    "lane": "workspaces"
+                  }
+                }
+              },
+              {
+                "op": "workspaces.cleanup",
+                "summary": "Run a workspace's cleanup script",
+                "params_schema": {},
+                "execution": {
+                  "queued": {
+                    "lane": "workspaces"
+                  }
+                }
+              },
+              {
+                "op": "workspaces.force_relaunch",
+                "summary": "Activate despite dirty",
+                "params_schema": {},
+                "execution": {
+                  "queued": {
+                    "lane": "workspaces"
+                  }
+                }
+              },
+              {
+                "op": "workspaces.reset",
+                "summary": "Clear dirty without cleanup",
+                "params_schema": {},
+                "execution": "inline"
+              }
+            ],
+            "topics": [
+              "workspaces.session.launched",
+              "workspaces.session.dirty",
+              "workspaces.session.forced",
+              "workspaces.session.cleaned"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "op": "queue.list",
+      "data": {
+        "lanes": [
+          {
+            "id": "workspaces",
+            "max_concurrent": 1,
+            "queue_version": 3,
+            "running": [],
+            "queued": []
+          },
+          {
+            "id": "fetchers",
+            "max_concurrent": 8,
+            "queue_version": 41,
+            "running": [
+              {
+                "task_id": "01JD2P00000000000000000001",
+                "lane": "fetchers",
+                "op": "fetchers.fetch",
+                "status": "running",
+                "priority": "normal",
+                "origin": {
+                  "type": "user"
+                },
+                "progress": {
+                  "fraction": 0.4,
+                  "note": "page 2 of 5"
+                },
+                "attempts": 1,
+                "enqueued_at": "2026-09-21T09:00:00Z",
+                "started_at": "2026-09-21T09:00:00Z",
+                "finished_at": null,
+                "error": null
+              }
+            ],
+            "queued": [
+              {
+                "task_id": "01JD2P00000000000000000002",
+                "lane": "fetchers",
+                "op": "fetchers.fetch",
+                "status": "queued",
+                "priority": "scheduled",
+                "origin": {
+                  "type": "scheduler",
+                  "trigger_id": "usr-01jd2q"
+                },
+                "progress": {
+                  "fraction": 0.0,
+                  "note": ""
+                },
+                "attempts": 0,
+                "enqueued_at": "2026-09-21T09:00:00Z",
+                "started_at": null,
+                "finished_at": null,
+                "error": null
+              },
+              {
+                "task_id": "01JD2P00000000000000000003",
+                "lane": "fetchers",
+                "op": "fetchers.fetch",
+                "status": "queued",
+                "priority": "scheduled",
+                "origin": {
+                  "type": "scheduler",
+                  "trigger_id": "usr-01jd2q"
+                },
+                "progress": {
+                  "fraction": 0.0,
+                  "note": ""
+                },
+                "attempts": 0,
+                "enqueued_at": "2026-09-21T09:00:00Z",
+                "started_at": null,
+                "finished_at": null,
+                "error": null
+              },
+              {
+                "task_id": "01JD2P00000000000000000004",
+                "lane": "fetchers",
+                "op": "records.reindex",
+                "status": "queued",
+                "priority": "scheduled",
+                "origin": {
+                  "type": "scheduler",
+                  "trigger_id": "usr-01jd2r"
+                },
+                "progress": {
+                  "fraction": 0.0,
+                  "note": ""
+                },
+                "attempts": 0,
+                "enqueued_at": "2026-09-21T09:00:00Z",
+                "started_at": null,
+                "finished_at": null,
+                "error": null
+              }
+            ]
+          },
+          {
+            "id": "notify",
+            "max_concurrent": 2,
+            "queue_version": 0,
+            "running": [],
+            "queued": []
+          },
+          {
+            "id": "index",
+            "max_concurrent": 1,
+            "queue_version": 0,
+            "running": [],
+            "queued": []
+          },
+          {
+            "id": "default",
+            "max_concurrent": 4,
+            "queue_version": 0,
+            "running": [],
+            "queued": []
+          }
+        ]
+      }
+    },
+    {
+      "op": "records.list",
+      "params": {
+        "collection": "leetcode"
+      },
+      "data": {
+        "total": 137,
+        "items": [
+          {
+            "id": "two-sum",
+            "title": "Two Sum",
+            "difficulty": "easy",
+            "status": "done",
+            "last_solved": "2026-09-18"
+          },
+          {
+            "id": "lru-cache",
+            "title": "LRU Cache",
+            "difficulty": "medium",
+            "status": "todo",
+            "last_solved": null
+          },
+          {
+            "id": "median-of-two-sorted-arrays",
+            "title": "Median of Two Sorted Arrays",
+            "difficulty": "hard",
+            "status": "todo",
+            "last_solved": null
+          }
+        ]
+      }
+    },
+    {
+      "op": "records.list",
+      "params": {
+        "collection": "nope"
+      },
+      "error": {
+        "code": "not_found",
+        "message": "no collection 'nope'",
+        "detail": null
+      }
+    }
+  ]
+}
