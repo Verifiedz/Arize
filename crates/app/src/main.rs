@@ -3,7 +3,9 @@
 //! else belongs here.
 
 use std::process::ExitCode;
+use std::sync::Arc;
 
+use swe_core::Module;
 use swe_daemon::{Daemon, DaemonConfig};
 use tracing_subscriber::EnvFilter;
 
@@ -22,8 +24,9 @@ async fn main() -> ExitCode {
 }
 
 async fn run_daemon() -> ExitCode {
-    // Modules are registered here by the app as they land; none exist yet.
-    let daemon = match Daemon::start(DaemonConfig::from_env(), Vec::new()).await {
+    // Every module the daemon runs. A new module is one more line here.
+    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(swe_records::Records::default())];
+    let daemon = match Daemon::start(DaemonConfig::from_env(), modules).await {
         Ok(d) => d,
         Err(e) => {
             eprintln!("swe: cannot start daemon: {e}");

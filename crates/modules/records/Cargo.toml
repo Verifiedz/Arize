@@ -1,0 +1,23 @@
+[package]
+name = "swe-records"
+description = "The records module: typed collections defined in TOML, one file per record, filtering. Depends on core only."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+swe-core = { path = "../../core" }
+async-trait = "0.1"
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+
+[dev-dependencies]
+swe-core = { path = "../../core", features = ["testing"] }
+tokio = { version = "1", features = ["macros", "rt"] }

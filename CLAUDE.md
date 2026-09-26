@@ -435,8 +435,9 @@ fires again, the new firing is dropped and logged as `scheduler.trigger.skipped`
 ```
 $SWE_HOME/
   config.toml              Global settings, including lane overrides.
-  collections/*.toml       Record collection definitions (§8).
   data/<module>/           Per-module namespace. A module sees only its own.
+  data/records/collections/*.toml  Record collection definitions (§8, ADR 0008).
+  data/records/items/<collection>/<id>.toml  One file per record.
   events/YYYY-MM-DD.jsonl  Append-only event log. One JSON Event per line.
   workspaces/<name>/       workspace.toml + launch/cleanup scripts + state.
   notifications/failed.jsonl  Deliveries that exhausted every sink (§11.3).

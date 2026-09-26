@@ -8,6 +8,7 @@ members = [
     "crates/daemon",
     "crates/mockd",
     "crates/cli",
+    "crates/modules/records",
     "crates/app",
 ]
 

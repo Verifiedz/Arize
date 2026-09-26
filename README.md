@@ -36,7 +36,7 @@ Milestones are defined in `CLAUDE.md` §14.
 | Milestone | Status |
 |---|---|
 | M0 — skeleton | Done. Workspace, `core`, `proto`, daemon, CI (Dev A); CLI round-trip with auto-start (Dev B, ADR 0007). |
-| M1 — records vertical slice | Not started. Store and mock daemon exist; `records` module and its CLI commands next. |
+| M1 — records vertical slice | In progress. `records` module with the LeetCode collection (Dev B, ADR 0008); a completed item survives a restart via `swe call`. Next: `swe records …` CLI commands. |
 | M2 — queue and scheduler | In progress (Dev A). Lanes, fallbacks and scheduler landed; see ADRs 0003–0006. |
 | M3 — workspaces | Not started. |
 | M4 — index rebuild + heatmap | Not started. |
