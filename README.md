@@ -16,6 +16,15 @@ cargo run -q -- --help      # every command
 cargo run -q -- shutdown
 ```
 
+Tracking LeetCode (the collection is built in; any other tracker is a TOML file, see ADR 0008):
+
+```sh
+swe records add leetcode two-sum --title "Two Sum" --difficulty easy
+swe records list leetcode --status todo
+swe records complete leetcode/two-sum
+swe records --help
+```
+
 `swe daemon` runs the daemon in the foreground with its logs; other `swe` commands in a second
 terminal talk to it. `swe mockd --fixtures crates/mockd/fixtures --socket /tmp/mock.sock` runs
 the mock daemon, and `--socket /tmp/mock.sock` points any command at it.
@@ -36,7 +45,7 @@ Milestones are defined in `CLAUDE.md` §14.
 | Milestone | Status |
 |---|---|
 | M0 — skeleton | Done. Workspace, `core`, `proto`, daemon, CI (Dev A); CLI round-trip with auto-start (Dev B, ADR 0007). |
-| M1 — records vertical slice | In progress. `records` module with the LeetCode collection (Dev B, ADR 0008); a completed item survives a restart via `swe call`. Next: `swe records …` CLI commands. |
+| M1 — records vertical slice | Done. `records` module with the LeetCode collection and `swe records` add, list, complete and filter (Dev B, ADRs 0007–0008); a completed item survives a restart. |
 | M2 — queue and scheduler | In progress (Dev A). Lanes, fallbacks and scheduler landed; see ADRs 0003–0006. |
 | M3 — workspaces | Not started. |
 | M4 — index rebuild + heatmap | Not started. |

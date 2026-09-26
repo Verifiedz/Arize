@@ -1,9 +1,9 @@
-//! M1's definition of done (CLAUDE.md §14): a completed item survives a daemon restart.
-//! Drives the real binary through `swe call` until the records CLI commands land.
+//! M1's definition of done (CLAUDE.md §14): a completed item survives a daemon restart, and
+//! the CLI can add, list, complete and filter. Runs the real binary.
 
 mod common;
 
-use common::{stderr, wait_gone, Home};
+use common::{stderr, stdout, wait_gone, Home};
 use serde_json::{json, Value};
 
 fn call(home: &Home, op: &str, params: Value) -> Value {
@@ -40,4 +40,48 @@ fn a_completed_item_survives_a_daemon_restart() {
     let file = home.dir.path().join("home/data/records/items/leetcode/two-sum.toml");
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(text.contains("status = \"done\""), "{text}");
+}
+
+#[test]
+fn the_records_commands_track_a_problem_across_a_restart() {
+    let home = Home::new();
+    let ok = |args: &[&str]| {
+        let o = home.swe(args);
+        assert!(o.status.success(), "swe {args:?} failed: {}", stderr(&o));
+        stdout(&o)
+    };
+
+    assert!(ok(&["records", "collections"]).contains("leetcode  LeetCode  title*, difficulty (easy|medium|hard)"));
+
+    assert_eq!(
+        ok(&["records", "add", "leetcode", "two-sum", "--title", "Two Sum", "--difficulty", "easy"]).trim(),
+        "added leetcode/two-sum"
+    );
+    ok(&["records", "add", "leetcode/lru-cache", "--title=LRU Cache", "--difficulty=medium"]);
+
+    let table = ok(&["records", "list", "leetcode"]);
+    assert!(table.starts_with("ID         STATUS  TITLE      DIFFICULTY"), "{table}");
+    assert!(table.trim_end().ends_with("2 records"), "{table}");
+
+    let done = ok(&["records", "complete", "leetcode/two-sum"]);
+    assert!(done.starts_with("✓ leetcode/two-sum done (last_solved "), "{done}");
+
+    // A bad value is refused with the daemon's message and changes nothing.
+    let o = home.swe(&["records", "add", "leetcode/x", "--title", "X", "--difficulty", "trivial"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(stderr(&o).contains("invalid_params: field 'difficulty' must be one of easy, medium, hard"));
+
+    ok(&["shutdown"]);
+    wait_gone(&home.socket());
+
+    // After the restart, filtering finds exactly the completed one.
+    let o = home.swe(&["records", "list", "leetcode", "--status", "done", "--json"]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    let data: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(data["total"], 1);
+    assert_eq!(data["items"][0]["id"], "two-sum");
+    assert_eq!(data["items"][0]["status"], "done");
+
+    let todo = ok(&["records", "list", "leetcode", "--status", "todo"]);
+    assert!(todo.contains("lru-cache") && !todo.contains("two-sum"), "{todo}");
 }
