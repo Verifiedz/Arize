@@ -20,6 +20,7 @@ swe-proto = { path = "../proto" }
 swe-daemon = { path = "../daemon" }
 swe-mockd = { path = "../mockd" }
 swe-cli = { path = "../cli" }
+swe-records = { path = "../modules/records" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

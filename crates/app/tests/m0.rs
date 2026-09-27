@@ -1,59 +1,9 @@
 //! M0's definition of done (CLAUDE.md §14): a `swe` command reaches the daemon and back.
 //! Runs the real binary as a user would, in a throwaway `$SWE_HOME`, starting from no daemon.
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::time::{Duration, Instant};
+mod common;
 
-use tempfile::TempDir;
-
-struct Home {
-    dir: TempDir,
-}
-
-impl Home {
-    fn new() -> Self {
-        Self { dir: TempDir::new().unwrap() }
-    }
-
-    fn socket(&self) -> PathBuf {
-        self.dir.path().join("d.sock")
-    }
-
-    fn swe(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_swe"))
-            .args(args)
-            .env("SWE_HOME", self.dir.path().join("home"))
-            .env("SWE_SOCKET", self.socket())
-            .output()
-            .unwrap()
-    }
-}
-
-/// Never leave a daemon running behind a failed assertion.
-impl Drop for Home {
-    fn drop(&mut self) {
-        if self.socket().exists() {
-            let _ = self.swe(&["shutdown"]);
-        }
-    }
-}
-
-fn stdout(o: &Output) -> String {
-    String::from_utf8_lossy(&o.stdout).into_owned()
-}
-
-fn stderr(o: &Output) -> String {
-    String::from_utf8_lossy(&o.stderr).into_owned()
-}
-
-fn wait_gone(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while path.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(!path.exists(), "daemon did not remove its socket after shutdown");
-}
+use common::{stderr, stdout, wait_gone, Home};
 
 #[test]
 fn a_command_reaches_the_daemon_and_back() {
