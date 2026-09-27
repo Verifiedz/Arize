@@ -1,6 +1,6 @@
 # 0009. Deriving a local calendar date without storing local time
 
-Status: accepted (Dev A) · Raised by Dev A · Needs sign-off: Dev B (CLAUDE.md §4, changes `core`)
+Status: proposed (Dev A approved, awaiting Dev B) · Raised by Dev A (CLAUDE.md §4, changes `core`)
 
 Implemented on `utc-local-date-adr` (off `post-m1-fixes`): `crates/core/src/time.rs`,
 `Ctx.local_tz`, `Config::load`'s detect-and-persist step, and
