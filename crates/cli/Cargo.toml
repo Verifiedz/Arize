@@ -1,0 +1,21 @@
+[package]
+name = "swe-cli"
+description = "Thin client (lib): command parsing, daemon connection and auto-start, output rendering. Depends on core and proto only."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+swe-core = { path = "../core" }
+swe-proto = { path = "../proto" }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "net", "io-util", "time"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -1,6 +1,6 @@
 [package]
 name = "swe"
-description = "The only binary. Dispatches to the daemon and the mock daemon (CLI/TUI dispatch lands with their crates)."
+description = "The only binary. Dispatches to the daemon, the mock daemon and the CLI (TUI dispatch lands with its crate)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -19,6 +19,12 @@ swe-core = { path = "../core" }
 swe-proto = { path = "../proto" }
 swe-daemon = { path = "../daemon" }
 swe-mockd = { path = "../mockd" }
+swe-cli = { path = "../cli" }
+swe-records = { path = "../modules/records" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"

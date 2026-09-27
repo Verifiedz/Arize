@@ -696,13 +696,28 @@ dependencies = [
 name = "swe"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
+ "swe-cli",
  "swe-core",
  "swe-daemon",
  "swe-mockd",
  "swe-proto",
+ "swe-records",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "swe-cli"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "swe-core",
+ "swe-proto",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -761,6 +776,19 @@ dependencies = [
  "serde",
  "serde_json",
  "swe-core",
+]
+
+[[package]]
+name = "swe-records"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "swe-core",
+ "tokio",
+ "toml",
 ]
 
 [[package]]

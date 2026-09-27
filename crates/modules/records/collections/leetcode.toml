@@ -1,0 +1,29 @@
+# Built in. Written to $SWE_HOME/data/records/collections/ on first start; edit it freely there.
+
+[collection]
+id = "leetcode"
+label = "LeetCode"
+# `records.complete` sets this field to today's date.
+stamp_on_complete = "last_solved"
+
+[[field]]
+name = "title"
+type = "string"
+required = true
+
+[[field]]
+name = "difficulty"
+type = "enum"
+values = ["easy", "medium", "hard"]
+
+[[field]]
+name = "url"
+type = "string"
+
+[[field]]
+name = "last_solved"
+type = "date"
+
+[[view]]
+kind = "heatmap"
+source = "last_solved"
