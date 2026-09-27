@@ -5,11 +5,14 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
+use crate::records::{self, RecordsCmd};
+
 pub const USAGE: &str = "usage: swe [--socket PATH] [--json] <command>
 
 commands:
   ping                  check the daemon is up
   manifest              list registered modules, their ops and lanes
+  records …             add, list and complete records (swe records --help)
   call OP [PARAMS]      send any op; PARAMS is a JSON object (default {})
   shutdown              stop the daemon
   daemon                run the daemon in the foreground (Ctrl-C to stop)
@@ -29,6 +32,7 @@ pub enum Command {
     Manifest,
     Shutdown,
     Call { op: String, params: Value },
+    Records(RecordsCmd),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -40,7 +44,8 @@ pub struct Args {
 }
 
 impl Args {
-    /// `args` are what follows `swe`. Flags may appear anywhere.
+    /// `args` are what follows `swe`. The global flags below may appear anywhere; any other
+    /// option belongs to the command, which decides whether it takes one.
     pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Self, String> {
         let (mut socket, mut json, mut help) = (None, false, false);
         let mut words = Vec::new();
@@ -57,11 +62,18 @@ impl Args {
                     let v = inline.or_else(|| args.next()).filter(|v| !v.is_empty());
                     socket = Some(PathBuf::from(v.ok_or("--socket needs a value")?));
                 }
-                f if f.starts_with('-') && f.len() > 1 => return Err(format!("unknown option '{f}'")),
-                _ => words.push(flag),
+                // Kept whole, `=value` included, for the command to read.
+                _ => words.push(match inline {
+                    Some(v) => format!("{flag}={v}"),
+                    None => flag,
+                }),
             }
         }
-        let command = if help { Command::Help } else { command(words)? };
+        let command = match (help, words.first().map(String::as_str)) {
+            (true, Some("records")) => Command::Records(RecordsCmd::Help),
+            (true, _) => Command::Help,
+            (false, _) => command(words)?,
+        };
         Ok(Self { socket, json, command })
     }
 }
@@ -70,6 +82,12 @@ fn command(words: Vec<String>) -> Result<Command, String> {
     let mut words = words.into_iter();
     let Some(word) = words.next() else { return Ok(Command::Help) };
     let rest: Vec<String> = words.collect();
+    if word == "records" {
+        return records::parse(rest).map(Command::Records);
+    }
+    if let Some(opt) = rest.iter().find(|w| w.starts_with('-') && w.len() > 1) {
+        return Err(format!("unknown option '{}'", opt.split('=').next().unwrap_or(opt)));
+    }
     let no_args = |c: Command| if rest.is_empty() { Ok(c) } else { Err(format!("'{word}' takes no arguments")) };
     match word.as_str() {
         "help" => no_args(Command::Help),
@@ -77,6 +95,9 @@ fn command(words: Vec<String>) -> Result<Command, String> {
         "manifest" => no_args(Command::Manifest),
         "shutdown" => no_args(Command::Shutdown),
         "call" => call(rest),
+        other if other.starts_with('-') && other.len() > 1 => {
+            Err(format!("unknown option '{}'", other.split('=').next().unwrap_or(other)))
+        }
         other => Err(format!("unknown command '{other}'")),
     }
 }
@@ -151,5 +172,27 @@ mod tests {
         assert!(parse(&["--frobnicate"]).unwrap_err().contains("unknown option"));
         assert!(parse(&["ping", "--socket"]).unwrap_err().contains("needs a value"));
         assert!(parse(&["ping", "--socket="]).unwrap_err().contains("needs a value"));
+        assert!(parse(&["ping", "--title", "x"]).unwrap_err().contains("unknown option '--title'"));
+        assert!(parse(&["ping", "--title=x"]).unwrap_err().contains("unknown option '--title'"));
+    }
+
+    #[test]
+    fn records_get_their_own_options_and_the_globals_still_work() {
+        let a = parse(&["records", "list", "leetcode", "--status", "todo", "--json", "--difficulty=easy"]).unwrap();
+        assert!(a.json);
+        let RecordsCmd::List { filter, .. } = a.command.records().unwrap() else { panic!("not a list") };
+        assert_eq!(filter, &[("status".into(), "todo".into()), ("difficulty".into(), "easy".into())]);
+
+        assert_eq!(parse(&["records", "--help"]).unwrap().command, Command::Records(RecordsCmd::Help));
+        assert_eq!(parse(&["records"]).unwrap().command, Command::Records(RecordsCmd::Help));
+    }
+
+    impl Command {
+        fn records(&self) -> Option<&RecordsCmd> {
+            match self {
+                Command::Records(r) => Some(r),
+                _ => None,
+            }
+        }
     }
 }

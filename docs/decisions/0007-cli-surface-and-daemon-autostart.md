@@ -42,6 +42,25 @@ on the message.
   daemon must never be started on the mock's path.
 * **`swe shutdown` never auto-starts.** With nobody listening it says so and exits `0`.
 
+**Records commands** (added at M1, over the ops in ADR 0008):
+
+* `swe records collections | add | list | get | update | complete | remove`. A record is
+  `COLLECTION/ID` or `COLLECTION ID`.
+* Fields are options named after the field: `--title "Two Sum"`, `--difficulty=easy`;
+  `--last-solved` finds `last_solved`. `list` treats them as exact-match filters, alongside
+  `--status`, `--limit` and `--offset`; `update` also takes `--unset FIELD`.
+* **The client learns fields at runtime.** Before each command it asks
+  `records.collections` for the collection's definition and converts values to the declared
+  type (`int`, `bool`; everything else stays a string). It does not validate: enums, dates
+  and required fields are the daemon's to judge. So a collection added as a TOML file gets
+  its own options with no client change (§9). If the collection is unknown, values go as
+  strings and the daemon's `not_found` is what the user sees.
+* Global flags win anywhere on the line, so a field named `json`, `socket` or `help` cannot
+  be set from the command line. No built-in collection has one.
+* `list` prints a table: `ID`, `STATUS`, then fields in schema order, `-` for unset, cells cut
+  at 40 characters, and a count (`2 records`, or `50 of 137` when paged). `--json` prints the
+  daemon's reply unchanged.
+
 ## Consequences
 
 * The binary dispatches `daemon` and `mockd` itself and hands every other command to
