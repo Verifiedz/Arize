@@ -19,6 +19,7 @@ use swe_core::ids::is_valid_name;
 use swe_core::store::validate_path;
 use swe_core::{Error, Event, Result, StoreBackend, TxPlan};
 
+pub use atomic::write_atomic;
 pub use index::{Index, IndexStats};
 pub use log::EventScan;
 pub use tx::Recovery;

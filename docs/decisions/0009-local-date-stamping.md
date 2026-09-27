@@ -1,6 +1,11 @@
 # 0009. Deriving a local calendar date without storing local time
 
-Status: proposed · Raised by Dev A · Needs sign-off: Dev A, Dev B (CLAUDE.md §4, changes `core`)
+Status: accepted (Dev A) · Raised by Dev A · Needs sign-off: Dev B (CLAUDE.md §4, changes `core`)
+
+Implemented on `utc-local-date-adr` (off `post-m1-fixes`): `crates/core/src/time.rs`,
+`Ctx.local_tz`, `Config::load`'s detect-and-persist step, and
+`crates/modules/records/src/lib.rs`'s `complete` now stamping via `local_date`. Dev B's
+sign-off is still needed per §4 before this merges past `post-m1-fixes`.
 
 ## Context
 
@@ -62,15 +67,15 @@ and unambiguous in the event log. Only the *derived* calendar date used for stam
 display changes. We never store a local-time timestamp as if it were absolute.
 
 **New dependency:** resolving an IANA name to an offset needs a timezone database —
-proposed: `chrono-tz` (compiled-in database, no filesystem or network lookup at runtime, so
+decided: `chrono-tz` (compiled-in database, no filesystem or network lookup at runtime, so
 this stays local-first). This is a new dependency on `core` and needs sign-off alongside the
 rest of this ADR (§4).
 
-## Open question this ADR exists to settle: where does `local_date` read the timezone from?
+## Where `local_date` reads the timezone from — decided
 
-Two shapes were considered for getting the resolved `LocalTimezone` to a module. This is the
-one thing flagged explicitly for Dev A/B to pick before any code lands, because it decides
-how much of `core`'s existing test surface moves:
+Two shapes were considered for getting the resolved `LocalTimezone` to a module. This was
+flagged explicitly for Dev A/B to pick before any code landed, because it decides how much
+of `core`'s existing test surface moves:
 
 **Option A — a method on `Clock`:** `ctx.clock.today_local(&tz) -> NaiveDate`. Terser at the
 call site, and additive (existing `Clock::fake` construction and every test using it is
@@ -88,18 +93,19 @@ timezone lookup and its dependency live in one new, independently testable modul
 is one extra argument at call sites, and callers must have both `ctx.clock` and the resolved
 timezone in scope — which they already will, once `Ctx` carries the second field below.
 
-Recommendation: **Option B.** `Clock` is used pervasively enough (§5's table lists it as
+**Decided: Option B.** `Clock` is used pervasively enough (§5's table lists it as
 load-bearing) that growing its contract for a feature that is really "look up a config value
-and do timezone math" seems like the wrong place to put that math, versus one new pure
-function next to it.
+and do timezone math" is the wrong place to put that math, versus one new pure function next
+to it. `Clock` and every existing `Clock::fake` call site are unchanged by this ADR.
 
-**Either way, `Ctx` needs a second field to carry the resolved zone to modules** —
-proposed `pub local_tz: swe_core::time::LocalTimezone`, populated by the daemon from
-`config.toml` at startup, alongside the existing `clock`. Per §5, adding a `Ctx` field is
-called out as a security decision, not a convenience; flagging it here for the same
-sign-off rather than adding it quietly. It is plain resolved config data, not a capability —
-a module can read what zone it's in but cannot change the system clock through it — but the
-rule is "adding a field", not "adding a capability", so it goes through the same door.
+**`Ctx` gains a second field to carry the resolved zone to modules:**
+`pub local_tz: swe_core::time::LocalTimezone`, populated by the daemon from `config.toml` at
+startup, alongside the existing `clock`. Per §5, adding a `Ctx` field is called out as a
+security decision, not a convenience — flagged here for the same sign-off rather than added
+quietly. It is plain resolved config data, not a capability: a module can read what zone
+it's in but cannot change the system clock through it — but the rule is "adding a field", not
+"adding a capability", so it goes through the same door. CLAUDE.md §5's `Ctx` listing is
+updated to match.
 
 ## Not done here
 
