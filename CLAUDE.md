@@ -713,6 +713,8 @@ Read these before acting on any task in this repo.
     `ctx.store.transaction` (§7.1). Every mutation is all or nothing.
 16. Never put an alias, theme name or animation reference in the daemon, `proto`, a
     module, or an error message. Canonical names only; packs live in the client (§15.1).
+17. Commit your work before ending a session. Uncommitted changes are invisible to the
+    next session and easy to lose.
 
 ---
 
@@ -720,12 +722,16 @@ Read these before acting on any task in this repo.
 
 | Dev | Owns | Must not touch |
 |---|---|---|
-| A | `daemon/` (registry, bus, queue, scheduler, gateway, IPC, indexer), `store/`, `mockd/` | `tui/` |
+| A | `daemon/` (registry, bus, queue, scheduler, gateway, IPC, indexer), `store/`, `mockd/`, `app/` ² | `tui/` |
 | B | `modules/*`, `cli/` | `tui/` |
 | C | `tui/` | everything outside `crates/tui` ¹ |
 
 ¹ Exception: Dev C may contribute fixture cases to `crates/mockd/fixtures` by ordinary PR.
 Dev A owns the crate.
+
+² `crates/app` had no owner (flagged in ADR 0007); Dev A reviews it. Dev B may still add a
+module-registration line in `run_daemon` (e.g. `Arc::new(swe_records::Records::default())`)
+without Dev A review — anything else in `app/` needs Dev A.
 
 Dev C works against `docs/protocol.md` and a **mock daemon** (`swe mockd`, built from
 `crates/mockd`) serving canned responses from `crates/mockd/fixtures` and replaying a
