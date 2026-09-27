@@ -876,6 +876,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7973cce6668464ea31f176d85b13c7ab3bba2cb3b77a2ed26abd7801688010a"
 
 [[package]]
+name = "swe-workspaces"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "swe-core",
+ "toml",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
