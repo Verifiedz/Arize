@@ -23,6 +23,7 @@ swe-cli = { path = "../cli" }
 swe-records = { path = "../modules/records" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 tracing = "0.1"
+tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
