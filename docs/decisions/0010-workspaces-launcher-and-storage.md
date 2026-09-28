@@ -246,7 +246,55 @@ changes that; the launcher's job ends at reporting what happened.
   platform's spawn syscall itself failed. That is `unavailable`, the same code `ctx.http`
   already uses for "a dependency... failed" (`docs/protocol.md`'s error table).
 
-### 9. Tests Dev A will write against the real `LaunchBackend`
+### 9. Shutdown, crashes, and session ids
+
+**Graceful `core.shutdown`.** A running queued task's `ctx.cancel` is already a *child* of
+the daemon's shutdown token (`crates/daemon/src/queue/mod.rs`: `self.shutdown.child_token()`
+— existing code, unchanged by this ADR), so shutdown cancels an in-flight `Supervised` step
+through the exact same path as a manual cancel: `run`'s `tokio::select!` wakes on
+`cancel.cancelled()` immediately (it is a notification, not a poll interval) and issues the
+process-group kill. `SIGKILL` cannot be blocked or ignored by the child, so this completes
+in effectively zero time — well inside the daemon's existing `SHUTDOWN_GRACE` (5s,
+`crates/daemon/src/lib.rs`) regardless of what the script itself was doing. Nothing new is
+needed here beyond what §3's "Supervised" behaviour and the existing shutdown-token wiring
+already give for free.
+
+**A `Detached` step is unaffected by shutdown, deliberately** — its reaping task (§3) is a
+plain `tokio::spawn`, never added to the daemon's `TaskTracker`/shutdown-drain set, so
+`wait()`'s drain never waits for it and shutdown is never blocked by "is the terminal still
+open." When the daemon process itself exits — gracefully or by crashing — any child it
+spawned that is still running (detached, or a supervised one that somehow escaped the kill)
+is reparented to init by the kernel, exactly as it would be for any orphaned Unix process;
+init reaps it on exit, so there is no zombie leak in the crash case either. The in-process
+reaping task's only job is covering the window *while the daemon is alive*; the OS covers
+the window after.
+
+**A daemon crash** (no graceful shutdown, so no cancellation ever fires) can leave a
+`Supervised` step's workspace persisted in `Launching` — the state that, in the normal
+running case, only exists for the instant between "the queued task called `run`" and "the
+task recorded the outcome." On restart, seeing `Launching` in a freshly-loaded workspace
+state is itself the signal that the previous run never got to record anything, since a live
+daemon transitions out of `Launching` before its queued task returns. **Reconciling this is
+the module's job, in its own `init`** (Dev B's code, `crates/modules/workspaces` — not
+implemented by this ADR, only specified as a contract here): any workspace found `Launching`
+at `init` is treated as `Dirty` with a reason naming the restart, the same pattern
+`records`' `init` already uses for one-time startup work (seed-if-missing) and ADR 0004's
+"[triggers are] reconciled with `Module::triggers()` on every start." **The daemon does not
+attempt to locate and kill whatever process that step spawned** — it may have already
+exited, may still be running, or its PID may since have been reused by an unrelated process
+(the classic Unix PID-reuse hazard), so guessing is actively unsafe. `Dirty` is the correct
+and sufficient response: it blocks re-activation and surfaces the ambiguity to the user
+(§10.3), who can inspect the log and decide, same as any other dirty reason.
+
+**`SWE_SESSION_ID`.** The calling module generates it — a ULID (same shape as `TaskId`,
+`crates/core/src/ids.rs`), fresh **per launch attempt**, not reused across a later `cleanup`
+or `force_relaunch` for the same workspace (CLAUDE.md §10.1: "unique per launch"; a cleanup
+run is a different attempt with its own log window). No new `core` type is needed for this —
+a module may depend on the `ulid` crate directly, the same ordinary third-party dependency
+`core` itself already uses, and pass `Ulid::new().to_string()` in as `LaunchStep.session_id`.
+`Launcher`/`LaunchBackend` only ever receive the string; they do not generate or validate it.
+
+### 10. Tests Dev A will write against the real `LaunchBackend`
 
 - A `Supervised` step whose script spawns a grandchild that sleeps past the timeout: the
   timeout kills the **grandchild** too (proves process-group kill, not just the immediate
@@ -258,6 +306,9 @@ changes that; the launcher's job ends at reporting what happened.
   `user_env` entry named `SWE_SOCKET` does **not** override the injected one (proves the
   override guard).
 - A script's stdout appears verbatim in the file at the returned `log_path`.
+- Cancelling `ctx.cancel` mid-`Supervised` kills the process group exactly as a timeout
+  would, and does so well within `SHUTDOWN_GRACE` (proves §9's shutdown claim, not just the
+  timeout path).
 
 ## Dev B's side
 
