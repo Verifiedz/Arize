@@ -60,7 +60,7 @@
             },
             {
               "task_id": "01JD2P00000000000000000004",
-              "op": "records.reindex",
+              "op": "fetchers.fetch",
               "priority": "scheduled"
             }
           ]
