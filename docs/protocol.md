@@ -287,6 +287,16 @@ Illustrative excerpt — `records` actually registers seven ops (`records.collec
 ops" below and `docs/decisions/0008-records-collections-and-storage.md` for the full list.
 This example only shows two commands to keep the shape readable.
 
+**The whole example is illustrative of a fully-loaded daemon — every module in CLAUDE.md's
+architecture registered at once — not any one build.** `lanes` is not a fixed list: `default`
+(`max_concurrent: 4`) is the only lane always present; every other lane (`workspaces`,
+`fetchers`, `notify`, `index`, or one a plugin declares) appears **only when some registered
+module's `Module::lanes()` declares it** (`crates/daemon/src/registry.rs`). A daemon that has
+only registered `records` — true of `crates/app` as of M1 — returns `lanes: [{"id":"default",
+"max_concurrent":4}]` and one module in `modules`, not the five-lane, three-module picture
+above. Clients must read `core.manifest` at runtime rather than assume this example's shape,
+same as the "Discovery" heading already says for module knowledge generally.
+
 `params_schema` is JSON Schema. Advisory before M3 — the TUI may render forms from it
 later but must not depend on it being complete yet.
 
