@@ -59,12 +59,13 @@ pub struct LaunchStep {
     pub workspace_dir: String,  // namespace-relative, e.g. "deep-work" — see §5 below
     pub step: Step,
     pub mode: SpawnMode,
-    pub session_id: String,     // becomes SWE_SESSION_ID; caller-generated so it can
-                                 // correlate its own events to this run
     pub user_env: Vec<(String, String)>,  // workspace.toml's [env], nothing else
 }
 
 pub struct StepOutcome {
+    /// The launcher mints this and injects it as SWE_SESSION_ID (see §9 — a module never
+    /// generates it, so it never needs a random or time source of its own for this).
+    pub session_id: String,
     pub exit_code: Option<i32>,  // None for Detached (not waited on) or killed-by-signal
     pub timed_out: bool,
     pub log_path: String,        // relative to $SWE_HOME — see "Logs" below
@@ -77,13 +78,15 @@ it doesn't need one.** `SWE_PLATFORM` is a value the launcher injects into the c
 environment; nothing upstream of the launcher needs to branch on platform, so nothing
 upstream needs to carry it.
 
-The module supplies exactly three things: `workspace_id`, `workspace_dir`, and the user's
-`[env]` from `workspace.toml`. The launcher injects `SWE_HOME`, `SWE_SOCKET`, `SWE_PLATFORM`
-and `SWE_SESSION_ID` itself, from values only the daemon has. **A module-supplied env var
-must not override an injected one** — the launcher builds the child's environment
-injected-first, then applies `user_env` only for keys not already set, so a
-`workspace.toml` that (accidentally or otherwise) declares `SWE_SOCKET = "..."` cannot
-redirect a script's daemon connection.
+The module supplies exactly three things on `LaunchStep`: `workspace_id`, `workspace_dir`,
+and the user's `[env]` from `workspace.toml`. The launcher injects `SWE_HOME`, `SWE_SOCKET`,
+`SWE_PLATFORM` and `SWE_SESSION_ID` itself, from values only the daemon has — `session_id` is
+never a `LaunchStep` input at all; it comes back on `StepOutcome` (§9 justifies why the
+launcher, not the module, is the one that mints it). **A module-supplied env var must not
+override an injected one** — the launcher builds the child's environment injected-first,
+then applies `user_env` only for keys not already set, so a `workspace.toml` that
+(accidentally or otherwise) declares `SWE_SOCKET = "..."` cannot redirect a script's daemon
+connection.
 
 **The `SWE_` prefix lives in one constant** (`const ENV_PREFIX: &str = "SWE_"` or an enum of
 the five names), used everywhere a name is built or checked — the override guard above, the
@@ -99,12 +102,29 @@ instead of a grep-and-pray.
 stderr to null (same as `crates/cli/src/autostart.rs`'s existing daemon-autostart spawn —
 reuse that pattern, don't reinvent it), own process group so the launcher's own signals
 never reach it, and `run` returns as soon as the process is spawned — it does not wait for
-an exit code, matching "no handle retained" (§10.2). **Reaping, so a launched process never
-zombies while the daemon keeps running:** immediately after spawning, the backend
-`tokio::spawn`s a detached task that does nothing but `child.wait().await` and discards the
-result. That task is internal — it is not the "handle" §10.2 forbids retaining; nothing
-external can query or cancel it, it exists purely so the kernel's exit status gets collected
-the moment the process exits rather than sitting as a zombie until the daemon itself exits.
+an exit code, matching "no handle retained" (§10.2).
+
+**Reaping while the daemon keeps running** — the complete answer for normal operation; §9
+covers the separate questions of what happens at shutdown and after a crash. The moment a
+`Detached` step's process is spawned, the backend `tokio::spawn`s a second, independent task
+whose entire body is `child.wait().await` followed by discarding the result, nothing else:
+
+- One such task per spawn, with no shared registry, cap, or coordination between them — the
+  daemon may have any number of detached children outstanding at once (one per launched
+  step not yet cleaned up), each with its own independent `child.wait()`. There is nothing
+  to bound or garbage-collect.
+- Its `JoinHandle` is dropped immediately after `tokio::spawn` returns. Nobody holds it and
+  nobody joins it — holding it would make it the retained handle §10.2 forbids — but tokio
+  still runs the task to completion in the background regardless of whether its `JoinHandle`
+  is held.
+- Because the task lives inside the daemon's own process and does nothing but block on the
+  OS's own wait mechanism, the exit status is collected the instant the child terminates, at
+  any point during the daemon's uptime: a minute later, a day later, or never, if the child
+  (a terminal the user left open, say) is still running when the daemon itself eventually
+  stops — see §9 for that case.
+- The task does no store write, emits no event, and touches no module state — it exists
+  solely to prevent a kernel-level zombie entry. A module never sees it and cannot query it;
+  `run` has already returned to the module before this task even starts.
 
 **Supervised**: spawned into its own process group (same mechanism as detached), then
 `tokio::select!` over three futures — the child exiting, a `tokio::time::sleep(timeout)`,
@@ -113,7 +133,7 @@ and `cancel.cancelled()`. On timeout **or** on cancellation, kill the whole proc
 subprocesses — die with it, not just the immediate child) and set `timed_out: true` only for
 the timeout case (a cancelled step is not "timed out", it is cancelled — callers distinguish
 via `cancel.is_cancelled()` on return, same pattern `ctx.retry_with_backoff` already uses).
-Returns `StepOutcome { exit_code, timed_out, log_path }`.
+Returns `StepOutcome { session_id, exit_code, timed_out, log_path }`.
 
 **Logs.** The launcher captures the child's stdout/stderr and writes them to `logs/`
 itself — a module never gets write access to `logs/`; it only ever receives `log_path` back.
@@ -203,6 +223,7 @@ shape without waiting on a real ADR 0010 implementation:
 ```rust
 let env = TestEnv::new("workspaces");
 env.launcher.outcomes.lock().unwrap().push_back(Ok(StepOutcome {
+    session_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
     exit_code: None, timed_out: true, log_path: "logs/deep-work.log".into(),
 }));
 // module's own `activate` handler calls ctx.launcher.run(...), sees timed_out: true,
@@ -286,13 +307,48 @@ exited, may still be running, or its PID may since have been reused by an unrela
 and sufficient response: it blocks re-activation and surfaces the ambiguity to the user
 (§10.3), who can inspect the log and decide, same as any other dirty reason.
 
-**`SWE_SESSION_ID`.** The calling module generates it — a ULID (same shape as `TaskId`,
-`crates/core/src/ids.rs`), fresh **per launch attempt**, not reused across a later `cleanup`
-or `force_relaunch` for the same workspace (CLAUDE.md §10.1: "unique per launch"; a cleanup
-run is a different attempt with its own log window). No new `core` type is needed for this —
-a module may depend on the `ulid` crate directly, the same ordinary third-party dependency
-`core` itself already uses, and pass `Ulid::new().to_string()` in as `LaunchStep.session_id`.
-`Launcher`/`LaunchBackend` only ever receive the string; they do not generate or validate it.
+**`SWE_SESSION_ID`.** **The launcher mints it, not the calling module** — this is a decision,
+not just a restatement of §2's interface, so it gets its reasoning here.
+
+The first draft of this ADR had the module generate it via `Ulid::new()`, which reads real
+system time internally (`ulid`'s `time.rs`: `Ulid::new()` calls `SystemTime::now()`). Calling
+that from `crates/modules/workspaces` would be exactly the violation §12 rule 4 exists to
+prevent — a module reading the wall clock directly instead of going through `ctx.clock` —
+even though the value never claims to *be* a timestamp anyone stores or compares; ULIDs just
+happen to embed one. Two ways to fix that were considered:
+
+- **Derive it from `ctx.clock` in the module.** Works — `ulid::Ulid::from_parts(timestamp_ms,
+  random)` is a pure constructor that takes an explicit millisecond timestamp and needs no
+  system clock at all — but it still leaves the module needing *some* source of randomness
+  for the other half of a ULID, for no better reason than "the launcher is about to inject
+  this value into a process it's spawning anyway." The module gains a dependency and a
+  responsibility for a value it never uses for anything except handing back unchanged.
+- **Have the launcher mint it (chosen).** The launcher is daemon-side code, not a module —
+  §12 rule 4 restricts modules, not the daemon's own services, which is exactly why
+  `Clock::system()` itself is allowed to call real time in the first place. Minting the id
+  where the value is actually *consumed* (injected as an env var, then handed back) removes
+  the question entirely: nothing upstream of the launcher ever touches time or randomness
+  for this. `StepOutcome.session_id` is how the module learns it, in time to use it in its
+  own `workspaces.session.launched`/`.dirty` event payloads, since `run` returns essentially
+  immediately after spawn even for `Detached`.
+
+For its own generation, the real `LaunchBackend` should use the daemon's already-injected
+`Clock` (the same instance threaded through `NamespacedStore`/`Emitter`/`QueueInner` today),
+not a raw `SystemTime::now()` call — `clock.rs`'s own doc comment says "modules **and
+services** never call `Utc::now()`", and every other daemon service already follows that.
+`Ulid::from_parts(clock.now().timestamp_millis() as u64, rand::random())` gets a ULID from an
+injectable time source with no new `core` type, so the real backend's own tests (§10) can use
+a fake clock exactly like the rest of the daemon's test suite does. Fresh **per launch
+attempt**, not reused across a later `cleanup` or `force_relaunch` for the same workspace
+(CLAUDE.md §10.1: "unique per launch"; a cleanup run is a different attempt with its own log
+window).
+
+**Interface change from the first draft:** `session_id` moved off `LaunchStep` onto
+`StepOutcome` (§2). This ADR proposes the shape; it is not yet reflected in the
+already-committed `crates/core/src/launcher.rs`/`ctx.rs`/`testing.rs` (commit `52b6863`),
+whose `LaunchStep` still carries `session_id` as an input — that code follows this doc in a
+separate commit, not silently, so it is named here rather than left as a quiet drift between
+this file and the tree.
 
 ### 10. Tests Dev A will write against the real `LaunchBackend`
 
@@ -309,6 +365,9 @@ a module may depend on the `ulid` crate directly, the same ordinary third-party 
 - Cancelling `ctx.cancel` mid-`Supervised` kills the process group exactly as a timeout
   would, and does so well within `SHUTDOWN_GRACE` (proves §9's shutdown claim, not just the
   timeout path).
+- Two consecutive `run` calls for the same workspace return different `session_id` values,
+  and the value is reproducible under a fake clock (same pattern as ADR 0009's `local_date`
+  tests) — proves session ids come from the injected `Clock`, not `SystemTime::now()`.
 
 ## Dev B's side
 
@@ -333,6 +392,10 @@ Everything else (the state machine, the parser, and their tests, written against
 - No `core` or daemon code lands with this ADR — the launcher, `FakeLauncher`, and the
   storage move are all proposed above and reflected in CLAUDE.md's wording, but no Rust is
   implemented until Dev A and Dev B both sign off.
+- **Not yet done, and explicitly flagged rather than left as a silent drift:** moving
+  `session_id` from `LaunchStep` to `StepOutcome` in the already-committed
+  `crates/core/src/launcher.rs`/`ctx.rs`/`testing.rs` (§9) — this amendment is docs-only;
+  the code update is a separate, later commit.
 - Windows `LaunchBackend` (§7) — sketched, not built.
 - Locked-in mode, the separate privileged binary (§10.4) — unrelated, still out of scope
   per §1.7.
