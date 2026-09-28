@@ -281,6 +281,10 @@ pub struct Ctx {
     pub queue: QueueHandle,
     /// Injectable clock. Modules must never call `Utc::now()` directly.
     pub clock: Clock,
+    /// Spawn `launch.sh`/`cleanup.sh` (ADR 0010). Populated only for a module whose manifest
+    /// declares the `"process"` capability; every other module gets a stub that fails
+    /// `unavailable`. Modules must never call `std::process::Command` directly (§12 rule 4).
+    pub launcher: Launcher,
     /// Cooperative cancellation. Long tasks must poll this.
     pub cancel: CancellationToken,
     pub config: ModuleConfig,
@@ -298,7 +302,9 @@ impl Ctx {
 ```
 
 Forbidden in `Ctx`, permanently: a raw `PathBuf` to the data root, a raw HTTP client, a
-`rusqlite::Connection`, a handle to another module, anything identity-related (§1.5).
+`rusqlite::Connection`, a handle to another module, anything identity-related (§1.5), a raw
+process handle or a way to name a script outside a module's own workspace directory (ADR
+0010 — `Launcher` takes a logical step and a namespace-relative id, never a path).
 
 ### `Event`
 
@@ -439,7 +445,7 @@ $SWE_HOME/
   data/records/collections/*.toml  Record collection definitions (§8, ADR 0008).
   data/records/items/<collection>/<id>.toml  One file per record.
   events/YYYY-MM-DD.jsonl  Append-only event log. One JSON Event per line.
-  workspaces/<name>/       workspace.toml + launch/cleanup scripts + state.
+  data/workspaces/<name>/  workspace.toml + launch/cleanup scripts + state (ADR 0010).
   notifications/failed.jsonl  Deliveries that exhausted every sink (§11.3).
   packs/<name>/            Command packs: aliases + animations (§15.1). Client-read only.
   .staging/<txid>/         In-flight store transactions (§7.1). Never edit by hand.
@@ -550,8 +556,9 @@ open dashboard updates because the daemon pushed.
 User launch scripts are a permanent public interface. Whatever we pass on day one, we are
 stuck with. Treat additions as breaking changes.
 
-Scripts live in `$SWE_HOME/workspaces/<name>/`, selected by platform: `launch.sh` /
-`cleanup.sh` (Linux, macOS), `launch.ps1` / `cleanup.ps1` (Windows). The daemon injects:
+Scripts live in `$SWE_HOME/data/workspaces/<name>/` (ADR 0010), selected by platform:
+`launch.sh` / `cleanup.sh` (Linux, macOS), `launch.ps1` / `cleanup.ps1` (Windows). The daemon
+injects:
 
 | Variable | Meaning |
 |---|---|
@@ -565,6 +572,10 @@ Scripts live in `$SWE_HOME/workspaces/<name>/`, selected by platform: `launch.sh
 `SWE_SOCKET` matters most: a user's Hyprland script can run
 `swe records complete leetcode/two-sum` and participate in the platform rather than being
 a dead-end launcher.
+
+Scripts run through their interpreter (`sh launch.sh`, `powershell -File launch.ps1`), never
+via the executable bit — an atomic write (§7.1) does not reliably preserve `chmod +x`, and a
+user editing a script by hand should never have to remember to re-set it.
 
 ### 10.2 Spawn modes
 
