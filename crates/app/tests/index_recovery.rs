@@ -72,6 +72,22 @@ fn a_truncated_index_does_not_stop_the_daemon_starting() {
 }
 
 #[test]
+fn deleting_the_index_entirely_still_rebuilds_it_on_restart() {
+    let home = Home::new();
+    seed_and_stop(&home);
+    let before = index_event_count(&home);
+
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", index_path(&home).display()));
+    }
+    assert!(!index_path(&home).exists());
+
+    let pong = home.swe(&["ping"]);
+    assert!(pong.status.success(), "{}", stderr(&pong));
+    assert_eq!(index_event_count(&home), before, "rebuild from the event log matches what was there before");
+}
+
+#[test]
 fn an_empty_index_file_was_never_a_failure_case() {
     let home = Home::new();
     seed_and_stop(&home);
