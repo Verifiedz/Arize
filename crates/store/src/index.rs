@@ -3,13 +3,39 @@
 
 use std::path::Path;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, ErrorCode};
 use swe_core::{Error, Event, Result};
 
 use crate::Store;
 
 fn db_err(e: rusqlite::Error) -> Error {
     Error::internal(format!("index: {e}"))
+}
+
+/// Whether an `open_conn` failure means the file is corrupt or not a database at all, as
+/// opposed to locked, busy, or a permissions problem. Only this case is safe to recover from
+/// by deleting and rebuilding — deleting the wrong thing (a file another process merely has
+/// locked, or one we can't read for permission reasons) is worse than refusing to start.
+fn is_corrupt_or_not_a_database(e: &rusqlite::Error) -> bool {
+    matches!(e.sqlite_error_code(), Some(ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase))
+}
+
+fn open_conn(path: &Path) -> rusqlite::Result<Connection> {
+    let conn = Connection::open(path)?;
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA synchronous = NORMAL;
+         CREATE TABLE IF NOT EXISTS events (
+             id     TEXT PRIMARY KEY,
+             at     TEXT NOT NULL,
+             source TEXT NOT NULL,
+             topic  TEXT NOT NULL,
+             json   TEXT NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS events_topic ON events(topic, id);
+         CREATE INDEX IF NOT EXISTS events_at ON events(at);",
+    )?;
+    Ok(conn)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -22,23 +48,27 @@ pub struct Index {
 }
 
 impl Index {
+    /// Never a source of truth (§1.4), so a file that won't open as a valid database is
+    /// safe to discard and rebuild from the event log — but only when that is actually why
+    /// it failed. A locked or busy file, or a permissions error, is left untouched and
+    /// propagated: the caller (`crates/daemon/src/indexer.rs`) is exercised end to end by a
+    /// daemon-level test for exactly this recovery, not just this function in isolation.
     pub fn open(path: &Path) -> Result<Self> {
-        let conn = Connection::open(path).map_err(db_err)?;
-        conn.execute_batch(
-            "PRAGMA journal_mode = WAL;
-             PRAGMA synchronous = NORMAL;
-             CREATE TABLE IF NOT EXISTS events (
-                 id     TEXT PRIMARY KEY,
-                 at     TEXT NOT NULL,
-                 source TEXT NOT NULL,
-                 topic  TEXT NOT NULL,
-                 json   TEXT NOT NULL
-             );
-             CREATE INDEX IF NOT EXISTS events_topic ON events(topic, id);
-             CREATE INDEX IF NOT EXISTS events_at ON events(at);",
-        )
-        .map_err(db_err)?;
-        Ok(Self { conn })
+        match open_conn(path) {
+            Ok(conn) => Ok(Self { conn }),
+            Err(e) if is_corrupt_or_not_a_database(&e) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "index.sqlite is corrupt; deleting it (and any -wal/-shm) and rebuilding from the event log"
+                );
+                for suffix in ["", "-wal", "-shm"] {
+                    let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+                }
+                Ok(Self { conn: open_conn(path).map_err(db_err)? })
+            }
+            Err(e) => Err(db_err(e)),
+        }
     }
 
     /// Project one event. Idempotent: the same id twice is one row.
@@ -158,5 +188,70 @@ mod tests {
         assert_eq!(idx.stats().unwrap().events, 1);
         idx.catch_up(&store).unwrap();
         assert_eq!(idx.stats().unwrap().events, 2);
+    }
+
+    /// Only a corrupt-or-not-a-database failure is safe to delete and rebuild from. A
+    /// locked, busy, or permissions problem must be left completely alone: deleting the
+    /// wrong thing is worse than refusing to start. Constructed directly against synthetic
+    /// `rusqlite::Error` values (`ffi::Error::new` is public) rather than real lock
+    /// contention, so this is exact and has no flakiness.
+    #[test]
+    fn only_corruption_is_treated_as_recoverable() {
+        let code = |raw: std::ffi::c_int| rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(raw), None);
+        assert!(is_corrupt_or_not_a_database(&code(rusqlite::ffi::SQLITE_CORRUPT)));
+        assert!(is_corrupt_or_not_a_database(&code(rusqlite::ffi::SQLITE_NOTADB)));
+        for raw in [
+            rusqlite::ffi::SQLITE_BUSY,
+            rusqlite::ffi::SQLITE_LOCKED,
+            rusqlite::ffi::SQLITE_PERM,
+            rusqlite::ffi::SQLITE_CANTOPEN,
+            rusqlite::ffi::SQLITE_IOERR,
+        ] {
+            assert!(!is_corrupt_or_not_a_database(&code(raw)), "{raw} must not be treated as recoverable");
+        }
+    }
+
+    #[test]
+    fn open_recovers_from_garbage_bytes() {
+        let home = TempDir::new().unwrap();
+        let store = Store::open(home.path()).unwrap();
+        std::fs::write(store.index_path(), b"not a sqlite file at all, just garbage bytes").unwrap();
+
+        let mut idx = Index::open(&store.index_path()).unwrap();
+        assert_eq!(idx.stats().unwrap().events, 0);
+        idx.apply(&ev("records.item.created", 1)).unwrap();
+        assert_eq!(idx.stats().unwrap().events, 1);
+    }
+
+    #[test]
+    fn open_recovers_from_a_truncated_file() {
+        let home = TempDir::new().unwrap();
+        let store = Store::open(home.path()).unwrap();
+        {
+            // A real database, then cut off partway through — SQLITE_CORRUPT ("database
+            // disk image is malformed"), distinct from garbage bytes' SQLITE_NOTADB.
+            let mut idx = Index::open(&store.index_path()).unwrap();
+            for i in 0..50 {
+                idx.apply(&ev("records.item.created", i)).unwrap();
+            }
+        }
+        let len = std::fs::metadata(store.index_path()).unwrap().len();
+        let bytes = std::fs::read(store.index_path()).unwrap();
+        std::fs::write(store.index_path(), &bytes[..(len / 3) as usize]).unwrap();
+
+        let idx = Index::open(&store.index_path()).unwrap();
+        assert_eq!(idx.stats().unwrap().events, 0, "truncated data is gone, not silently half-read");
+    }
+
+    /// Not a failure case at all — SQLite treats a zero-length file as a fresh database, so
+    /// this proves the recovery path is never even triggered, not that it recovers.
+    #[test]
+    fn open_accepts_an_empty_file_without_any_recovery() {
+        let home = TempDir::new().unwrap();
+        let store = Store::open(home.path()).unwrap();
+        std::fs::write(store.index_path(), b"").unwrap();
+
+        let idx = Index::open(&store.index_path()).unwrap();
+        assert_eq!(idx.stats().unwrap().events, 0);
     }
 }

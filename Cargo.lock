@@ -736,6 +736,7 @@ dependencies = [
  "swe-mockd",
  "swe-proto",
  "swe-records",
+ "swe-store",
  "tempfile",
  "tokio",
  "tracing",
@@ -835,6 +836,7 @@ dependencies = [
  "serde_json",
  "swe-core",
  "tempfile",
+ "tracing",
  "ulid",
 ]
 
