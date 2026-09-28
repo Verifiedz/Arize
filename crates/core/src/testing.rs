@@ -1,6 +1,6 @@
 //! In-memory `Ctx` for module tests (§12 rule 13). Enable with the `testing` feature.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -13,6 +13,7 @@ use crate::error::{Error, Result};
 use crate::event::Event;
 use crate::http::{HttpBackend, HttpGateway, HttpResponse};
 use crate::ids::{ModuleId, TaskId};
+use crate::launcher::{LaunchBackend, LaunchStep, Launcher, StepOutcome};
 use crate::queue::{EnqueueRequest, QueueHandle, TaskHandle, TaskSubmitter};
 use crate::store::{validate_path, StoreBackend, TxPlan, Write};
 
@@ -103,12 +104,34 @@ impl HttpBackend for StubHttp {
     }
 }
 
+/// Scripted per-step outcomes for `ctx.launcher` (ADR 0010 §6). Spawns nothing. `run` pops
+/// the next scripted outcome — in order, one per call — and always records the step it was
+/// given, so a test can assert on `received` even for a step whose outcome it didn't bother
+/// scripting. Calling `run` more times than were scripted is a bug in the test, not a silent
+/// pass: it panics, naming the step, rather than blocking or fabricating a result.
+#[derive(Default)]
+pub struct FakeLauncher {
+    pub outcomes: Mutex<VecDeque<Result<StepOutcome>>>,
+    pub received: Mutex<Vec<LaunchStep>>,
+}
+
+#[async_trait]
+impl LaunchBackend for FakeLauncher {
+    async fn run(&self, step: &LaunchStep, _cancel: &CancellationToken) -> Result<StepOutcome> {
+        self.received.lock().unwrap().push(step.clone());
+        self.outcomes.lock().unwrap().pop_front().unwrap_or_else(|| {
+            panic!("FakeLauncher: no scripted outcome for step {step:?} — script every run() call the test makes")
+        })
+    }
+}
+
 /// A `Ctx` wired to in-memory fakes, with the fakes exposed for assertions.
 pub struct TestEnv {
     pub ctx: Ctx,
     pub backend: Arc<MemBackend>,
     pub queue: Arc<StubQueue>,
     pub http: Arc<StubHttp>,
+    pub launcher: Arc<FakeLauncher>,
     pub clock: Clock,
 }
 
@@ -118,9 +141,10 @@ impl TestEnv {
         let backend = Arc::new(MemBackend::default());
         let queue = Arc::new(StubQueue::default());
         let http = Arc::new(StubHttp::default());
+        let launcher = Arc::new(FakeLauncher::default());
         let clock = Clock::fake(chrono::DateTime::UNIX_EPOCH + chrono::Duration::days(20_000));
         let id = ModuleId::new(module);
-        let ctx = Ctx::new(
+        let mut ctx = Ctx::new(
             crate::NamespacedStore::new(module, id.clone(), backend.clone(), clock.clone()),
             HttpGateway::new(id.clone(), http.clone()),
             Emitter::new(id.clone(), backend.clone(), clock.clone()),
@@ -130,6 +154,74 @@ impl TestEnv {
             ModuleConfig::default(),
             id,
         );
-        Self { ctx, backend, queue, http, clock }
+        ctx.launcher = Launcher::new(launcher.clone());
+        Self { ctx, backend, queue, http, launcher, clock }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::launcher::{SpawnMode, Step};
+
+    fn step(session_id: &str) -> LaunchStep {
+        LaunchStep {
+            workspace_id: "deep-work".into(),
+            workspace_dir: "deep-work".into(),
+            step: Step::Launch,
+            mode: SpawnMode::Supervised { timeout: Duration::from_secs(30) },
+            session_id: session_id.into(),
+            user_env: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn fake_launcher_can_be_driven_to_a_timeout() {
+        let env = TestEnv::new("workspaces");
+        env.launcher.outcomes.lock().unwrap().push_back(Ok(StepOutcome {
+            exit_code: None,
+            timed_out: true,
+            log_path: "logs/deep-work.log".into(),
+        }));
+
+        let outcome =
+            env.ctx.launcher.run(&step("01ARZ3NDEKTSV4RRFFQ69G5FAV"), &CancellationToken::new()).await.unwrap();
+
+        assert!(outcome.timed_out);
+        assert_eq!(outcome.log_path, "logs/deep-work.log");
+        let received = env.launcher.received.lock().unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].workspace_id, "deep-work");
+    }
+
+    #[tokio::test]
+    async fn fake_launcher_serves_scripted_outcomes_in_order() {
+        let env = TestEnv::new("workspaces");
+        {
+            let mut outcomes = env.launcher.outcomes.lock().unwrap();
+            outcomes.push_back(Ok(StepOutcome { exit_code: Some(0), timed_out: false, log_path: "a".into() }));
+            outcomes.push_back(Ok(StepOutcome { exit_code: Some(1), timed_out: false, log_path: "b".into() }));
+        }
+        let first = env.ctx.launcher.run(&step("s1"), &CancellationToken::new()).await.unwrap();
+        let second = env.ctx.launcher.run(&step("s2"), &CancellationToken::new()).await.unwrap();
+        assert_eq!((first.exit_code, second.exit_code), (Some(0), Some(1)));
+        assert_eq!(env.launcher.received.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn fake_launcher_can_also_script_a_backend_level_error() {
+        let env = TestEnv::new("workspaces");
+        env.launcher.outcomes.lock().unwrap().push_back(Err(Error::unavailable("script missing")));
+        let e = env.ctx.launcher.run(&step("s1"), &CancellationToken::new()).await.unwrap_err();
+        assert_eq!(e.code, crate::ErrorCode::Unavailable);
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "no scripted outcome")]
+    async fn fake_launcher_panics_rather_than_silently_passing_when_outcomes_run_out() {
+        let env = TestEnv::new("workspaces");
+        let _ = env.ctx.launcher.run(&step("s1"), &CancellationToken::new()).await;
     }
 }
