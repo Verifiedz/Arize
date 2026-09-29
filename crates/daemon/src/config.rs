@@ -1,11 +1,11 @@
-//! `config.toml`: lane overrides and per-module sections. Read once at startup; a missing
-//! file means defaults.
+//! `config.toml`: lane overrides, per-module sections, and general settings. Read once at
+//! startup; a missing file means defaults.
 
 use std::collections::HashMap;
 use std::path::Path;
 
 use serde_json::Value;
-use swe_core::{Error, Result};
+use swe_core::{Error, LocalTimezone, Result};
 
 #[derive(Debug, Default)]
 pub struct Config {
@@ -13,15 +13,48 @@ pub struct Config {
     pub lanes: HashMap<String, usize>,
     /// `[modules.records] ...`, handed to that module as its `ModuleConfig`.
     pub modules: HashMap<String, Value>,
+    /// `[general] local_timezone = "America/New_York"` (ADR 0009). Defaults to UTC.
+    pub local_timezone: LocalTimezone,
 }
 
 impl Config {
+    /// An explicit `[general] local_timezone` in `config.toml` wins. Otherwise this
+    /// best-effort detects the system zone and writes it back to `config.toml` — so it is
+    /// resolved once, inspectable, and hand-editable afterward, not silently re-detected on
+    /// every start — falling back to UTC with a logged warning if detection fails.
     pub fn load(home: &Path) -> Result<Self> {
-        match std::fs::read_to_string(home.join("config.toml")) {
-            Ok(text) => Self::parse(&text),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(e.into()),
+        let path = home.join("config.toml");
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e.into()),
+        };
+        let mut cfg = Self::parse(&text)?;
+        let explicit = toml::from_str::<toml::Table>(&text)
+            .ok()
+            .and_then(|root| root.get("general")?.get("local_timezone").cloned())
+            .is_some();
+        if !explicit {
+            match detect_system_timezone() {
+                Some((tz, name)) => {
+                    cfg.local_timezone = tz;
+                    if let Err(e) = persist_detected_timezone(&path, &text, &name) {
+                        tracing::warn!(error = %e, path = %path.display(), "could not save detected local_timezone to config.toml");
+                    }
+                }
+                None => {
+                    // Do not persist "UTC" here: that would freeze it into config.toml as if
+                    // it were the user's explicit choice, and it would never be re-detected
+                    // even after whatever made detection fail (a bad TZ value, a missing
+                    // /etc/localtime) is fixed. `cfg.local_timezone` already defaults to UTC.
+                    tracing::warn!(
+                        "could not detect the system timezone; local_timezone defaults to UTC \
+                         (set [general] local_timezone in config.toml to override)"
+                    );
+                }
+            }
         }
+        Ok(cfg)
     }
 
     pub fn parse(text: &str) -> Result<Self> {
@@ -44,8 +77,77 @@ impl Config {
                 cfg.modules.insert(name.clone(), json);
             }
         }
+        if let Some(name) = root.get("general").and_then(|g| g.get("local_timezone")).and_then(|v| v.as_str()) {
+            cfg.local_timezone = LocalTimezone::parse(name).map_err(|_| {
+                Error::invalid_params(format!("config.toml: general.local_timezone: unknown IANA timezone '{name}'"))
+            })?;
+        }
         Ok(cfg)
     }
+}
+
+/// `TZ`, else the `/etc/localtime` symlink target (Linux/macOS), else `None` (caller decides
+/// how to fall back). `TZ` is tried first but, if it does not parse as an IANA name (a POSIX
+/// TZ spec with an explicit DST rule, like `"EST5EDT4,M3.2.0,M11.1.0"`), we still fall through
+/// to `/etc/localtime` rather than giving up immediately — an odd `TZ` value should not shadow
+/// a perfectly good symlink.
+fn detect_system_timezone() -> Option<(LocalTimezone, String)> {
+    let tz_env = std::env::var("TZ").ok();
+    let localtime = localtime_symlink_name();
+    detect_from_candidates(tz_env.into_iter().chain(localtime))
+}
+
+fn localtime_symlink_name() -> Option<String> {
+    std::fs::read_link("/etc/localtime")
+        .ok()
+        .and_then(|target| target.to_str()?.split("zoneinfo/").nth(1).map(str::to_string))
+}
+
+/// Tries each candidate name in order, returning the first that parses as an IANA zone. A
+/// leading `:` (glibc's "this is a filename/zone name, not a POSIX spec" `TZ` convention, as
+/// in `":America/New_York"`) is stripped before parsing. Split out from
+/// [`detect_system_timezone`] so the fallback-order and colon-stripping logic is unit
+/// testable without touching the real environment or `/etc/localtime`.
+fn detect_from_candidates(candidates: impl Iterator<Item = String>) -> Option<(LocalTimezone, String)> {
+    candidates
+        .filter_map(|raw| {
+            let name = raw.strip_prefix(':').unwrap_or(&raw);
+            LocalTimezone::parse(name).ok().map(|tz| (tz, name.to_string()))
+        })
+        .next()
+}
+
+/// Adds `local_timezone = "<name>"` under an existing `[general]` table, or appends a new
+/// one, leaving the rest of the file untouched (no reformatting, no comment loss).
+fn persist_detected_timezone(path: &Path, existing: &str, name: &str) -> Result<()> {
+    let addition = format!("local_timezone = \"{name}\"\n");
+    let new_text = if let Some(insert_at) = general_table_header_end(existing) {
+        let mut s = existing.to_string();
+        s.insert_str(insert_at, &addition);
+        s
+    } else if existing.trim().is_empty() {
+        format!("[general]\n{addition}")
+    } else {
+        format!("{existing}\n[general]\n{addition}")
+    };
+    swe_store::write_atomic(path, new_text.as_bytes()).map_err(Error::from)
+}
+
+/// Byte offset right after the `[general]` table header line, or `None` if the file has no
+/// such table. Matches a line whose content — ignoring surrounding whitespace and a trailing
+/// `# comment` — is exactly `[general]`, not merely a line that mentions the text
+/// `"[general]"` somewhere (e.g. inside a `#`-comment or a string value), which a plain
+/// substring search would wrongly match.
+fn general_table_header_end(existing: &str) -> Option<usize> {
+    let mut offset = 0;
+    for line in existing.split_inclusive('\n') {
+        offset += line.len();
+        let without_comment = line.split('#').next().unwrap_or("");
+        if without_comment.trim() == "[general]" {
+            return Some(offset);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -62,5 +164,94 @@ mod tests {
     #[test]
     fn rejects_zero_concurrency() {
         assert!(Config::parse("[lanes]\nfetchers = 0\n").is_err());
+    }
+
+    #[test]
+    fn parses_an_explicit_local_timezone() {
+        let cfg = Config::parse("[general]\nlocal_timezone = \"America/New_York\"\n").unwrap();
+        assert_eq!(cfg.local_timezone.name(), "America/New_York");
+    }
+
+    #[test]
+    fn defaults_local_timezone_to_utc() {
+        assert_eq!(Config::parse("").unwrap().local_timezone, LocalTimezone::UTC);
+    }
+
+    #[test]
+    fn rejects_an_unknown_local_timezone() {
+        let e = Config::parse("[general]\nlocal_timezone = \"Not/AZone\"\n").unwrap_err();
+        assert!(e.message.contains("Not/AZone"));
+    }
+
+    #[test]
+    fn persist_appends_a_general_table_when_absent() {
+        let text = "[lanes]\nfetchers = 2\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        persist_detected_timezone(&path, text, "America/New_York").unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        let cfg = Config::parse(&written).unwrap();
+        assert_eq!(cfg.lanes["fetchers"], 2, "existing content must survive");
+        assert_eq!(cfg.local_timezone.name(), "America/New_York");
+    }
+
+    #[test]
+    fn persist_inserts_into_an_existing_general_table() {
+        let text = "[general]\nsome_other_key = 1\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        persist_detected_timezone(&path, text, "UTC").unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("some_other_key = 1"));
+        assert_eq!(Config::parse(&written).unwrap().local_timezone, LocalTimezone::UTC);
+    }
+
+    #[test]
+    fn persist_ignores_a_comment_line_that_merely_mentions_general() {
+        // A naive substring search for "[general]" would match inside this comment and
+        // insert there instead of appending a real table.
+        let text = "# see [general] section below\n[lanes]\nfetchers = 2\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        persist_detected_timezone(&path, text, "UTC").unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.starts_with("# see [general] section below\n[lanes]\nfetchers = 2\n"));
+        let cfg = Config::parse(&written).unwrap();
+        assert_eq!(cfg.lanes["fetchers"], 2, "existing content must survive");
+        assert_eq!(cfg.local_timezone, LocalTimezone::UTC);
+    }
+
+    #[test]
+    fn persist_inserts_after_a_general_header_with_a_trailing_comment() {
+        let text = "[general]  # settings\nsome_other_key = 1\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        persist_detected_timezone(&path, text, "UTC").unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        let idx_header = written.find("[general]").unwrap();
+        let idx_local = written.find("local_timezone").unwrap();
+        let idx_other = written.find("some_other_key").unwrap();
+        assert!(idx_header < idx_local && idx_local < idx_other, "must insert right after the header line");
+        assert_eq!(Config::parse(&written).unwrap().local_timezone, LocalTimezone::UTC);
+    }
+
+    #[test]
+    fn detect_falls_through_an_unparseable_tz_to_the_next_candidate() {
+        // Not an IANA zone name (a POSIX-style TZ spec with an explicit DST rule, say) —
+        // must not shadow a candidate later in the list that does parse.
+        let candidates = vec!["Not/AZone".to_string(), "America/New_York".to_string()];
+        let found = detect_from_candidates(candidates.into_iter()).unwrap();
+        assert_eq!(found.1, "America/New_York");
+    }
+
+    #[test]
+    fn detect_strips_a_leading_colon_from_a_tz_value() {
+        let found = detect_from_candidates(std::iter::once(":America/New_York".to_string())).unwrap();
+        assert_eq!(found.1, "America/New_York");
+    }
+
+    #[test]
+    fn detect_returns_none_when_no_candidate_parses() {
+        assert!(detect_from_candidates(std::iter::once("Not/AZone".to_string())).is_none());
     }
 }

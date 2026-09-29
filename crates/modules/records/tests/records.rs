@@ -203,6 +203,23 @@ async fn complete_marks_done_and_stamps_today_each_time() {
 }
 
 #[tokio::test]
+async fn complete_stamps_the_local_date_not_the_utc_date() {
+    let (r, mut env) = setup().await;
+    add_two_sum(&r, &env).await;
+    // TestEnv's fake clock lands on an exact UTC midnight, so a timezone west of UTC is
+    // still "yesterday" locally — exactly the ADR 0009 bug: stamping the UTC date instead
+    // of the user's local date.
+    env.ctx.local_tz = swe_core::LocalTimezone::parse("America/Los_Angeles").unwrap();
+    let utc_today = env.clock.now().date_naive();
+    let local_yesterday = utc_today.pred_opt().unwrap();
+
+    let target = json!({"collection": "leetcode", "id": "two-sum"});
+    let item = call(&r, &env, "records.complete", target).await.unwrap();
+    assert_eq!(item["last_solved"], json!(local_yesterday.to_string()));
+    assert_ne!(item["last_solved"], json!(utc_today.to_string()));
+}
+
+#[tokio::test]
 async fn remove_deletes_the_file() {
     let (r, env) = setup().await;
     add_two_sum(&r, &env).await;

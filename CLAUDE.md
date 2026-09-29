@@ -281,6 +281,15 @@ pub struct Ctx {
     pub queue: QueueHandle,
     /// Injectable clock. Modules must never call `Utc::now()` directly.
     pub clock: Clock,
+    /// The configured `[general] local_timezone` (ADR 0009). Use with `core::time::local_date`
+    /// to derive a calendar date for stamping or display — never store a local-time timestamp;
+    /// event and file timestamps stay UTC.
+    pub local_tz: LocalTimezone,
+    /// Spawn a workspace's numbered launch steps (`steps/<index>-<name>.{sh,ps1}`) and its
+    /// `cleanup.{sh,ps1}` (ADR 0010 §2a). Populated only for a module whose manifest
+    /// declares the `"process"` capability; every other module gets a stub that fails
+    /// `unavailable`. Modules must never call `std::process::Command` directly (§12 rule 4).
+    pub launcher: Launcher,
     /// Cooperative cancellation. Long tasks must poll this.
     pub cancel: CancellationToken,
     pub config: ModuleConfig,
@@ -298,7 +307,9 @@ impl Ctx {
 ```
 
 Forbidden in `Ctx`, permanently: a raw `PathBuf` to the data root, a raw HTTP client, a
-`rusqlite::Connection`, a handle to another module, anything identity-related (§1.5).
+`rusqlite::Connection`, a handle to another module, anything identity-related (§1.5), a raw
+process handle or a way to name a script outside a module's own workspace directory (ADR
+0010 — `Launcher` takes a logical step and a namespace-relative id, never a path).
 
 ### `Event`
 
@@ -434,12 +445,12 @@ fires again, the new firing is dropped and logged as `scheduler.trigger.skipped`
 
 ```
 $SWE_HOME/
-  config.toml              Global settings, including lane overrides.
+  config.toml              Global settings: lane overrides, local_timezone (ADR 0009).
   data/<module>/           Per-module namespace. A module sees only its own.
   data/records/collections/*.toml  Record collection definitions (§8, ADR 0008).
   data/records/items/<collection>/<id>.toml  One file per record.
   events/YYYY-MM-DD.jsonl  Append-only event log. One JSON Event per line.
-  workspaces/<name>/       workspace.toml + launch/cleanup scripts + state.
+  data/workspaces/<name>/  workspace.toml + launch/cleanup scripts + state (ADR 0010).
   notifications/failed.jsonl  Deliveries that exhausted every sink (§11.3).
   packs/<name>/            Command packs: aliases + animations (§15.1). Client-read only.
   .staging/<txid>/         In-flight store transactions (§7.1). Never edit by hand.
@@ -550,8 +561,11 @@ open dashboard updates because the daemon pushed.
 User launch scripts are a permanent public interface. Whatever we pass on day one, we are
 stuck with. Treat additions as breaking changes.
 
-Scripts live in `$SWE_HOME/workspaces/<name>/`, selected by platform: `launch.sh` /
-`cleanup.sh` (Linux, macOS), `launch.ps1` / `cleanup.ps1` (Windows). The daemon injects:
+Scripts live in `$SWE_HOME/data/workspaces/<name>/` (ADR 0010): an ordered list of numbered
+launch steps, `steps/<index>-<name>.sh` on Linux/macOS or `steps/<index>-<name>.ps1` on
+Windows (e.g. `steps/01-setup.sh`, `steps/02-editor.sh`) — each its own script with its own
+spawn mode (§10.2) — plus a single `cleanup.sh` / `cleanup.ps1`, unchanged from before ADR
+0010's §2a amendment. The daemon injects:
 
 | Variable | Meaning |
 |---|---|
@@ -565,6 +579,11 @@ Scripts live in `$SWE_HOME/workspaces/<name>/`, selected by platform: `launch.sh
 `SWE_SOCKET` matters most: a user's Hyprland script can run
 `swe records complete leetcode/two-sum` and participate in the platform rather than being
 a dead-end launcher.
+
+Scripts run through their interpreter (`sh steps/01-setup.sh`, `powershell -File
+steps/01-setup.ps1`), never via the executable bit — an atomic write (§7.1) does not reliably
+preserve `chmod +x`, and a user editing a script by hand should never have to remember to
+re-set it.
 
 ### 10.2 Spawn modes
 
@@ -713,6 +732,8 @@ Read these before acting on any task in this repo.
     `ctx.store.transaction` (§7.1). Every mutation is all or nothing.
 16. Never put an alias, theme name or animation reference in the daemon, `proto`, a
     module, or an error message. Canonical names only; packs live in the client (§15.1).
+17. Commit your work before ending a session. Uncommitted changes are invisible to the
+    next session and easy to lose.
 
 ---
 
@@ -720,12 +741,16 @@ Read these before acting on any task in this repo.
 
 | Dev | Owns | Must not touch |
 |---|---|---|
-| A | `daemon/` (registry, bus, queue, scheduler, gateway, IPC, indexer), `store/`, `mockd/` | `tui/` |
+| A | `daemon/` (registry, bus, queue, scheduler, gateway, IPC, indexer), `store/`, `mockd/`, `app/` ² | `tui/` |
 | B | `modules/*`, `cli/` | `tui/` |
 | C | `tui/` | everything outside `crates/tui` ¹ |
 
 ¹ Exception: Dev C may contribute fixture cases to `crates/mockd/fixtures` by ordinary PR.
 Dev A owns the crate.
+
+² `crates/app` had no owner (flagged in ADR 0007); Dev A reviews it. Dev B may still add a
+module-registration line in `run_daemon` (e.g. `Arc::new(swe_records::Records::default())`)
+without Dev A review — anything else in `app/` needs Dev A.
 
 Dev C works against `docs/protocol.md` and a **mock daemon** (`swe mockd`, built from
 `crates/mockd`) serving canned responses from `crates/mockd/fixtures` and replaying a

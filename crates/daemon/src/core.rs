@@ -74,6 +74,7 @@ impl Core {
                         Emitter::new(id.clone(), backend.clone(), clock.clone()),
                         QueueHandle::new(id.clone(), submitter.clone()),
                         clock.clone(),
+                        config.local_timezone,
                         shutdown.child_token(),
                         ModuleConfig::new(config.modules.get(id.as_str()).cloned().unwrap_or_else(|| json!({}))),
                         id.clone(),

@@ -71,9 +71,11 @@ sequences with a lock. Two `records.add` calls for the same id cannot both succe
 
 ## Not done here
 
-* `records.reindex` appears in the mock fixtures, but the index belongs to the daemon and a module
-  cannot reach it (§5). It is left out until M4 says what a module-level reindex means.
+* `records.reindex` appeared in the mock fixtures despite never being a real op — the index
+  belongs to the daemon and a module cannot reach it (§5). Removed from the fixtures and from
+  `docs/protocol.md`'s manifest example (mockd-protocol-records-ops branch); still left out of
+  `records` itself until M4 says what a module-level reindex means.
 * `records.list` reads every file in the collection. Fine at M1 scale; the index should serve it
   once one exists.
-* `docs/protocol.md` lists workspace ops but no records ops. The table above should move there once
-  agreed; that document is change-controlled (§4).
+* `docs/protocol.md` now has the ops table above under "Records ops" (approved for that edit
+  despite §4); kept here too since this ADR is still the source for the design rationale.

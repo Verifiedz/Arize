@@ -10,12 +10,14 @@ pub mod error;
 pub mod event;
 pub mod http;
 pub mod ids;
+pub mod launcher;
 pub mod manifest;
 pub mod module;
 pub mod queue;
 pub mod retry;
 pub mod store;
 pub mod task;
+pub mod time;
 pub mod trigger;
 
 #[cfg(any(test, feature = "testing"))]
@@ -30,10 +32,12 @@ pub use error::{Error, ErrorCode, Result};
 pub use event::Event;
 pub use http::{HttpBackend, HttpGateway, HttpResponse};
 pub use ids::{LaneId, ModuleId, TaskId, TriggerId};
+pub use launcher::{LaunchBackend, LaunchStep, Launcher, SpawnMode, Step, StepOutcome};
 pub use manifest::{CommandSpec, Execution, LaneConfig, Manifest};
 pub use module::Module;
 pub use queue::{EnqueueRequest, QueueHandle, TaskHandle, TaskSubmitter};
 pub use retry::RetryPolicy;
 pub use store::{NamespacedStore, StoreBackend, Tx, TxPlan, Write};
 pub use task::{Fallback, NotifyPriority, Origin, Priority, Task, TaskOutcome};
+pub use time::{local_date, LocalTimezone};
 pub use trigger::{CatchUp, Schedule, TriggerSpec};

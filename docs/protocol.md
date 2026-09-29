@@ -198,7 +198,7 @@ no server-side pending state — the daemon holds nothing between the two reques
     "would_displace":[
       {"task_id":"01JD2P…","op":"fetchers.fetch","priority":"scheduled"},
       {"task_id":"01JD2Q…","op":"fetchers.fetch","priority":"scheduled"},
-      {"task_id":"01JD2R…","op":"records.reindex","priority":"scheduled"}]}}}
+      {"task_id":"01JD2R…","op":"fetchers.fetch","priority":"scheduled"}]}}}
 
 // → 3. user agreed; echo the queue_version you showed them
 {"v":1,"kind":"request","id":"p2","op":"fetchers.fetch",
@@ -275,12 +275,27 @@ Clients should offer: run cleanup, force relaunch, or open the log. Never auto-f
      "commands":[
        {"op":"records.list","summary":"List records in a collection",
         "execution":"inline","params_schema":{…}},
-       {"op":"records.reindex","summary":"Rebuild the index for a collection",
-        "execution":{"queued":{"lane":"index"}},"params_schema":{…}}],
+       {"op":"records.complete","summary":"Mark a record done and stamp its completion date",
+        "execution":"inline","params_schema":{…}}],
      "topics":["records.item.created","records.item.updated",
                "records.item.completed"]}
   ]}}
 ```
+
+Illustrative excerpt — `records` actually registers seven ops (`records.collections`,
+`.add`, `.get`, `.list`, `.update`, `.complete`, `.remove`) and five topics; see "Records
+ops" below and `docs/decisions/0008-records-collections-and-storage.md` for the full list.
+This example only shows two commands to keep the shape readable.
+
+**The whole example is illustrative of a fully-loaded daemon — every module in CLAUDE.md's
+architecture registered at once — not any one build.** `lanes` is not a fixed list: `default`
+(`max_concurrent: 4`) is the only lane always present; every other lane (`workspaces`,
+`fetchers`, `notify`, `index`, or one a plugin declares) appears **only when some registered
+module's `Module::lanes()` declares it** (`crates/daemon/src/registry.rs`). A daemon that has
+only registered `records` — true of `crates/app` as of M1 — returns `lanes: [{"id":"default",
+"max_concurrent":4}]` and one module in `modules`, not the five-lane, three-module picture
+above. Clients must read `core.manifest` at runtime rather than assume this example's shape,
+same as the "Discovery" heading already says for module knowledge generally.
 
 `params_schema` is JSON Schema. Advisory before M3 — the TUI may render forms from it
 later but must not depend on it being complete yet.
@@ -346,6 +361,24 @@ emails.
 succeeded and nothing more** — there is no liveness check, so a client must not present it
 as "currently running".
 
+## Records ops
+
+| Op | Execution | Params | Returns |
+|---|---|---|---|
+| `records.collections` | inline | `{}` | `{"collections":[...]}`, each collection definition as JSON. |
+| `records.add` | inline | `{"collection","id","fields"?}` | The new item. `conflict` if the id exists. |
+| `records.get` | inline | `{"collection","id"}` | The item. |
+| `records.list` | inline | `{"collection","filter"?,"limit"?,"offset"?}` | `{"items","total"}` (+ `"skipped"` if a hand-edited file was unreadable). |
+| `records.update` | inline | `{"collection","id","fields"}` | The item. A `null` field value unsets it. |
+| `records.complete` | inline | `{"collection","id"}` | The item, now `done`, with its `stamp_on_complete` field set. |
+| `records.remove` | inline | `{"collection","id"}` | `{"removed":true}` |
+
+All inline — nothing here is slow enough to queue. Items on the wire are flat:
+`{"id","status",<every schema field>}`, with unset fields as `null`. `filter` on
+`records.list` is exact equality (`null` matches unset); an unknown filter key is
+`invalid_params`, so a typo never silently matches everything. See
+`docs/decisions/0008-records-collections-and-storage.md`.
+
 Module ops are namespaced `<module>.<verb>`. The daemon routes on the prefix; a collision
 between two modules is a startup failure, not a runtime surprise.
 
@@ -379,7 +412,8 @@ tolerate unknown topics.
 | `workspaces.session.dirty` | A launch step failed. Payload carries the failed step and log. |
 | `workspaces.session.forced` | Force relaunch of a dirty workspace, with prior reason. |
 | `workspaces.session.cleaned` | Cleanup script succeeded; state back to `ready`. |
-| `records.item.created` / `.updated` / `.completed` | Record mutations. |
+| `records.item.created` / `.updated` / `.completed` / `.removed` | Record mutations. |
+| `records.collection.created` | A collection definition was seeded or hand-added. |
 | `fetchers.item.found` | A source returned a new, deduplicated item. |
 | `fetchers.fetch.finished` / `.failed` | A fetch run ended. |
 | `calendar.date.registered` | A dated entry was stored. |

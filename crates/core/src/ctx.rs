@@ -2,7 +2,9 @@
 //! a security decision, not a convenience.
 //!
 //! Forbidden, permanently: a raw `PathBuf` to the data root, a raw HTTP client, a
-//! `rusqlite::Connection`, a handle to another module, anything identity-related (§1.5).
+//! `rusqlite::Connection`, a handle to another module, anything identity-related (§1.5), a
+//! raw process handle or a way to name a script outside a module's own workspace directory
+//! (ADR 0010 — `Launcher` takes a logical step and a namespace-relative id, never a path).
 
 use std::future::Future;
 use std::sync::Arc;
@@ -16,9 +18,11 @@ use crate::clock::Clock;
 use crate::error::{Error, Result};
 use crate::http::HttpGateway;
 use crate::ids::ModuleId;
+use crate::launcher::Launcher;
 use crate::queue::QueueHandle;
 use crate::retry::RetryPolicy;
 use crate::store::NamespacedStore;
+use crate::time::LocalTimezone;
 
 /// Receives `(fraction, note)` from inside a queued task.
 pub type ProgressFn = Arc<dyn Fn(f32, &str) + Send + Sync>;
@@ -58,6 +62,15 @@ pub struct Ctx {
     pub queue: QueueHandle,
     /// Injectable clock. Modules must never call `Utc::now()` directly.
     pub clock: Clock,
+    /// The configured `[general] local_timezone` (ADR 0009). Resolved once at daemon
+    /// startup. Use with [`crate::time::local_date`] to derive a calendar date for stamping
+    /// or display; never store a local-time timestamp — event and file timestamps stay UTC.
+    pub local_tz: LocalTimezone,
+    /// Spawn `launch.sh`/`cleanup.sh` (ADR 0010). Defaults to [`Launcher::unavailable`] —
+    /// the daemon has no real backend or capability-scoped wiring yet; that follows in a
+    /// separate change once ADR 0010 is signed off. Modules must never call
+    /// `std::process::Command` directly (§12 rule 4).
+    pub launcher: Launcher,
     /// Cooperative cancellation. Long tasks must poll this.
     pub cancel: CancellationToken,
     pub config: ModuleConfig,
@@ -74,11 +87,24 @@ impl Ctx {
         bus: Emitter,
         queue: QueueHandle,
         clock: Clock,
+        local_tz: LocalTimezone,
         cancel: CancellationToken,
         config: ModuleConfig,
         module_id: ModuleId,
     ) -> Self {
-        Self { store, http, bus, queue, clock, cancel, config, module_id, progress: None }
+        Self {
+            store,
+            http,
+            bus,
+            queue,
+            clock,
+            local_tz,
+            launcher: Launcher::unavailable(),
+            cancel,
+            config,
+            module_id,
+            progress: None,
+        }
     }
 
     /// A copy for running one queued task: its own cancellation token and progress sink.
