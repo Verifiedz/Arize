@@ -319,9 +319,19 @@ mod tests {
 
         // Prove this is exactly the gap the reviewer found: open_conn alone succeeds — the
         // schema page is intact and its own queries never touch the damaged data pages —
-        // yet quick_check reports the damage open_conn missed.
+        // yet quick_check catches the damage open_conn missed. It can catch it two ways,
+        // and both are the same gap: either quick_check finishes and reports the damage as
+        // an "ok"-less row (`Ok(false)`), or its own scan hits the damaged page hard enough
+        // to raise SQLITE_CORRUPT instead of finishing (`Err`, classified as corrupt by the
+        // same `is_corrupt_or_not_a_database` check `Index::open`'s own match arm uses).
+        // Which of the two happens is a matter of exactly which page the corruption lands
+        // on — observed to differ between platforms for the identical byte-level damage —
+        // so this test (like `Index::open` itself) treats them as one outcome, not two.
         let conn = open_conn(&store.index_path()).expect("open_conn must succeed despite the damage");
-        assert!(!quick_check_ok(&conn).unwrap(), "quick_check must catch the damage open_conn missed");
+        match quick_check_ok(&conn) {
+            Ok(ok) => assert!(!ok, "quick_check must catch the damage open_conn missed"),
+            Err(e) => assert!(is_corrupt_or_not_a_database(&e), "unexpected quick_check error: {e}"),
+        }
         drop(conn);
 
         let idx = Index::open(&store.index_path()).unwrap();
