@@ -1,6 +1,8 @@
 # 0010. Workspaces: the `Ctx` launcher capability and where its data lives
 
 Status: proposed · Raised by Dev A · Needs sign-off: Dev A, Dev B (CLAUDE.md §4, changes `core`)
+· Amended after PR review: §2a (multi-step launches), and code/doc drift on `session_id`
+resolved (§2, §9, "Not done here")
 
 ## Context
 
@@ -21,8 +23,13 @@ as ADR 0008's `collections/` move.
 **This ADR covers only Dev A's side: the launcher, its `core` interface, and the storage
 move.** `crates/modules/workspaces` is Dev B's crate (CLAUDE.md §13); the state machine and
 `workspace.toml` parsing are pure logic that need no `Ctx` and are entirely Dev B's design to
-make — see "Dev B's side" below. No `core` or daemon code lands with this ADR; it is proposed
-here for sign-off, same as ADR 0009 was before its implementation.
+make — see "Dev B's side" below. **What actually lands with this ADR is interface-only `core`
+code** — `crates/core/src/launcher.rs`, the `Ctx.launcher` field, and `testing::FakeLauncher`
+(commit `52b6863`, amended below) — so Dev B can write and test `crates/modules/workspaces`
+against it without waiting. No real `LaunchBackend`, no daemon-side wiring, and no
+capability-scoped gating (§4) land until Dev A and Dev B both sign off; those follow in a
+separate change, same as ADR 0009's `local_tz` field landed on `Ctx` ahead of full sign-off
+while the real detection code stayed daemon-side.
 
 ## Decision — Dev A's side
 
@@ -47,7 +54,14 @@ same rule as every other capability (§12 rule 4).
 ### 2. Interface
 
 ```rust
-pub enum Step { Launch, Cleanup }
+pub enum Step {
+    /// One numbered step out of a workspace's ordered launch list, run in sequence.
+    /// `index` is 1-based; `count` and `name` exist only for reporting — together they are
+    /// what protocol.md's `workspace_dirty` detail means by `failed_step: "3/7 tmux-session"`
+    /// (§2a below).
+    Launch { index: u32, count: u32, name: String },
+    Cleanup,
+}
 
 pub enum SpawnMode {
     Detached,
@@ -73,7 +87,9 @@ pub struct StepOutcome {
 ```
 
 `LaunchStep` carries a *logical* step, not a `PathBuf`. The `LaunchBackend` implementation
-resolves `launch.sh` vs `launch.ps1` by platform itself. **`Ctx` gets no `platform` field —
+alone resolves which real script that is — a numbered step or `cleanup` — and `.sh` vs
+`.ps1` by platform (§2a below spells out the numbered-step resolution rule). **`Ctx` gets no
+`platform` field —
 it doesn't need one.** `SWE_PLATFORM` is a value the launcher injects into the child's
 environment; nothing upstream of the launcher needs to branch on platform, so nothing
 upstream needs to carry it.
@@ -95,6 +111,45 @@ script ABI (§10.1: "whatever we pass on day one, we are stuck with"); a rename 
 (CLAUDE.md's header: "Binary name `swe` and crate prefix `swe-` are placeholders. Rename
 once, early, everywhere") and having one constant is what makes that a one-line change
 instead of a grep-and-pray.
+
+### 2a. Multi-step launches (amended after PR review)
+
+The first draft of this ADR gave `Step` two unit variants, `Launch` and `Cleanup`, treating
+an entire launch as one script and one `SpawnMode`. Dev B flagged two problems with that
+during review, both real:
+
+* CLAUDE.md §10.2 already says "every launch step declares one [`SpawnMode`]" — plural — but
+  a single `Launch` variant gives a workspace only one mode for its whole launch, contradicting
+  the doc it's supposed to implement.
+* If that one script is `Detached` (needed for the common case of a launch ending in an
+  editor or terminal that must outlive the daemon), the launcher returns as soon as it's
+  spawned and the module never learns whether *setup* — the part before the terminal opens —
+  actually succeeded. A workspace can then never go `dirty` from a failed setup step, which
+  defeats the entire point of §10.3.
+
+**Decision: a workspace's launch is an ordered list of numbered steps, each with its own
+`SpawnMode`, run as separate `LaunchStep`s.** `activate` calls `ctx.launcher.run` once per
+step, in order, and — this is the module's logic, not the launcher's (§8 still holds: the
+launcher never decides what a `StepOutcome` means) — stops at the first step whose outcome
+it judges a failure, marking the workspace `dirty` with that step's `index`/`count`/`name`.
+This also fixes the `Detached` problem above for free: a workspace with a supervised setup
+step followed by a detached "open the terminal" step gets setup's pass/fail *before* the
+detached step ever runs, with no new mechanism beyond "run the steps in order."
+
+**Script resolution**, extending §4's "no arbitrary path" rule to numbered steps: the
+backend resolves step `index` to
+`$SWE_HOME/data/workspaces/<workspace_dir>/steps/<index padded to 2 digits>-<name>.{sh,ps1}`,
+where `name` is `Step::Launch`'s `name` field, validated by the backend against the same
+charset a record id already uses elsewhere (CLAUDE.md §7: `[a-z0-9][a-z0-9_-]*`) before it is
+ever interpolated into a path — an invalid `name` is `invalid_params`, not a path traversal
+risk, since it can only ever select a file already constrained under `steps/`. `cleanup`
+stays a single script (`cleanup.{sh,ps1}`), unchanged — CLAUDE.md's script ABI has never
+described a multi-step cleanup, and Dev B's review comment was about launch steps losing
+per-step failure attribution, not cleanup.
+
+`workspace.toml`'s step-list format (names, per-step `mode`, ordering) is Dev B's design,
+same as the rest of `workspace.toml` (§"Dev B's side" below) — this ADR only fixes what
+`core` needs from it: an index, a count, and a name per step.
 
 ### 3. Behaviour
 
@@ -163,19 +218,24 @@ for any module that didn't declare it, the same "fails closed" pattern `ctx.http
 uses before the HTTP gateway exists (`crates/daemon/src/lib.rs` doc comment: "`ctx.http`
 fails closed").
 
-**Which scripts it may execute: only `launch.sh`/`cleanup.sh` (or `.ps1`) inside its own
+**Which scripts it may execute: only a numbered step or `cleanup` (or `.ps1`) inside its own
 `data/workspaces/<workspace_dir>/`, never an arbitrary path — including one named in
 `workspace.toml`.** This is not a policy bolted on top; it is what `LaunchStep`'s shape
-above already forces, since the type carries a `Step` enum (`Launch` | `Cleanup`) and a
-`workspace_dir` string, never a `PathBuf` or arbitrary string naming a script. The backend
-resolves the real path as `$SWE_HOME/data/workspaces/<workspace_dir>/{launch,cleanup}.{sh,ps1}`
-after validating `workspace_dir` with `swe_core::store::validate_path` (already rejects `..`,
-absolute paths, empty segments — the same check `NamespacedStore` applies to every other
+above already forces, since the type carries a `Step` enum (`Launch { index, count, name }`
+| `Cleanup`) and a `workspace_dir` string, never a `PathBuf` or arbitrary string naming a
+script. The backend resolves the real path as
+`$SWE_HOME/data/workspaces/<workspace_dir>/steps/<index>-<name>.{sh,ps1}` for `Launch`, or
+`$SWE_HOME/data/workspaces/<workspace_dir>/cleanup.{sh,ps1}` for `Cleanup`, after validating
+both `workspace_dir` and `name` with `swe_core::store::validate_path`-style charset checks
+(already rejects `..`, absolute paths, empty segments, and now, per §2a, anything outside
+`[a-z0-9][a-z0-9_-]*` for `name` — the same check `NamespacedStore` applies to every other
 module's paths, reused rather than reinvented). A module cannot ask the launcher to run
-"anything named in workspace.toml" because the interface gives it no field to name anything
-with. This is the safer of the two choices ADR 0010's task asked to decide between, and it
-costs nothing: §10.1's script ABI has never included a mechanism for extra script paths, so
-there is nothing to design in order to disallow it.
+"anything named in workspace.toml" because the interface gives it no field to name an
+arbitrary path with — `name` selects a filename fragment under a fixed, backend-owned
+directory, not a path. This is the safer of the two choices ADR 0010's task asked to decide
+between, and it costs nothing: §10.1's script ABI has never included a mechanism for extra
+script paths outside a workspace's own directory, so there is nothing to design in order to
+disallow that.
 
 ### 5. Storage move
 
@@ -344,11 +404,10 @@ attempt**, not reused across a later `cleanup` or `force_relaunch` for the same 
 window).
 
 **Interface change from the first draft:** `session_id` moved off `LaunchStep` onto
-`StepOutcome` (§2). This ADR proposes the shape; it is not yet reflected in the
-already-committed `crates/core/src/launcher.rs`/`ctx.rs`/`testing.rs` (commit `52b6863`),
-whose `LaunchStep` still carries `session_id` as an input — that code follows this doc in a
-separate commit, not silently, so it is named here rather than left as a quiet drift between
-this file and the tree.
+`StepOutcome` (§2). The already-committed `crates/core/src/launcher.rs`/`testing.rs` (commit
+`52b6863`) originally lagged this doc, still carrying `session_id` as a `LaunchStep` input —
+that drift is fixed in the same commit as the §2a multi-step amendment, so code and doc agree
+again as of this revision.
 
 ### 10. Tests Dev A will write against the real `LaunchBackend`
 
@@ -368,6 +427,10 @@ this file and the tree.
 - Two consecutive `run` calls for the same workspace return different `session_id` values,
   and the value is reproducible under a fake clock (same pattern as ADR 0009's `local_date`
   tests) — proves session ids come from the injected `Clock`, not `SystemTime::now()`.
+- A `Step::Launch { index: 2, count: 3, name: "editor" }` resolves to
+  `steps/02-editor.{sh,ps1}` and nothing else, and a `name` outside `[a-z0-9][a-z0-9_-]*` is
+  rejected `invalid_params` before any path is built (proves §2a/§4's resolution rule, not
+  just the single-script `launch.sh` case).
 
 ## Dev B's side
 
@@ -389,13 +452,19 @@ Everything else (the state machine, the parser, and their tests, written against
 
 ## Not done here
 
-- No `core` or daemon code lands with this ADR — the launcher, `FakeLauncher`, and the
-  storage move are all proposed above and reflected in CLAUDE.md's wording, but no Rust is
-  implemented until Dev A and Dev B both sign off.
-- **Not yet done, and explicitly flagged rather than left as a silent drift:** moving
-  `session_id` from `LaunchStep` to `StepOutcome` in the already-committed
-  `crates/core/src/launcher.rs`/`ctx.rs`/`testing.rs` (§9) — this amendment is docs-only;
-  the code update is a separate, later commit.
+- Only interface-only `core` code lands with this ADR (the `Launcher`/`LaunchBackend` types,
+  `Ctx.launcher`, `FakeLauncher`) — the real `LaunchBackend`, the daemon's capability-scoped
+  wiring, and the storage move itself are all proposed above and reflected in CLAUDE.md's
+  wording, but not implemented until Dev A and Dev B both sign off.
+- **Resolved in this amendment** (previously flagged as a drift rather than left silent):
+  `session_id` moved off `LaunchStep` onto `StepOutcome` in
+  `crates/core/src/launcher.rs`/`testing.rs`, matching what this doc's §2 always said — see
+  the PR review this ADR now folds in.
+- **Resolved in this amendment:** `Step` gained numbered launch steps (`Launch { index,
+  count, name }`, §2a) so a workspace's launch can be more than one script with more than
+  one `SpawnMode`, and so a failed setup step is caught before a later `Detached` step (e.g.
+  opening a terminal) ever runs. `workspace.toml`'s step-list syntax is still Dev B's to
+  design; this ADR only fixes what `core` needs from it.
 - Windows `LaunchBackend` (§7) — sketched, not built.
 - Locked-in mode, the separate privileged binary (§10.4) — unrelated, still out of scope
   per §1.7.

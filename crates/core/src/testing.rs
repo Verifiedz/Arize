@@ -166,31 +166,34 @@ mod tests {
     use super::*;
     use crate::launcher::{SpawnMode, Step};
 
-    fn step(session_id: &str) -> LaunchStep {
+    fn step(index: u32, count: u32, name: &str) -> LaunchStep {
         LaunchStep {
             workspace_id: "deep-work".into(),
             workspace_dir: "deep-work".into(),
-            step: Step::Launch,
+            step: Step::Launch { index, count, name: name.into() },
             mode: SpawnMode::Supervised { timeout: Duration::from_secs(30) },
-            session_id: session_id.into(),
             user_env: vec![],
         }
+    }
+
+    fn outcome(session_id: &str, exit_code: Option<i32>, timed_out: bool, log_path: &str) -> StepOutcome {
+        StepOutcome { session_id: session_id.into(), exit_code, timed_out, log_path: log_path.into() }
     }
 
     #[tokio::test]
     async fn fake_launcher_can_be_driven_to_a_timeout() {
         let env = TestEnv::new("workspaces");
-        env.launcher.outcomes.lock().unwrap().push_back(Ok(StepOutcome {
-            exit_code: None,
-            timed_out: true,
-            log_path: "logs/deep-work.log".into(),
-        }));
+        env.launcher.outcomes.lock().unwrap().push_back(Ok(outcome(
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            None,
+            true,
+            "logs/deep-work.log",
+        )));
 
-        let outcome =
-            env.ctx.launcher.run(&step("01ARZ3NDEKTSV4RRFFQ69G5FAV"), &CancellationToken::new()).await.unwrap();
+        let result = env.ctx.launcher.run(&step(1, 1, "launch"), &CancellationToken::new()).await.unwrap();
 
-        assert!(outcome.timed_out);
-        assert_eq!(outcome.log_path, "logs/deep-work.log");
+        assert!(result.timed_out);
+        assert_eq!(result.log_path, "logs/deep-work.log");
         let received = env.launcher.received.lock().unwrap();
         assert_eq!(received.len(), 1);
         assert_eq!(received[0].workspace_id, "deep-work");
@@ -201,20 +204,41 @@ mod tests {
         let env = TestEnv::new("workspaces");
         {
             let mut outcomes = env.launcher.outcomes.lock().unwrap();
-            outcomes.push_back(Ok(StepOutcome { exit_code: Some(0), timed_out: false, log_path: "a".into() }));
-            outcomes.push_back(Ok(StepOutcome { exit_code: Some(1), timed_out: false, log_path: "b".into() }));
+            outcomes.push_back(Ok(outcome("s1", Some(0), false, "a")));
+            outcomes.push_back(Ok(outcome("s2", Some(1), false, "b")));
         }
-        let first = env.ctx.launcher.run(&step("s1"), &CancellationToken::new()).await.unwrap();
-        let second = env.ctx.launcher.run(&step("s2"), &CancellationToken::new()).await.unwrap();
+        let first = env.ctx.launcher.run(&step(1, 2, "setup"), &CancellationToken::new()).await.unwrap();
+        let second = env.ctx.launcher.run(&step(2, 2, "editor"), &CancellationToken::new()).await.unwrap();
         assert_eq!((first.exit_code, second.exit_code), (Some(0), Some(1)));
         assert_eq!(env.launcher.received.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn fake_launcher_records_each_numbered_step_of_a_multi_step_launch() {
+        // A workspace's launch is an ordered list of steps, each its own `LaunchStep` (ADR
+        // 0010 §2a) — the module runs them one at a time, in order, and can tell exactly
+        // which one failed from `Step::Launch`'s `index`/`count`/`name`.
+        let env = TestEnv::new("workspaces");
+        {
+            let mut outcomes = env.launcher.outcomes.lock().unwrap();
+            outcomes.push_back(Ok(outcome("s1", Some(0), false, "logs/01-setup.log")));
+            outcomes.push_back(Ok(outcome("s2", Some(1), false, "logs/02-editor.log")));
+        }
+        let _ = env.ctx.launcher.run(&step(1, 3, "setup"), &CancellationToken::new()).await.unwrap();
+        let second = env.ctx.launcher.run(&step(2, 3, "editor"), &CancellationToken::new()).await.unwrap();
+
+        assert_eq!(second.exit_code, Some(1));
+        let received = env.launcher.received.lock().unwrap();
+        assert_eq!(received.len(), 2);
+        assert_eq!(received[0].step, Step::Launch { index: 1, count: 3, name: "setup".into() });
+        assert_eq!(received[1].step, Step::Launch { index: 2, count: 3, name: "editor".into() });
     }
 
     #[tokio::test]
     async fn fake_launcher_can_also_script_a_backend_level_error() {
         let env = TestEnv::new("workspaces");
         env.launcher.outcomes.lock().unwrap().push_back(Err(Error::unavailable("script missing")));
-        let e = env.ctx.launcher.run(&step("s1"), &CancellationToken::new()).await.unwrap_err();
+        let e = env.ctx.launcher.run(&step(1, 1, "launch"), &CancellationToken::new()).await.unwrap_err();
         assert_eq!(e.code, crate::ErrorCode::Unavailable);
     }
 
@@ -222,6 +246,6 @@ mod tests {
     #[should_panic(expected = "no scripted outcome")]
     async fn fake_launcher_panics_rather_than_silently_passing_when_outcomes_run_out() {
         let env = TestEnv::new("workspaces");
-        let _ = env.ctx.launcher.run(&step("s1"), &CancellationToken::new()).await;
+        let _ = env.ctx.launcher.run(&step(1, 1, "launch"), &CancellationToken::new()).await;
     }
 }
