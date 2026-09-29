@@ -55,6 +55,41 @@ fn a_corrupt_index_does_not_stop_the_daemon_starting() {
     assert_eq!(index_event_count(&home), before, "rebuilt from the event log to the same count");
 }
 
+/// The gap found in PR review: damage that leaves the header and schema intact opens fine
+/// and answers some queries, so it was never caught at start — only later, as a write
+/// failure the indexer could log ("will heal on next catch-up") but never actually heal,
+/// since nothing ever revisits it. `PRAGMA quick_check` at open closes it. Seeds enough rows
+/// to span multiple pages so corrupting the back quarter of the file leaves page 1's schema
+/// untouched — the store-level test (`crates/store/src/index.rs`) proves `open_conn` alone
+/// really does succeed against this exact corruption; this is the end-to-end proof that a
+/// real restart of the real binary benefits from catching it anyway.
+#[test]
+fn a_mid_file_corrupt_index_that_still_opens_gets_caught_and_rebuilt() {
+    let home = Home::new();
+    for i in 0..200 {
+        call(
+            &home,
+            "records.add",
+            json!({"collection": "leetcode", "id": format!("problem-{i}"),
+                   "fields": {"title": format!("Problem {i}"), "difficulty": "easy"}}),
+        );
+    }
+    assert!(home.swe(&["shutdown"]).status.success());
+    wait_gone(&home.socket());
+    let before = index_event_count(&home);
+
+    let mut bytes = std::fs::read(index_path(&home)).unwrap();
+    let start = bytes.len() * 3 / 4;
+    for b in bytes.iter_mut().skip(start) {
+        *b ^= 0xFF;
+    }
+    std::fs::write(index_path(&home), &bytes).unwrap();
+
+    let pong = home.swe(&["ping"]);
+    assert!(pong.status.success(), "daemon failed to start over a mid-file-corrupt index: {}", stderr(&pong));
+    assert_eq!(index_event_count(&home), before, "rebuilt from the event log to the same count");
+}
+
 #[test]
 fn a_truncated_index_does_not_stop_the_daemon_starting() {
     let home = Home::new();

@@ -38,6 +38,15 @@ fn open_conn(path: &Path) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
+/// `PRAGMA quick_check` reports a single `"ok"` row when the file is healthy, or one row per
+/// problem found otherwise — checking for exactly one `"ok"` row catches both "no rows came
+/// back the way we expected" and "there were rows, and they described damage".
+fn quick_check_ok(conn: &Connection) -> rusqlite::Result<bool> {
+    let mut stmt = conn.prepare("PRAGMA quick_check")?;
+    let rows: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<_>>()?;
+    Ok(rows.as_slice() == ["ok"])
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct IndexStats {
     pub events: u64,
@@ -48,27 +57,49 @@ pub struct Index {
 }
 
 impl Index {
-    /// Never a source of truth (§1.4), so a file that won't open as a valid database is
+    /// Never a source of truth (§1.4), so a file that won't pass as a healthy database is
     /// safe to discard and rebuild from the event log — but only when that is actually why
     /// it failed. A locked or busy file, or a permissions error, is left untouched and
     /// propagated: the caller (`crates/daemon/src/indexer.rs`) is exercised end to end by a
     /// daemon-level test for exactly this recovery, not just this function in isolation.
+    ///
+    /// Opening the connection alone is not enough: SQLite validates only the pages it
+    /// happens to touch, so damage in the middle of the file — the header and whatever
+    /// `open_conn`'s own queries read stay intact — can open successfully and even answer
+    /// some queries, yet fail the moment something touches the damaged page. That failure
+    /// would surface later, in `catch_up`, as a write error the indexer can only log as
+    /// "will heal on next catch-up" — except nothing ever revisits it, so it never does.
+    /// Running `PRAGMA quick_check` here catches that case at open time, when there is still
+    /// something useful to do about it, instead of allowing it to surface as a silent,
+    /// permanent write failure. It reads the whole file, which is cheap at this size.
     pub fn open(path: &Path) -> Result<Self> {
         match open_conn(path) {
-            Ok(conn) => Ok(Self { conn }),
-            Err(e) if is_corrupt_or_not_a_database(&e) => {
-                tracing::warn!(
-                    path = %path.display(),
-                    error = %e,
-                    "index.sqlite is corrupt; deleting it (and any -wal/-shm) and rebuilding from the event log"
-                );
-                for suffix in ["", "-wal", "-shm"] {
-                    let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+            Ok(conn) => match quick_check_ok(&conn) {
+                Ok(true) => Ok(Self { conn }),
+                Ok(false) => Self::recover(path, "PRAGMA quick_check reported damage"),
+                Err(e) if is_corrupt_or_not_a_database(&e) => {
+                    Self::recover(path, &format!("PRAGMA quick_check itself failed: {e}"))
                 }
-                Ok(Self { conn: open_conn(path).map_err(db_err)? })
-            }
+                Err(e) => Err(db_err(e)),
+            },
+            Err(e) if is_corrupt_or_not_a_database(&e) => Self::recover(path, &format!("failed to open: {e}")),
             Err(e) => Err(db_err(e)),
         }
+    }
+
+    /// Deletes `path` (and any `-wal`/`-shm`) and reopens fresh — the shared last step for
+    /// every corruption case `open` detects, whether that showed up as an open failure or a
+    /// failed `quick_check` on an otherwise-openable file.
+    fn recover(path: &Path, reason: &str) -> Result<Self> {
+        tracing::warn!(
+            path = %path.display(),
+            reason,
+            "index.sqlite is corrupt; deleting it (and any -wal/-shm) and rebuilding from the event log"
+        );
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+        Ok(Self { conn: open_conn(path).map_err(db_err)? })
     }
 
     /// Project one event. Idempotent: the same id twice is one row.
@@ -253,5 +284,47 @@ mod tests {
 
         let idx = Index::open(&store.index_path()).unwrap();
         assert_eq!(idx.stats().unwrap().events, 0);
+    }
+
+    #[test]
+    fn quick_check_ok_is_true_for_a_healthy_database() {
+        let home = TempDir::new().unwrap();
+        let store = Store::open(home.path()).unwrap();
+        let idx = Index::open(&store.index_path()).unwrap();
+        assert!(quick_check_ok(&idx.conn).unwrap());
+    }
+
+    /// The gap `Index::open` used to have, reproduced exactly: damage a page well past the
+    /// header and the schema (both stay intact), so `open_conn`'s own queries — which only
+    /// ever touch the schema — never see it. Before `quick_check` was added at open time,
+    /// this file opened successfully and a query against undamaged rows still worked; the
+    /// damage surfaced only later, as a write failure the indexer could log but never heal.
+    #[test]
+    fn open_recovers_from_mid_file_corruption_that_only_quick_check_can_see() {
+        let home = TempDir::new().unwrap();
+        let store = Store::open(home.path()).unwrap();
+        {
+            let mut idx = Index::open(&store.index_path()).unwrap();
+            for i in 0..200 {
+                idx.apply(&ev("records.item.created", i)).unwrap();
+            }
+        }
+
+        let mut bytes = std::fs::read(store.index_path()).unwrap();
+        let start = bytes.len() * 3 / 4;
+        for b in bytes.iter_mut().skip(start) {
+            *b ^= 0xFF;
+        }
+        std::fs::write(store.index_path(), &bytes).unwrap();
+
+        // Prove this is exactly the gap the reviewer found: open_conn alone succeeds — the
+        // schema page is intact and its own queries never touch the damaged data pages —
+        // yet quick_check reports the damage open_conn missed.
+        let conn = open_conn(&store.index_path()).expect("open_conn must succeed despite the damage");
+        assert!(!quick_check_ok(&conn).unwrap(), "quick_check must catch the damage open_conn missed");
+        drop(conn);
+
+        let idx = Index::open(&store.index_path()).unwrap();
+        assert_eq!(idx.stats().unwrap().events, 0, "mid-file damage must be caught, not silently kept");
     }
 }
