@@ -17,6 +17,7 @@ pub mod queue;
 pub mod retry;
 pub mod store;
 pub mod task;
+pub mod time;
 pub mod trigger;
 
 #[cfg(any(test, feature = "testing"))]
@@ -38,4 +39,5 @@ pub use queue::{EnqueueRequest, QueueHandle, TaskHandle, TaskSubmitter};
 pub use retry::RetryPolicy;
 pub use store::{NamespacedStore, StoreBackend, Tx, TxPlan, Write};
 pub use task::{Fallback, NotifyPriority, Origin, Priority, Task, TaskOutcome};
+pub use time::{local_date, LocalTimezone};
 pub use trigger::{CatchUp, Schedule, TriggerSpec};

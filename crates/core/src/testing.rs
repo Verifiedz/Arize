@@ -150,6 +150,7 @@ impl TestEnv {
             Emitter::new(id.clone(), backend.clone(), clock.clone()),
             QueueHandle::new(id.clone(), queue.clone()),
             clock.clone(),
+            crate::time::LocalTimezone::UTC,
             CancellationToken::new(),
             ModuleConfig::default(),
             id,

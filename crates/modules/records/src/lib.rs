@@ -240,7 +240,9 @@ impl Records {
 
     fn complete(&self, ctx: &Ctx, t: Target) -> Result<Value> {
         let c = load_collection(ctx, &t.collection)?;
-        let today = ctx.clock.now().date_naive().format("%Y-%m-%d").to_string();
+        // Local calendar date, not the UTC date (ADR 0009): a late-evening completion west
+        // of UTC must not stamp tomorrow.
+        let today = swe_core::local_date(ctx.clock.now(), &ctx.local_tz).format("%Y-%m-%d").to_string();
 
         let _g = self.lock();
         let mut item = load_item(ctx, &c, &t.id)?;

@@ -22,6 +22,7 @@ use crate::launcher::Launcher;
 use crate::queue::QueueHandle;
 use crate::retry::RetryPolicy;
 use crate::store::NamespacedStore;
+use crate::time::LocalTimezone;
 
 /// Receives `(fraction, note)` from inside a queued task.
 pub type ProgressFn = Arc<dyn Fn(f32, &str) + Send + Sync>;
@@ -61,6 +62,10 @@ pub struct Ctx {
     pub queue: QueueHandle,
     /// Injectable clock. Modules must never call `Utc::now()` directly.
     pub clock: Clock,
+    /// The configured `[general] local_timezone` (ADR 0009). Resolved once at daemon
+    /// startup. Use with [`crate::time::local_date`] to derive a calendar date for stamping
+    /// or display; never store a local-time timestamp — event and file timestamps stay UTC.
+    pub local_tz: LocalTimezone,
     /// Spawn `launch.sh`/`cleanup.sh` (ADR 0010). Defaults to [`Launcher::unavailable`] —
     /// the daemon has no real backend or capability-scoped wiring yet; that follows in a
     /// separate change once ADR 0010 is signed off. Modules must never call
@@ -82,6 +87,7 @@ impl Ctx {
         bus: Emitter,
         queue: QueueHandle,
         clock: Clock,
+        local_tz: LocalTimezone,
         cancel: CancellationToken,
         config: ModuleConfig,
         module_id: ModuleId,
@@ -92,6 +98,7 @@ impl Ctx {
             bus,
             queue,
             clock,
+            local_tz,
             launcher: Launcher::unavailable(),
             cancel,
             config,
