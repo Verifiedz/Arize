@@ -43,7 +43,7 @@ pub enum Step {
     /// `failed_step: "3/7 tmux-session"`. The backend resolves `index`/`name` to
     /// `steps/<index>-<name>.{sh,ps1}` under the workspace's own directory, never an
     /// arbitrary path (ADR 0010 §4) — `name` must pass the same charset check as any other
-    /// stored id (CLAUDE.md §7: `[a-z0-9][a-z0-9_-]*`).
+    /// stored id (ADR 0008: `[a-z0-9][a-z0-9_-]*`).
     Launch {
         index: u32,
         count: u32,

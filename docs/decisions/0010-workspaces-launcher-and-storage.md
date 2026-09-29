@@ -140,7 +140,7 @@ detached step ever runs, with no new mechanism beyond "run the steps in order."
 backend resolves step `index` to
 `$SWE_HOME/data/workspaces/<workspace_dir>/steps/<index padded to 2 digits>-<name>.{sh,ps1}`,
 where `name` is `Step::Launch`'s `name` field, validated by the backend against the same
-charset a record id already uses elsewhere (CLAUDE.md §7: `[a-z0-9][a-z0-9_-]*`) before it is
+charset a record id already uses elsewhere (ADR 0008: `[a-z0-9][a-z0-9_-]*`) before it is
 ever interpolated into a path — an invalid `name` is `invalid_params`, not a path traversal
 risk, since it can only ever select a file already constrained under `steps/`. `cleanup`
 stays a single script (`cleanup.{sh,ps1}`), unchanged — CLAUDE.md's script ABI has never

@@ -285,7 +285,8 @@ pub struct Ctx {
     /// to derive a calendar date for stamping or display — never store a local-time timestamp;
     /// event and file timestamps stay UTC.
     pub local_tz: LocalTimezone,
-    /// Spawn `launch.sh`/`cleanup.sh` (ADR 0010). Populated only for a module whose manifest
+    /// Spawn a workspace's numbered launch steps (`steps/<index>-<name>.{sh,ps1}`) and its
+    /// `cleanup.{sh,ps1}` (ADR 0010 §2a). Populated only for a module whose manifest
     /// declares the `"process"` capability; every other module gets a stub that fails
     /// `unavailable`. Modules must never call `std::process::Command` directly (§12 rule 4).
     pub launcher: Launcher,
@@ -560,9 +561,11 @@ open dashboard updates because the daemon pushed.
 User launch scripts are a permanent public interface. Whatever we pass on day one, we are
 stuck with. Treat additions as breaking changes.
 
-Scripts live in `$SWE_HOME/data/workspaces/<name>/` (ADR 0010), selected by platform:
-`launch.sh` / `cleanup.sh` (Linux, macOS), `launch.ps1` / `cleanup.ps1` (Windows). The daemon
-injects:
+Scripts live in `$SWE_HOME/data/workspaces/<name>/` (ADR 0010): an ordered list of numbered
+launch steps, `steps/<index>-<name>.sh` on Linux/macOS or `steps/<index>-<name>.ps1` on
+Windows (e.g. `steps/01-setup.sh`, `steps/02-editor.sh`) — each its own script with its own
+spawn mode (§10.2) — plus a single `cleanup.sh` / `cleanup.ps1`, unchanged from before ADR
+0010's §2a amendment. The daemon injects:
 
 | Variable | Meaning |
 |---|---|
@@ -577,9 +580,10 @@ injects:
 `swe records complete leetcode/two-sum` and participate in the platform rather than being
 a dead-end launcher.
 
-Scripts run through their interpreter (`sh launch.sh`, `powershell -File launch.ps1`), never
-via the executable bit — an atomic write (§7.1) does not reliably preserve `chmod +x`, and a
-user editing a script by hand should never have to remember to re-set it.
+Scripts run through their interpreter (`sh steps/01-setup.sh`, `powershell -File
+steps/01-setup.ps1`), never via the executable bit — an atomic write (§7.1) does not reliably
+preserve `chmod +x`, and a user editing a script by hand should never have to remember to
+re-set it.
 
 ### 10.2 Spawn modes
 
