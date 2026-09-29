@@ -281,6 +281,10 @@ pub struct Ctx {
     pub queue: QueueHandle,
     /// Injectable clock. Modules must never call `Utc::now()` directly.
     pub clock: Clock,
+    /// The configured `[general] local_timezone` (ADR 0009). Use with `core::time::local_date`
+    /// to derive a calendar date for stamping or display — never store a local-time timestamp;
+    /// event and file timestamps stay UTC.
+    pub local_tz: LocalTimezone,
     /// Cooperative cancellation. Long tasks must poll this.
     pub cancel: CancellationToken,
     pub config: ModuleConfig,
@@ -434,7 +438,7 @@ fires again, the new firing is dropped and logged as `scheduler.trigger.skipped`
 
 ```
 $SWE_HOME/
-  config.toml              Global settings, including lane overrides.
+  config.toml              Global settings: lane overrides, local_timezone (ADR 0009).
   data/<module>/           Per-module namespace. A module sees only its own.
   data/records/collections/*.toml  Record collection definitions (§8, ADR 0008).
   data/records/items/<collection>/<id>.toml  One file per record.

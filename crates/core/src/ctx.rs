@@ -19,6 +19,7 @@ use crate::ids::ModuleId;
 use crate::queue::QueueHandle;
 use crate::retry::RetryPolicy;
 use crate::store::NamespacedStore;
+use crate::time::LocalTimezone;
 
 /// Receives `(fraction, note)` from inside a queued task.
 pub type ProgressFn = Arc<dyn Fn(f32, &str) + Send + Sync>;
@@ -58,6 +59,10 @@ pub struct Ctx {
     pub queue: QueueHandle,
     /// Injectable clock. Modules must never call `Utc::now()` directly.
     pub clock: Clock,
+    /// The configured `[general] local_timezone` (ADR 0009). Resolved once at daemon
+    /// startup. Use with [`crate::time::local_date`] to derive a calendar date for stamping
+    /// or display; never store a local-time timestamp — event and file timestamps stay UTC.
+    pub local_tz: LocalTimezone,
     /// Cooperative cancellation. Long tasks must poll this.
     pub cancel: CancellationToken,
     pub config: ModuleConfig,
@@ -74,11 +79,12 @@ impl Ctx {
         bus: Emitter,
         queue: QueueHandle,
         clock: Clock,
+        local_tz: LocalTimezone,
         cancel: CancellationToken,
         config: ModuleConfig,
         module_id: ModuleId,
     ) -> Self {
-        Self { store, http, bus, queue, clock, cancel, config, module_id, progress: None }
+        Self { store, http, bus, queue, clock, local_tz, cancel, config, module_id, progress: None }
     }
 
     /// A copy for running one queued task: its own cancellation token and progress sink.
