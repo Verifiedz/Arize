@@ -4,8 +4,8 @@
 use std::fmt::Write as _;
 
 use serde_json::Value;
-use swe_core::{Error, Execution};
-use swe_proto::{ManifestData, PingData};
+use shimmer_core::{Error, Execution};
+use shimmer_proto::{ManifestData, PingData};
 
 pub fn ping(data: &Value) -> String {
     match serde_json::from_value::<PingData>(data.clone()) {

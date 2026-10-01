@@ -3,27 +3,27 @@
 
 use std::sync::{Arc, Mutex};
 
-use swe_store::{Index, Store};
+use shimmer_store::{Index, Store};
 use tokio::sync::broadcast::{self, error::RecvError};
 use tokio_util::sync::CancellationToken;
 
 pub type SharedIndex = Arc<Mutex<Index>>;
 
 /// Open the index and bring it fully up to date with the log before returning.
-pub async fn open(store: Arc<Store>) -> swe_core::Result<SharedIndex> {
+pub async fn open(store: Arc<Store>) -> shimmer_core::Result<SharedIndex> {
     tokio::task::spawn_blocking(move || {
         let mut index = Index::open(&store.index_path())?;
         index.catch_up(&store)?;
         Ok(Arc::new(Mutex::new(index)))
     })
     .await
-    .map_err(|e| swe_core::Error::internal(format!("index open: {e}")))?
+    .map_err(|e| shimmer_core::Error::internal(format!("index open: {e}")))?
 }
 
 pub async fn run(
     index: SharedIndex,
     store: Arc<Store>,
-    mut events: broadcast::Receiver<swe_core::Event>,
+    mut events: broadcast::Receiver<shimmer_core::Event>,
     shutdown: CancellationToken,
 ) {
     loop {

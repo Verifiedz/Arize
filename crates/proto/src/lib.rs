@@ -1,4 +1,4 @@
-//! `swe-proto`: wire types for `docs/protocol.md`. Change-controlled (CLAUDE.md §4).
+//! `shimmer-proto`: wire types for `docs/protocol.md`. Change-controlled (CLAUDE.md §4).
 //!
 //! Pure data and pure functions: no sockets, no runtime. Clients and the daemon each own
 //! their own I/O and share only these types.

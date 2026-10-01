@@ -1,5 +1,5 @@
 //! One connection to the daemon, speaking `docs/protocol.md`: `hello` first, then requests
-//! matched to responses by id. Every failure, including a dead socket, is a `swe_core::Error`
+//! matched to responses by id. Every failure, including a dead socket, is a `shimmer_core::Error`
 //! so the caller handles one error type and branches on `code`.
 
 use std::io;
@@ -7,8 +7,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use serde_json::Value;
-use swe_core::{Error, Result};
-use swe_proto::{decode_server, encode, ClientFrame, ServerFrame, PROTOCOL_VERSION};
+use shimmer_core::{Error, Result};
+use shimmer_proto::{decode_server, encode, ClientFrame, ServerFrame, PROTOCOL_VERSION};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::UnixStream;

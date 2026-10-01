@@ -1,9 +1,9 @@
 # Mock daemon fixtures
 
-`swe mockd --fixtures crates/mockd/fixtures --socket /tmp/swe-mock.sock` reads every `*.json`
+`shimmer mockd --fixtures crates/mockd/fixtures --socket /tmp/shimmer-mock.sock` reads every `*.json`
 in this directory (not subdirectories), in filename order, and answers the protocol from them
 (`docs/protocol.md`). Add a case by adding a file or a rule; open a PR to `crates/mockd`.
-A bad fixture stops `swe mockd` at startup and names the file and the rule.
+A bad fixture stops `shimmer mockd` at startup and names the file and the rule.
 
 ## Format
 

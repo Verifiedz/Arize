@@ -1,5 +1,5 @@
 [package]
-name = "swe-store"
+name = "shimmer-store"
 description = "Files (truth) + SQLite index (derived). Atomic transactions, event log, recovery."
 version.workspace = true
 edition.workspace = true
@@ -11,7 +11,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-swe-core = { path = "../core" }
+shimmer-core = { path = "../core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"

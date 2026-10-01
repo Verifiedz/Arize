@@ -1,12 +1,12 @@
-//! The client against a scripted server speaking `swe-proto`, for the paths a healthy daemon
+//! The client against a scripted server speaking `shimmer-proto`, for the paths a healthy daemon
 //! never takes: stray events, out-of-order responses, a refused handshake, a stale socket.
 
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
-use swe_cli::{Client, ConnectError};
-use swe_core::{Error, ErrorCode, Event, ModuleId};
-use swe_proto::{decode_client, encode, ClientFrame, ServerFrame};
+use shimmer_cli::{Client, ConnectError};
+use shimmer_core::{Error, ErrorCode, Event, ModuleId};
+use shimmer_proto::{decode_client, encode, ClientFrame, ServerFrame};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;

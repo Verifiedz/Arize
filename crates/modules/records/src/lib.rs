@@ -1,4 +1,4 @@
-//! `swe-records`: typed collections of records (CLAUDE.md §8). A LeetCode tracker, a job tracker
+//! `shimmer-records`: typed collections of records (CLAUDE.md §8). A LeetCode tracker, a job tracker
 //! or any user-defined tracker is a collection TOML; this module is the one implementation of
 //! storage, validation and filtering behind all of them. Layout and ops: ADR 0008.
 //!
@@ -14,8 +14,8 @@ use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use swe_core::ids::is_valid_name;
-use swe_core::{CommandSpec, Ctx, Error, Execution, Manifest, Module, Result};
+use shimmer_core::ids::is_valid_name;
+use shimmer_core::{CommandSpec, Ctx, Error, Execution, Manifest, Module, Result};
 
 use crate::item::{Item, Status};
 use crate::schema::Collection;
@@ -242,7 +242,7 @@ impl Records {
         let c = load_collection(ctx, &t.collection)?;
         // Local calendar date, not the UTC date (ADR 0009): a late-evening completion west
         // of UTC must not stamp tomorrow.
-        let today = swe_core::local_date(ctx.clock.now(), &ctx.local_tz).format("%Y-%m-%d").to_string();
+        let today = shimmer_core::local_date(ctx.clock.now(), &ctx.local_tz).format("%Y-%m-%d").to_string();
 
         let _g = self.lock();
         let mut item = load_item(ctx, &c, &t.id)?;

@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::json;
-use swe_core::{Error, Event, ModuleId};
-use swe_proto::{
+use shimmer_core::{Error, Event, ModuleId};
+use shimmer_proto::{
     decode_client, encode, is_valid_pattern, ops, topic_matches, topics, ClientFrame, ServerFrame, MAX_LINE_BYTES,
     PROTOCOL_VERSION,
 };
@@ -100,7 +100,7 @@ async fn connection(core: Arc<Core>, stream: UnixStream, tracker: TaskTracker) -
         Ok(ClientFrame::Hello { v, .. }) if v == PROTOCOL_VERSION => {}
         Ok(ClientFrame::Hello { v, .. }) => {
             let e = Error::new(
-                swe_core::ErrorCode::UnsupportedVersion,
+                shimmer_core::ErrorCode::UnsupportedVersion,
                 format!("protocol v{v} not supported; this daemon speaks v{PROTOCOL_VERSION}"),
             )
             .with_detail(json!({"supported": [PROTOCOL_VERSION]}));

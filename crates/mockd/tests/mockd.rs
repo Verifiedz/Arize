@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use swe_core::{Error, ErrorCode, Event};
-use swe_mockd::{Mockd, Options};
-use swe_proto::{decode_server, ManifestData, QueuedHandle, ServerFrame};
+use shimmer_core::{Error, ErrorCode, Event};
+use shimmer_mockd::{Mockd, Options};
+use shimmer_proto::{decode_server, ManifestData, QueuedHandle, ServerFrame};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -143,7 +143,7 @@ async fn handshake_ping_and_a_manifest_that_parses_as_the_wire_type() {
     assert_eq!(c.call("core.ping", json!({})).await.unwrap()["pong"], true, "built in, needs no fixture");
 
     let manifest = c.call("core.manifest", json!({})).await.unwrap();
-    let parsed: ManifestData = serde_json::from_value(manifest).expect("manifest matches swe_proto::ManifestData");
+    let parsed: ManifestData = serde_json::from_value(manifest).expect("manifest matches shimmer_proto::ManifestData");
     assert_eq!(parsed.protocol, 1);
     let ids: Vec<_> = parsed.modules.iter().map(|m| m.id.as_str()).collect();
     assert_eq!(ids, ["records", "fetchers", "workspaces"]);

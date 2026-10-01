@@ -1,4 +1,4 @@
-//! The one binary. `swe daemon` and `swe mockd` run servers; every other command belongs to the
+//! The one binary. `shimmer daemon` and `shimmer mockd` run servers; every other command belongs to the
 //! CLI. TUI dispatch arrives with its crate. Clients hold no business logic (§2), so nothing
 //! else belongs here.
 
@@ -7,8 +7,8 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use swe_core::Module;
-use swe_daemon::{Daemon, DaemonConfig};
+use shimmer_core::Module;
+use shimmer_daemon::{Daemon, DaemonConfig};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
@@ -19,7 +19,7 @@ async fn main() -> ExitCode {
         Some("daemon") => {
             // Autostart (crates/cli/src/autostart.rs) nulls the child's stderr, so this is the
             // only trace of a cold-start crash unless it also lands in a file (ADR 0007).
-            let _guard = init_daemon_logging(&swe_proto::paths::swe_home());
+            let _guard = init_daemon_logging(&shimmer_proto::paths::shimmer_home());
             run_daemon().await
         }
         Some("mockd") => {
@@ -28,7 +28,7 @@ async fn main() -> ExitCode {
         }
         _ => {
             init_stderr_logging();
-            swe_cli::run(std::env::args().skip(1).collect()).await
+            shimmer_cli::run(std::env::args().skip(1).collect()).await
         }
     }
 }
@@ -42,7 +42,7 @@ fn init_stderr_logging() {
 }
 
 /// Logs to stderr (visible when run in the foreground) and, best-effort, to
-/// `$SWE_HOME/logs/daemon.log` (visible when autostarted, whose stderr is discarded). The
+/// `$SHIMMER_HOME/logs/daemon.log` (visible when autostarted, whose stderr is discarded). The
 /// returned guard must stay alive for the process lifetime or buffered lines are dropped.
 fn init_daemon_logging(home: &Path) -> Option<WorkerGuard> {
     let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr).with_filter(env_filter());
@@ -60,7 +60,7 @@ fn init_daemon_logging(home: &Path) -> Option<WorkerGuard> {
         Err(e) => {
             tracing_subscriber::registry().with(stderr_layer).init();
             eprintln!(
-                "swe: cannot open {} ({e}); daemon logs will only go to stderr",
+                "shimmer: cannot open {} ({e}); daemon logs will only go to stderr",
                 logs_dir.join("daemon.log").display()
             );
             None
@@ -70,11 +70,11 @@ fn init_daemon_logging(home: &Path) -> Option<WorkerGuard> {
 
 async fn run_daemon() -> ExitCode {
     // Every module the daemon runs. A new module is one more line here.
-    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(swe_records::Records::default())];
+    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(shimmer_records::Records::default())];
     let daemon = match Daemon::start(DaemonConfig::from_env(), modules).await {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("swe: cannot start daemon: {e}");
+            eprintln!("shimmer: cannot start daemon: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -89,21 +89,21 @@ async fn run_daemon() -> ExitCode {
 }
 
 async fn run_mockd(args: Vec<String>) -> ExitCode {
-    let options = match swe_mockd::Command::parse(args) {
-        Ok(swe_mockd::Command::Run(options)) => options,
-        Ok(swe_mockd::Command::Help) => {
-            println!("{}", swe_mockd::USAGE);
+    let options = match shimmer_mockd::Command::parse(args) {
+        Ok(shimmer_mockd::Command::Run(options)) => options,
+        Ok(shimmer_mockd::Command::Help) => {
+            println!("{}", shimmer_mockd::USAGE);
             return ExitCode::SUCCESS;
         }
         Err(e) => {
-            eprintln!("swe mockd: {e}\n\n{}", swe_mockd::USAGE);
+            eprintln!("shimmer mockd: {e}\n\n{}", shimmer_mockd::USAGE);
             return ExitCode::from(2);
         }
     };
-    let mockd = match swe_mockd::Mockd::start(options).await {
+    let mockd = match shimmer_mockd::Mockd::start(options).await {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("swe mockd: {e}");
+            eprintln!("shimmer mockd: {e}");
             return ExitCode::FAILURE;
         }
     };

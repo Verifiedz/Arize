@@ -4,9 +4,9 @@
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use swe_core::testing::TestEnv;
-use swe_core::{ErrorCode, Module, Result, StoreBackend};
-use swe_records::Records;
+use shimmer_core::testing::TestEnv;
+use shimmer_core::{ErrorCode, Module, Result, StoreBackend};
+use shimmer_records::Records;
 
 async fn setup() -> (Records, TestEnv) {
     let env = TestEnv::new("records");
@@ -209,7 +209,7 @@ async fn complete_stamps_the_local_date_not_the_utc_date() {
     // TestEnv's fake clock lands on an exact UTC midnight, so a timezone west of UTC is
     // still "yesterday" locally — exactly the ADR 0009 bug: stamping the UTC date instead
     // of the user's local date.
-    env.ctx.local_tz = swe_core::LocalTimezone::parse("America/Los_Angeles").unwrap();
+    env.ctx.local_tz = shimmer_core::LocalTimezone::parse("America/Los_Angeles").unwrap();
     let utc_today = env.clock.now().date_naive();
     let local_yesterday = utc_today.pred_opt().unwrap();
 

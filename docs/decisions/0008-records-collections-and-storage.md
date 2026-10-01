@@ -3,6 +3,9 @@
 Status: proposed (M1) · Raised by Dev B · Needs sign-off: Dev A (changes a path in CLAUDE.md §7) ·
 Dev C notified (item shape on the wire)
 
+> **Renamed since:** `swe`, `swe-*` and `SWE_*` in this ADR are now `shimmer`, `shimmer-*` and
+> `SHIMMER_*` (ADR 0011). The text below is kept as written.
+
 ## Context
 
 CLAUDE.md §7 puts collection definitions at `$SWE_HOME/collections/*.toml`, but §5 gives a module

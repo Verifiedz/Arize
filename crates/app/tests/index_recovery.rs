@@ -8,10 +8,10 @@ mod common;
 
 use common::{stderr, wait_gone, Home};
 use serde_json::{json, Value};
-use swe_store::Index;
+use shimmer_store::Index;
 
 fn call(home: &Home, op: &str, params: Value) -> Value {
-    let o = home.swe(&["call", op, &params.to_string(), "--json"]);
+    let o = home.shimmer(&["call", op, &params.to_string(), "--json"]);
     assert!(o.status.success(), "{op} failed: {}", stderr(&o));
     serde_json::from_slice(&o.stdout).unwrap()
 }
@@ -34,7 +34,7 @@ fn seed_and_stop(home: &Home) {
         json!({"collection": "leetcode", "id": "two-sum", "fields": {"title": "Two Sum", "difficulty": "easy"}}),
     );
     call(home, "records.complete", json!({"collection": "leetcode", "id": "two-sum"}));
-    assert!(home.swe(&["shutdown"]).status.success());
+    assert!(home.shimmer(&["shutdown"]).status.success());
     wait_gone(&home.socket());
 }
 
@@ -49,7 +49,7 @@ fn a_corrupt_index_does_not_stop_the_daemon_starting() {
 
     // The bug this proves fixed: this used to make the daemon refuse to start at all
     // ("cannot start daemon: internal: index: file is not a database").
-    let pong = home.swe(&["ping"]);
+    let pong = home.shimmer(&["ping"]);
     assert!(pong.status.success(), "daemon failed to start over a corrupt index: {}", stderr(&pong));
 
     assert_eq!(index_event_count(&home), before, "rebuilt from the event log to the same count");
@@ -74,7 +74,7 @@ fn a_mid_file_corrupt_index_that_still_opens_gets_caught_and_rebuilt() {
                    "fields": {"title": format!("Problem {i}"), "difficulty": "easy"}}),
         );
     }
-    assert!(home.swe(&["shutdown"]).status.success());
+    assert!(home.shimmer(&["shutdown"]).status.success());
     wait_gone(&home.socket());
     let before = index_event_count(&home);
 
@@ -85,7 +85,7 @@ fn a_mid_file_corrupt_index_that_still_opens_gets_caught_and_rebuilt() {
     }
     std::fs::write(index_path(&home), &bytes).unwrap();
 
-    let pong = home.swe(&["ping"]);
+    let pong = home.shimmer(&["ping"]);
     assert!(pong.status.success(), "daemon failed to start over a mid-file-corrupt index: {}", stderr(&pong));
     assert_eq!(index_event_count(&home), before, "rebuilt from the event log to the same count");
 }
@@ -101,7 +101,7 @@ fn a_truncated_index_does_not_stop_the_daemon_starting() {
     let bytes = std::fs::read(index_path(&home)).unwrap();
     std::fs::write(index_path(&home), &bytes[..bytes.len() / 3]).unwrap();
 
-    let pong = home.swe(&["ping"]);
+    let pong = home.shimmer(&["ping"]);
     assert!(pong.status.success(), "daemon failed to start over a truncated index: {}", stderr(&pong));
     assert_eq!(index_event_count(&home), before);
 }
@@ -117,7 +117,7 @@ fn deleting_the_index_entirely_still_rebuilds_it_on_restart() {
     }
     assert!(!index_path(&home).exists());
 
-    let pong = home.swe(&["ping"]);
+    let pong = home.shimmer(&["ping"]);
     assert!(pong.status.success(), "{}", stderr(&pong));
     assert_eq!(index_event_count(&home), before, "rebuild from the event log matches what was there before");
 }
@@ -133,7 +133,7 @@ fn an_empty_index_file_was_never_a_failure_case() {
     // that the new recovery code path fires (it doesn't need to).
     std::fs::write(index_path(&home), b"").unwrap();
 
-    let pong = home.swe(&["ping"]);
+    let pong = home.shimmer(&["ping"]);
     assert!(pong.status.success(), "{}", stderr(&pong));
     assert_eq!(index_event_count(&home), before);
 }

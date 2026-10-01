@@ -7,6 +7,9 @@ Implemented on `utc-local-date-adr` (off `post-m1-fixes`): `crates/core/src/time
 `crates/modules/records/src/lib.rs`'s `complete` now stamping via `local_date`. Dev B's
 sign-off is still needed per §4 before this merges past `post-m1-fixes`.
 
+> **Renamed since:** `swe`, `swe-*` and `SWE_*` in this ADR are now `shimmer`, `shimmer-*` and
+> `SHIMMER_*` (ADR 0011). The text below is kept as written.
+
 ## Context
 
 `records.complete` stamps `stamp_on_complete` fields with `ctx.clock.now().date_naive()`

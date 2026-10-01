@@ -1,4 +1,4 @@
-//! `swe-mockd`: the mock daemon behind `swe mockd`.
+//! `shimmer-mockd`: the mock daemon behind `shimmer mockd`.
 //!
 //! It speaks `docs/protocol.md` over a Unix socket and answers from fixture files instead of
 //! real modules: canned responses, and events replayed on a script. Clients built against it

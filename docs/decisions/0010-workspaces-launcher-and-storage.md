@@ -4,6 +4,9 @@ Status: proposed · Raised by Dev A · Needs sign-off: Dev A, Dev B (CLAUDE.md �
 · Amended after PR review: §2a (multi-step launches), and code/doc drift on `session_id`
 resolved (§2, §9, "Not done here")
 
+> **Renamed since:** `swe`, `swe-*` and `SWE_*` in this ADR are now `shimmer`, `shimmer-*` and
+> `SHIMMER_*` (ADR 0011). The text below is kept as written.
+
 ## Context
 
 Spawning a real OS process is `core`'s one sanctioned exception to "no raw I/O in a module"

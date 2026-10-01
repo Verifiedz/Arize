@@ -1,9 +1,9 @@
-//! `swe mockd` arguments. Both paths are required: the mock must never silently take over
+//! `shimmer mockd` arguments. Both paths are required: the mock must never silently take over
 //! the real daemon's socket, and it has no home directory of its own.
 
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: swe mockd --fixtures DIR --socket PATH
+pub const USAGE: &str = "usage: shimmer mockd --fixtures DIR --socket PATH
 
   --fixtures DIR   directory of *.json fixture files (see crates/mockd/fixtures/README.md)
   --socket PATH    Unix socket to listen on; pick one other than the real daemon's
@@ -22,7 +22,7 @@ pub enum Command {
 }
 
 impl Command {
-    /// `args` are what follows `swe mockd`.
+    /// `args` are what follows `shimmer mockd`.
     pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Self, String> {
         let (mut fixtures, mut socket) = (None, None);
         let mut args = args.into_iter();

@@ -2,6 +2,9 @@
 
 Status: proposed · Needs sign-off: Dev A, Dev B
 
+> **Renamed since:** `swe`, `swe-*` and `SWE_*` in this ADR are now `shimmer`, `shimmer-*` and
+> `SHIMMER_*` (ADR 0011). The text below is kept as written.
+
 ## Context
 
 CLAUDE.md §11.3 lets a scheduled task carry a fallback, set at trigger-creation time, that the

@@ -5,7 +5,7 @@
 //! task is at most one link and ends in `notify`'s own terminal, `notifications/failed.jsonl`.
 
 use serde_json::{json, Value};
-use swe_core::{EnqueueRequest, Error, ErrorCode, Fallback, ModuleId, Origin, Priority, Task};
+use shimmer_core::{EnqueueRequest, Error, ErrorCode, Fallback, ModuleId, Origin, Priority, Task};
 
 const NOTIFY_PREFIX: &str = "notify.";
 
@@ -89,7 +89,7 @@ fn stamp<const N: usize>(params: &Value, fields: [(&str, Value); N]) -> Value {
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use swe_core::{NotifyPriority, TaskId};
+    use shimmer_core::{NotifyPriority, TaskId};
 
     use super::*;
 
