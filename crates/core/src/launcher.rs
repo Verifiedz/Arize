@@ -15,8 +15,8 @@ use async_trait::async_trait;
 
 use crate::error::{Error, Result};
 
-/// The env var names the launcher injects (CLAUDE.md §10.1). Defined once, here; the
-/// `swe` → `shimmer` rename (ADR 0011) changed this module and nothing else in the launcher.
+/// The env var names the launcher injects (CLAUDE.md §10.1). Defined once, here, so renaming
+/// them (ADR 0011) touches this module and nothing else in the launcher.
 pub mod env_names {
     pub const WORKSPACE_ID: &str = "SHIMMER_WORKSPACE_ID";
     pub const WORKSPACE_DIR: &str = "SHIMMER_WORKSPACE_DIR";
