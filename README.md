@@ -59,7 +59,7 @@ $SWE_HOME/
   data/records/items/<collection>/<id>.toml  One file per record
   events/YYYY-MM-DD.jsonl                    Append-only log of every event
   index.sqlite                               Derived from the files; safe to delete
-  logs/daemon.log                            Daemon logs
+  logs/daemon.log.<date>                     Daemon logs, rotated daily; oldest deleted past 8 files
 ```
 
 `$SWE_HOME` defaults to `~/.local/share/swe` on Linux and `~/Library/Application Support/swe` on

@@ -456,7 +456,8 @@ $SWE_HOME/
   .staging/<txid>/         In-flight store transactions (§7.1). Never edit by hand.
   cache/http/              Gateway response cache. Safe to delete.
   index.sqlite             DERIVED. Gitignored. Safe to delete.
-  logs/
+  logs/daemon.log.<date>   Daily-rotated daemon log. Oldest deleted past 8 files (~a week);
+                           never archived elsewhere.
 ```
 
 **SQLite is an index, never a source of truth.** A test asserts this directly: delete the
