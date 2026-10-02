@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use rusqlite::{params, Connection, ErrorCode};
-use swe_core::{Error, Event, Result};
+use shimmer_core::{Error, Event, Result};
 
 use crate::Store;
 
@@ -169,7 +169,7 @@ fn insert(tx: &rusqlite::Transaction<'_>, events: &[Event]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use swe_core::Clock;
+    use shimmer_core::Clock;
     use tempfile::TempDir;
 
     use super::*;

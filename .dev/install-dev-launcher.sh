@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Install a `swe` launcher into ~/.cargo/bin that runs this checkout's code.
+# Install a `shimmer` launcher into ~/.cargo/bin that runs this checkout's code.
 #
-# The launcher is a one-command script: `cargo run -q --manifest-path <repo>/Cargo.toml -p swe`.
+# The launcher is a one-command script: `cargo run -q --manifest-path <repo>/Cargo.toml -p shimmer`.
 # Every call rebuilds if needed and runs your latest code, from any folder. <repo> is where this
 # script lives, not a hard-coded path, so each clone installs a launcher for itself.
 #
-#   .dev/install-dev-launcher.sh           install; refuses to replace an existing `swe`
-#   .dev/install-dev-launcher.sh --force   install, replacing whatever `swe` is there
+#   .dev/install-dev-launcher.sh           install; refuses to replace an existing `shimmer`
+#   .dev/install-dev-launcher.sh --force   install, replacing whatever `shimmer` is there
 #
 # Linux and macOS only. See CONTRIBUTING.md.
 
@@ -39,7 +39,7 @@ if [[ ! -f "$repo/Cargo.toml" ]]; then
 fi
 
 bin_dir="${CARGO_HOME:-$HOME/.cargo}/bin"
-target="$bin_dir/swe"
+target="$bin_dir/shimmer"
 
 if [[ -e "$target" || -L "$target" ]] && [[ $force -eq 0 ]]; then
     echo "install-dev-launcher: $target already exists; not replacing it." >&2
@@ -51,12 +51,12 @@ fi
 mkdir -p "$bin_dir"
 
 # Write next to the target and rename, so an interrupted install never leaves half a launcher.
-tmp="$(mktemp "$bin_dir/.swe.XXXXXX")"
+tmp="$(mktemp "$bin_dir/.shimmer.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
 {
     echo '#!/usr/bin/env bash'
     echo "# Dev launcher for the Shimmer checkout at $repo. Installed by .dev/install-dev-launcher.sh."
-    printf 'exec cargo run -q --manifest-path %q -p swe -- "$@"\n' "$repo/Cargo.toml"
+    printf 'exec cargo run -q --manifest-path %q -p shimmer -- "$@"\n' "$repo/Cargo.toml"
 } >"$tmp"
 chmod 755 "$tmp"
 mv -f "$tmp" "$target"
@@ -66,5 +66,5 @@ echo "Installed $target -> $repo"
 
 case ":$PATH:" in
     *":$bin_dir:"*) ;;
-    *) echo "Note: $bin_dir is not on your PATH. Add it (rustup normally does) to run 'swe' anywhere." ;;
+    *) echo "Note: $bin_dir is not on your PATH. Add it (rustup normally does) to run 'shimmer' anywhere." ;;
 esac

@@ -4,7 +4,8 @@ Source of truth for this repository. Every agent session and every developer wor
 this file. If code and this file disagree, **this file wins** — fix the code or propose a
 change to this file, never both silently.
 
-Binary name `swe` and crate prefix `swe-` are placeholders. Rename once, early, everywhere.
+The product is **Shimmer**: command `shimmer`, crates `shimmer-*`, env vars `SHIMMER_*` (ADR 0011).
+These names are final; `SHIMMER_*` and the data directory are part of the script ABI (§10.1).
 
 ---
 
@@ -78,7 +79,7 @@ exactly like a first-party module, with no special access.
 
 Everything durable is a human-readable file the user could edit by hand — TOML for
 configuration and collections, Markdown for notes, JSONL for the append-only event log.
-That is what makes `$SWE_HOME` copyable between machines and committable to git.
+That is what makes `$SHIMMER_HOME` copyable between machines and committable to git.
 
 It is also what does not scale. Rendering a two-year heatmap, or answering "which
 applications go stale this week", by rescanning every file is fine at a hundred records
@@ -110,7 +111,7 @@ task that seems to require it must stop and report rather than implement it.
 |---|---|
 | Local-first | No network needed for any core function. No account required, ever. |
 | Files are truth | Everything durable is a human-readable file. SQLite is disposable. |
-| Portable | Copy `$SWE_HOME` to another machine and it works. Git-syncable. |
+| Portable | Copy `$SHIMMER_HOME` to another machine and it works. Git-syncable. |
 | One writer | Exactly one process mutates state: the daemon. |
 | Decoupled | Features observe each other through events. No module calls another module. |
 | Extensible | A new tracker, source or sink must not require changing existing code. |
@@ -163,7 +164,7 @@ crates/
   cli/           Thin client (lib). Command parsing, alias table, output rendering.
   tui/           Thin client (lib). ratatui. Owned by Dev C.
   mockd/         Mock daemon (lib): fixtures + scripted events over the real protocol,
-                 so clients build without a daemon. Run as `swe mockd`. Depends on
+                 so clients build without a daemon. Run as `shimmer mockd`. Depends on
                  core and proto only. Owned by Dev A.
   app/           The only [[bin]]. Dispatches to daemon / mockd / cli / tui.
 docs/
@@ -440,17 +441,17 @@ fires again, the new firing is dropped and logged as `scheduler.trigger.skipped`
 
 ## 7. Data layout on disk
 
-`$SWE_HOME`, defaulting to the XDG data dir (`~/.local/share/swe`) or
-`~/Library/Application Support/swe` on macOS. Overridable by env var for tests.
+`$SHIMMER_HOME`, defaulting to the XDG data dir (`~/.local/share/shimmer`) or
+`~/Library/Application Support/shimmer` on macOS. Overridable by env var for tests.
 
 ```
-$SWE_HOME/
+$SHIMMER_HOME/
   config.toml              Global settings: lane overrides, local_timezone (ADR 0009).
   data/<module>/           Per-module namespace. A module sees only its own.
   data/records/collections/*.toml  Record collection definitions (§8, ADR 0008).
   data/records/items/<collection>/<id>.toml  One file per record.
   events/YYYY-MM-DD.jsonl  Append-only event log. One JSON Event per line.
-  data/workspaces/<name>/  workspace.toml + launch/cleanup scripts + state (ADR 0010).
+  data/workspaces/<name>/  workspace.toml + steps/ + cleanup script + state (ADRs 0010, 0012).
   notifications/failed.jsonl  Deliveries that exhausted every sink (§11.3).
   packs/<name>/            Command packs: aliases + animations (§15.1). Client-read only.
   .staging/<txid>/         In-flight store transactions (§7.1). Never edit by hand.
@@ -462,7 +463,7 @@ $SWE_HOME/
 **SQLite is an index, never a source of truth.** A test asserts this directly: delete the
 index, reindex, compare query results. If that test is hard to write, the design drifted.
 
-Ship a `.gitignore` in `$SWE_HOME` covering `index.sqlite`, `cache/`, `logs/` and
+Ship a `.gitignore` in `$SHIMMER_HOME` covering `index.sqlite`, `cache/`, `logs/` and
 `.staging/` so the directory is committable as-is. That is the entire machine-to-machine
 transfer story.
 
@@ -475,7 +476,7 @@ because the laptop lost power mid-write.
 - **Single file writes** are write-to-temp in the same directory, `fsync`, then `rename`.
   Never write in place. A reader sees the old file or the new file, never a torn one.
 - **Multi-file mutations go through a store transaction.** `ctx.store.transaction(|tx| …)`
-  stages every write under `$SWE_HOME/.staging/<txid>/`, fsyncs, writes a `COMMITTED`
+  stages every write under `$SHIMMER_HOME/.staging/<txid>/`, fsyncs, writes a `COMMITTED`
   marker, then moves files into place and appends the event. The event id is assigned at
   staging time.
 - **Recovery on daemon start:** a staging directory with a `COMMITTED` marker is rolled
@@ -561,7 +562,7 @@ open dashboard updates because the daemon pushed.
 User launch scripts are a permanent public interface. Whatever we pass on day one, we are
 stuck with. Treat additions as breaking changes.
 
-Scripts live in `$SWE_HOME/data/workspaces/<name>/` (ADR 0010): an ordered list of numbered
+Scripts live in `$SHIMMER_HOME/data/workspaces/<name>/` (ADR 0010): an ordered list of numbered
 launch steps, `steps/<index>-<name>.sh` on Linux/macOS or `steps/<index>-<name>.ps1` on
 Windows (e.g. `steps/01-setup.sh`, `steps/02-editor.sh`) — each its own script with its own
 spawn mode (§10.2) — plus a single `cleanup.sh` / `cleanup.ps1`, unchanged from before ADR
@@ -569,16 +570,43 @@ spawn mode (§10.2) — plus a single `cleanup.sh` / `cleanup.ps1`, unchanged fr
 
 | Variable | Meaning |
 |---|---|
-| `SWE_WORKSPACE_ID` | Workspace identifier. |
-| `SWE_WORKSPACE_DIR` | That workspace's own directory. |
-| `SWE_HOME` | Root data directory. |
-| `SWE_SOCKET` | Daemon socket path. |
-| `SWE_SESSION_ID` | Unique per launch, for correlating events. |
-| `SWE_PLATFORM` | `linux` \| `macos` \| `windows`. |
+| `SHIMMER_WORKSPACE_ID` | Workspace identifier. |
+| `SHIMMER_WORKSPACE_DIR` | That workspace's own directory. |
+| `SHIMMER_HOME` | Root data directory. |
+| `SHIMMER_SOCKET` | Daemon socket path. |
+| `SHIMMER_SESSION_ID` | Unique per launch, for correlating events. |
+| `SHIMMER_PLATFORM` | `linux` \| `macos` \| `windows`. |
 
-`SWE_SOCKET` matters most: a user's Hyprland script can run
-`swe records complete leetcode/two-sum` and participate in the platform rather than being
+`SHIMMER_SOCKET` matters most: a user's Hyprland script can run
+`shimmer records complete leetcode/two-sum` and participate in the platform rather than being
 a dead-end launcher.
+
+`workspace.toml` lists the steps in order and says how to run each one (ADR 0012). The id
+is the folder name; step *N* must be `steps/<NN>-<name>.sh` (or `.ps1`), and any mismatch
+between the list and the files is an error:
+
+```toml
+[workspace]
+label = "Deep Work"
+
+[[step]]
+name = "setup"            # steps/01-setup.sh: waited on; failure or timeout → dirty
+mode = "supervised"
+timeout_s = 60
+
+[[step]]
+name = "editor"           # steps/02-editor.sh: started, outlives the daemon
+mode = "detached"
+
+[cleanup]                 # required exactly when cleanup.sh exists
+timeout_s = 30
+
+[env]                     # extra variables for every script; SHIMMER_* is reserved
+PROJECT_DIR = "/home/me/code/shimmer"
+```
+
+`mode` has no default. Unknown keys are rejected. Steps run one at a time and the first
+failure stops the launch; nothing is retried (§11.2). ADR 0012 has every rule and check.
 
 Scripts run through their interpreter (`sh steps/01-setup.sh`, `powershell -File
 steps/01-setup.ps1`), never via the executable bit — an atomic write (§7.1) does not reliably
@@ -749,10 +777,10 @@ Read these before acting on any task in this repo.
 Dev A owns the crate.
 
 ² `crates/app` had no owner (flagged in ADR 0007); Dev A reviews it. Dev B may still add a
-module-registration line in `run_daemon` (e.g. `Arc::new(swe_records::Records::default())`)
+module-registration line in `run_daemon` (e.g. `Arc::new(shimmer_records::Records::default())`)
 without Dev A review — anything else in `app/` needs Dev A.
 
-Dev C works against `docs/protocol.md` and a **mock daemon** (`swe mockd`, built from
+Dev C works against `docs/protocol.md` and a **mock daemon** (`shimmer mockd`, built from
 `crates/mockd`) serving canned responses from `crates/mockd/fixtures` and replaying a
 scripted event stream. Build it at M1. It is the thing that actually decouples the TUI
 work; without it Dev C is blocked on Dev A daily. Dev A owns the crate and its fixtures;
@@ -768,7 +796,7 @@ CLI-first. The GUI is not in scope for any milestone below.
 
 - **M0 — skeleton.** Workspace compiles. `core` and `proto` types exist. Daemon accepts a
   connection, answers `core.ping` and `core.manifest`. CLI round-trips it. CI runs fmt,
-  clippy, test. *Done when a `swe` command reaches the daemon and back.*
+  clippy, test. *Done when a `shimmer` command reaches the daemon and back.*
 - **M1 — records vertical slice.** Store (files + index). `records` with the LeetCode
   collection TOML. CLI add, list, complete, filter. Event log written. Mock daemon fixture
   for Dev C. *Done when a completed item survives a daemon restart.*
@@ -777,7 +805,7 @@ CLI-first. The GUI is not in scope for any milestone below.
   Failure policy and `ctx.retry_with_backoff`. Subscription stream live over IPC.
   *Done when a fake clock advanced three days produces the right number of firings.*
 - **M3 — workspaces.** Manifests, script ABI, both spawn modes, the state machine
-  including `dirty` and cleanup, `SWE_SOCKET` callback. Tested on a real Hyprland/Arch
+  including `dirty` and cleanup, `SHIMMER_SOCKET` callback. Tested on a real Hyprland/Arch
   setup and on macOS.
 - **M4 — index rebuild + heatmap.** Rebuild-from-files test passing. Heatmap query over
   the event log.
@@ -806,7 +834,7 @@ A pack is a themed set of aliases, plus optional animations and styling — a Bl
 Solo Leveling pack, a general anime pack. Packs are how the theme becomes pluggable.
 
 ```
-$SWE_HOME/packs/<name>/
+$SHIMMER_HOME/packs/<name>/
   pack.toml        Aliases and metadata.
   anim/            Optional animation frames (plain text / ANSI).
 ```
@@ -838,8 +866,8 @@ Rules:
   back to the default pack. For the built-in pack this is also checked in a test.
 - **Animations never gate execution.** The daemon request is sent immediately; the
   animation plays alongside or after. Animations are disabled automatically when stdout
-  is not a TTY, and by `--no-anim` — a workspace script calling `swe` through
-  `SWE_SOCKET` must never sit waiting on a cutscene.
+  is not a TTY, and by `--no-anim` — a workspace script calling `shimmer` through
+  `SHIMMER_SOCKET` must never sit waiting on a cutscene.
 - Clients read `packs/` directly and **read-only**. It is presentation config, like a
   terminal theme; the daemon never loads it.
 
@@ -849,5 +877,5 @@ Rules:
 | `bankai` | `workspaces activate` | Activate a workspace. |
 | _TBD_ | ... | Fill in as commands land. |
 
-`swe --help` shows the active pack's aliases; `swe --help --canonical` shows the real
-names; `swe packs list` shows installed packs.
+`shimmer --help` shows the active pack's aliases; `shimmer --help --canonical` shows the real
+names; `shimmer packs list` shows installed packs.

@@ -1,4 +1,4 @@
-//! `swe-daemon`: the one long-lived process that owns all state (CLAUDE.md §2).
+//! `shimmer-daemon`: the one long-lived process that owns all state (CLAUDE.md §2).
 //!
 //! Core services live here: module registry, event bus, queue, IPC server, indexer.
 //! Modules are async tasks inside this process, reached only through `Ctx`.
@@ -22,8 +22,8 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
-use swe_core::{Clock, Emitter, Error, Module, ModuleId, NamespacedStore, Result};
-use swe_store::Store;
+use shimmer_core::{Clock, Emitter, Error, Module, ModuleId, NamespacedStore, Result};
+use shimmer_store::Store;
 use tokio::net::UnixListener;
 use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
@@ -39,7 +39,7 @@ use crate::scheduler::Scheduler;
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 pub struct DaemonConfig {
-    /// `$SWE_HOME`.
+    /// `$SHIMMER_HOME`.
     pub home: PathBuf,
     pub socket: PathBuf,
     pub clock: Clock,
@@ -51,8 +51,8 @@ impl DaemonConfig {
     /// Paths from the environment, per `docs/protocol.md`.
     pub fn from_env() -> Self {
         Self {
-            home: swe_proto::paths::swe_home(),
-            socket: swe_proto::paths::socket_path(),
+            home: shimmer_proto::paths::shimmer_home(),
+            socket: shimmer_proto::paths::socket_path(),
             clock: Clock::system(),
             scheduler_tick: Duration::from_secs(1),
         }

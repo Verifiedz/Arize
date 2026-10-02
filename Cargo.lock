@@ -698,6 +698,122 @@ dependencies = [
 ]
 
 [[package]]
+name = "shimmer"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "shimmer-cli",
+ "shimmer-core",
+ "shimmer-daemon",
+ "shimmer-mockd",
+ "shimmer-proto",
+ "shimmer-records",
+ "shimmer-store",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "shimmer-cli"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "shimmer-core",
+ "shimmer-proto",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "shimmer-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "chrono-tz",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "ulid",
+]
+
+[[package]]
+name = "shimmer-daemon"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "cron",
+ "serde",
+ "serde_json",
+ "shimmer-core",
+ "shimmer-proto",
+ "shimmer-store",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "ulid",
+]
+
+[[package]]
+name = "shimmer-mockd"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "shimmer-core",
+ "shimmer-proto",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "ulid",
+]
+
+[[package]]
+name = "shimmer-proto"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "shimmer-core",
+]
+
+[[package]]
+name = "shimmer-records"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "shimmer-core",
+ "tokio",
+ "toml",
+]
+
+[[package]]
+name = "shimmer-store"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "shimmer-core",
+ "tempfile",
+ "tracing",
+ "ulid",
+]
+
+[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -751,122 +867,6 @@ dependencies = [
  "js-sys",
  "rsqlite-vfs",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "swe"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "swe-cli",
- "swe-core",
- "swe-daemon",
- "swe-mockd",
- "swe-proto",
- "swe-records",
- "swe-store",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "swe-cli"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "swe-core",
- "swe-proto",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "swe-core"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "chrono-tz",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-util",
- "ulid",
-]
-
-[[package]]
-name = "swe-daemon"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "cron",
- "serde",
- "serde_json",
- "swe-core",
- "swe-proto",
- "swe-store",
- "tempfile",
- "tokio",
- "tokio-util",
- "toml",
- "tracing",
- "ulid",
-]
-
-[[package]]
-name = "swe-mockd"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "swe-core",
- "swe-proto",
- "tempfile",
- "tokio",
- "tokio-util",
- "tracing",
- "ulid",
-]
-
-[[package]]
-name = "swe-proto"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "swe-core",
-]
-
-[[package]]
-name = "swe-records"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "serde",
- "serde_json",
- "swe-core",
- "tokio",
- "toml",
-]
-
-[[package]]
-name = "swe-store"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "rusqlite",
- "serde",
- "serde_json",
- "swe-core",
- "tempfile",
- "tracing",
- "ulid",
 ]
 
 [[package]]

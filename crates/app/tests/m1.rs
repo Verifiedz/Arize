@@ -7,7 +7,7 @@ use common::{stderr, stdout, wait_gone, Home};
 use serde_json::{json, Value};
 
 fn call(home: &Home, op: &str, params: Value) -> Value {
-    let o = home.swe(&["call", op, &params.to_string(), "--json"]);
+    let o = home.shimmer(&["call", op, &params.to_string(), "--json"]);
     assert!(o.status.success(), "{op} failed: {}", stderr(&o));
     serde_json::from_slice(&o.stdout).unwrap()
 }
@@ -29,14 +29,14 @@ fn a_completed_item_survives_a_daemon_restart() {
     assert_eq!(done["status"], "done");
 
     // Restart: stop the daemon, and let the next command start a fresh one.
-    assert!(home.swe(&["shutdown"]).status.success());
+    assert!(home.shimmer(&["shutdown"]).status.success());
     wait_gone(&home.socket());
 
     let after = call(&home, "records.list", json!({"collection": "leetcode", "filter": {"status": "done"}}));
     assert_eq!(after["total"], 1);
     assert_eq!(after["items"][0], done);
 
-    // Files are the truth: the record is a readable file in $SWE_HOME.
+    // Files are the truth: the record is a readable file in $SHIMMER_HOME.
     let file = home.dir.path().join("home/data/records/items/leetcode/two-sum.toml");
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(text.contains("status = \"done\""), "{text}");
@@ -46,8 +46,8 @@ fn a_completed_item_survives_a_daemon_restart() {
 fn the_records_commands_track_a_problem_across_a_restart() {
     let home = Home::new();
     let ok = |args: &[&str]| {
-        let o = home.swe(args);
-        assert!(o.status.success(), "swe {args:?} failed: {}", stderr(&o));
+        let o = home.shimmer(args);
+        assert!(o.status.success(), "shimmer {args:?} failed: {}", stderr(&o));
         stdout(&o)
     };
 
@@ -67,7 +67,7 @@ fn the_records_commands_track_a_problem_across_a_restart() {
     assert!(done.starts_with("✓ leetcode/two-sum done (last_solved "), "{done}");
 
     // A bad value is refused with the daemon's message and changes nothing.
-    let o = home.swe(&["records", "add", "leetcode/x", "--title", "X", "--difficulty", "trivial"]);
+    let o = home.shimmer(&["records", "add", "leetcode/x", "--title", "X", "--difficulty", "trivial"]);
     assert_eq!(o.status.code(), Some(1));
     assert!(stderr(&o).contains("invalid_params: field 'difficulty' must be one of easy, medium, hard"));
 
@@ -75,7 +75,7 @@ fn the_records_commands_track_a_problem_across_a_restart() {
     wait_gone(&home.socket());
 
     // After the restart, filtering finds exactly the completed one.
-    let o = home.swe(&["records", "list", "leetcode", "--status", "done", "--json"]);
+    let o = home.shimmer(&["records", "list", "leetcode", "--status", "done", "--json"]);
     assert!(o.status.success(), "{}", stderr(&o));
     let data: Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(data["total"], 1);
@@ -84,4 +84,35 @@ fn the_records_commands_track_a_problem_across_a_restart() {
 
     let todo = ok(&["records", "list", "leetcode", "--status", "todo"]);
     assert!(todo.contains("lru-cache") && !todo.contains("two-sum"), "{todo}");
+}
+
+/// Issue #29: one malformed collection file used to break every `shimmer records` command,
+/// because the CLI fetches `records.collections` first and that op failed as a whole.
+#[test]
+fn a_broken_collection_file_breaks_only_itself() {
+    let home = Home::new();
+    let ok = |args: &[&str]| {
+        let o = home.shimmer(args);
+        assert!(o.status.success(), "shimmer {args:?} failed: {}", stderr(&o));
+        stdout(&o)
+    };
+    ok(&["records", "add", "leetcode", "two-sum", "--title", "Two Sum", "--difficulty", "easy"]);
+    let broken = home.dir.path().join("home/data/records/collections/broken.toml");
+    std::fs::write(&broken, "not [valid toml\n").unwrap();
+    ok(&["shutdown"]);
+    wait_gone(&home.socket());
+
+    // The daemon restarts (init must survive the bad file) and leetcode still works.
+    assert!(ok(&["records", "list", "leetcode"]).contains("two-sum"));
+    ok(&["records", "complete", "leetcode/two-sum"]);
+    assert!(ok(&["records", "get", "leetcode/two-sum"]).contains("(done)"));
+
+    let collections = ok(&["records", "collections"]);
+    assert!(collections.contains("leetcode  LeetCode"), "{collections}");
+    assert!(collections.contains("skipped: collection file 'broken.toml': "), "{collections}");
+
+    // Using the broken collection still fails, naming the file.
+    let o = home.shimmer(&["records", "list", "broken"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(stderr(&o).contains("invalid_params: collection file 'broken.toml'"), "{}", stderr(&o));
 }

@@ -9,12 +9,12 @@ use std::time::Instant;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use swe_core::{
+use shimmer_core::{
     Clock, Ctx, Emitter, Error, Execution, HttpGateway, LaneConfig, LaneId, ModuleConfig, ModuleId, NamespacedStore,
     Origin, Priority, ProgressFn, QueueHandle, Result,
 };
-use swe_core::{EnqueueRequest, TaskId, TaskSubmitter};
-use swe_proto::{ops, ManifestData, ModuleInfo, PingData, QueueControl, QueuePriority, QueuedHandle};
+use shimmer_core::{EnqueueRequest, TaskId, TaskSubmitter};
+use shimmer_proto::{ops, ManifestData, ModuleInfo, PingData, QueueControl, QueuePriority, QueuedHandle};
 use tokio_util::sync::CancellationToken;
 
 use crate::backend::{Backend, DisabledHttp};
@@ -173,7 +173,7 @@ impl Core {
 
     pub fn manifest(&self) -> ManifestData {
         ManifestData {
-            protocol: swe_proto::PROTOCOL_VERSION,
+            protocol: shimmer_proto::PROTOCOL_VERSION,
             lanes: self.lanes.clone(),
             modules: self
                 .registry

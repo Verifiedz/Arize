@@ -4,7 +4,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use swe_core::{Event, Result};
+use shimmer_core::{Event, Result};
 
 use crate::atomic::fsync_dir;
 
@@ -20,7 +20,8 @@ fn day_file(home: &Path, event: &Event) -> PathBuf {
 
 pub fn append(home: &Path, event: &Event) -> Result<()> {
     let path = day_file(home, event);
-    let mut line = serde_json::to_vec(event).map_err(|e| swe_core::Error::internal(format!("encode event: {e}")))?;
+    let mut line =
+        serde_json::to_vec(event).map_err(|e| shimmer_core::Error::internal(format!("encode event: {e}")))?;
     line.push(b'\n');
 
     let existed = path.exists();

@@ -92,7 +92,7 @@ def check(packages, root):
         if roles.get(p["name"]) != "app" and any("bin" in t.get("kind", []) for t in p.get("targets", [])):
             errors.append(
                 f"{p['name']}: declares a binary target, but `app` is the only [[bin]] (§3). "
-                "Expose it as a subcommand of `swe` instead."
+                "Expose it as a subcommand of `shimmer` instead."
             )
     for p in packages:
         src = roles.get(p["name"])
@@ -131,17 +131,17 @@ def _pkg(root, path, name, deps=(), kind=None, bin=False):
 def self_test():
     root = "/ws"
     base = [
-        _pkg(root, "crates/core", "swe-core"),
-        _pkg(root, "crates/proto", "swe-proto", ["swe-core"]),
-        _pkg(root, "crates/store", "swe-store", ["swe-core"]),
-        _pkg(root, "crates/modules/records", "swe-records", ["swe-core"]),
-        _pkg(root, "crates/modules/notify", "swe-notify", ["swe-core"]),
-        _pkg(root, "crates/daemon", "swe-daemon", ["swe-core", "swe-proto", "swe-store", "swe-records"]),
+        _pkg(root, "crates/core", "shimmer-core"),
+        _pkg(root, "crates/proto", "shimmer-proto", ["shimmer-core"]),
+        _pkg(root, "crates/store", "shimmer-store", ["shimmer-core"]),
+        _pkg(root, "crates/modules/records", "shimmer-records", ["shimmer-core"]),
+        _pkg(root, "crates/modules/notify", "shimmer-notify", ["shimmer-core"]),
+        _pkg(root, "crates/daemon", "shimmer-daemon", ["shimmer-core", "shimmer-proto", "shimmer-store", "shimmer-records"]),
         # Third-party crates are invisible to the check, whatever they are called.
-        _pkg(root, "crates/cli", "swe-cli", ["swe-core", "swe-proto", "serde"]),
-        _pkg(root, "crates/tui", "swe-tui", ["swe-core", "swe-proto"]),
-        _pkg(root, "crates/mockd", "swe-mockd", ["swe-core", "swe-proto"]),
-        _pkg(root, "crates/app", "swe", ["swe-daemon", "swe-cli", "swe-tui", "swe-mockd", "swe-store"], bin=True),
+        _pkg(root, "crates/cli", "shimmer-cli", ["shimmer-core", "shimmer-proto", "serde"]),
+        _pkg(root, "crates/tui", "shimmer-tui", ["shimmer-core", "shimmer-proto"]),
+        _pkg(root, "crates/mockd", "shimmer-mockd", ["shimmer-core", "shimmer-proto"]),
+        _pkg(root, "crates/app", "shimmer", ["shimmer-daemon", "shimmer-cli", "shimmer-tui", "shimmer-mockd", "shimmer-store"], bin=True),
     ]
     assert check(base, root) == [], check(base, root)
 
@@ -153,36 +153,36 @@ def self_test():
         return check(pkgs, root)
 
     cases = [
-        ("core -> proto", with_extra("swe-core", ["swe-proto"]), "swe-core [core] -> swe-proto [proto]"),
-        ("proto -> store", with_extra("swe-proto", ["swe-store"]), "swe-proto [proto] -> swe-store [store]"),
-        ("module -> module", with_extra("swe-records", ["swe-notify"]), "swe-records [module] -> swe-notify [module]"),
-        ("module -> store", with_extra("swe-records", ["swe-store"]), "swe-records [module] -> swe-store [store]"),
-        ("module -> daemon", with_extra("swe-notify", ["swe-daemon"]), "swe-notify [module] -> swe-daemon [daemon]"),
-        ("cli -> store", with_extra("swe-cli", ["swe-store"]), "swe-cli [cli] -> swe-store [store]"),
-        ("cli -> module", with_extra("swe-cli", ["swe-records"]), "swe-cli [cli] -> swe-records [module]"),
-        ("tui -> daemon", with_extra("swe-tui", ["swe-daemon"]), "swe-tui [tui] -> swe-daemon [daemon]"),
-        ("store -> daemon", with_extra("swe-store", ["swe-daemon"]), "swe-store [store] -> swe-daemon [daemon]"),
-        ("daemon -> cli", with_extra("swe-daemon", ["swe-cli"]), "swe-daemon [daemon] -> swe-cli [cli]"),
-        ("mockd -> store", with_extra("swe-mockd", ["swe-store"]), "swe-mockd [mockd] -> swe-store [store]"),
-        ("mockd -> daemon", with_extra("swe-mockd", ["swe-daemon"]), "swe-mockd [mockd] -> swe-daemon [daemon]"),
-        ("mockd -> module", with_extra("swe-mockd", ["swe-records"]), "swe-mockd [mockd] -> swe-records [module]"),
-        ("daemon -> mockd", with_extra("swe-daemon", ["swe-mockd"]), "swe-daemon [daemon] -> swe-mockd [mockd]"),
-        ("dev-dependency counts", with_extra("swe-records", ["swe-notify"], "dev"), "(dev)"),
+        ("core -> proto", with_extra("shimmer-core", ["shimmer-proto"]), "shimmer-core [core] -> shimmer-proto [proto]"),
+        ("proto -> store", with_extra("shimmer-proto", ["shimmer-store"]), "shimmer-proto [proto] -> shimmer-store [store]"),
+        ("module -> module", with_extra("shimmer-records", ["shimmer-notify"]), "shimmer-records [module] -> shimmer-notify [module]"),
+        ("module -> store", with_extra("shimmer-records", ["shimmer-store"]), "shimmer-records [module] -> shimmer-store [store]"),
+        ("module -> daemon", with_extra("shimmer-notify", ["shimmer-daemon"]), "shimmer-notify [module] -> shimmer-daemon [daemon]"),
+        ("cli -> store", with_extra("shimmer-cli", ["shimmer-store"]), "shimmer-cli [cli] -> shimmer-store [store]"),
+        ("cli -> module", with_extra("shimmer-cli", ["shimmer-records"]), "shimmer-cli [cli] -> shimmer-records [module]"),
+        ("tui -> daemon", with_extra("shimmer-tui", ["shimmer-daemon"]), "shimmer-tui [tui] -> shimmer-daemon [daemon]"),
+        ("store -> daemon", with_extra("shimmer-store", ["shimmer-daemon"]), "shimmer-store [store] -> shimmer-daemon [daemon]"),
+        ("daemon -> cli", with_extra("shimmer-daemon", ["shimmer-cli"]), "shimmer-daemon [daemon] -> shimmer-cli [cli]"),
+        ("mockd -> store", with_extra("shimmer-mockd", ["shimmer-store"]), "shimmer-mockd [mockd] -> shimmer-store [store]"),
+        ("mockd -> daemon", with_extra("shimmer-mockd", ["shimmer-daemon"]), "shimmer-mockd [mockd] -> shimmer-daemon [daemon]"),
+        ("mockd -> module", with_extra("shimmer-mockd", ["shimmer-records"]), "shimmer-mockd [mockd] -> shimmer-records [module]"),
+        ("daemon -> mockd", with_extra("shimmer-daemon", ["shimmer-mockd"]), "shimmer-daemon [daemon] -> shimmer-mockd [mockd]"),
+        ("dev-dependency counts", with_extra("shimmer-records", ["shimmer-notify"], "dev"), "(dev)"),
     ]
     for name, errors, needle in cases:
         assert len(errors) == 1 and needle in errors[0], f"{name}: {errors}"
 
-    unknown = check(base + [_pkg(root, "crates/newthing", "swe-newthing", ["swe-core"])], root)
+    unknown = check(base + [_pkg(root, "crates/newthing", "shimmer-newthing", ["shimmer-core"])], root)
     assert len(unknown) == 1 and "no role in CLAUDE.md" in unknown[0], unknown
 
     # `app` is the only [[bin]]: a binary anywhere else fails, `app` may have several.
-    for path, name in [("crates/mockd", "swe-mockd"), ("crates/tui", "swe-tui"), ("crates/modules/records", "swe-records")]:
+    for path, name in [("crates/mockd", "shimmer-mockd"), ("crates/tui", "shimmer-tui"), ("crates/modules/records", "shimmer-records")]:
         pkgs = [dict(p, targets=[{"kind": ["lib"]}, {"kind": ["bin"]}]) if p["name"] == name else p for p in base]
         errors = check(pkgs, root)
         assert len(errors) == 1 and f"{name}: declares a binary target" in errors[0], (name, errors)
-    two_bins = [dict(p, targets=[{"kind": ["bin"]}, {"kind": ["bin"]}]) if p["name"] == "swe" else p for p in base]
+    two_bins = [dict(p, targets=[{"kind": ["bin"]}, {"kind": ["bin"]}]) if p["name"] == "shimmer" else p for p in base]
     assert check(two_bins, root) == []
-    assert check([dict(p, targets=[{"kind": ["example"]}, {"kind": ["test"]}]) if p["name"] == "swe-mockd" else p for p in base], root) == []
+    assert check([dict(p, targets=[{"kind": ["example"]}, {"kind": ["test"]}]) if p["name"] == "shimmer-mockd" else p for p in base], root) == []
     stray = check(base + [_pkg(root, "tools/thing", "thing")], root)
     assert len(stray) == 1 and "no role" in stray[0], stray
     print("check-deps self-test: ok")

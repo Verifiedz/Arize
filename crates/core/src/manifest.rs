@@ -8,7 +8,7 @@ use crate::ids::{LaneId, ModuleId};
 pub struct Manifest {
     pub id: ModuleId,
     pub version: String,
-    /// Directory name under `$SWE_HOME/data/`. The module sees nothing outside it.
+    /// Directory name under `$SHIMMER_HOME/data/`. The module sees nothing outside it.
     pub namespace: String,
     /// Topics this module emits. Each must start with `<id>.`.
     #[serde(default)]

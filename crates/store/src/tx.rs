@@ -13,7 +13,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use swe_core::{Error, Event, Result, TxPlan, Write};
+use shimmer_core::{Error, Event, Result, TxPlan, Write};
 
 use crate::atomic::{fsync_dir, write_atomic};
 use crate::log;
@@ -151,7 +151,7 @@ pub fn recover(home: &Path) -> Result<Recovery> {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use swe_core::{Clock, StoreBackend};
+    use shimmer_core::{Clock, StoreBackend};
     use tempfile::TempDir;
     use ulid::Ulid;
 

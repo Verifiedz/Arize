@@ -1,4 +1,4 @@
-//! Shared harness for the end-to-end tests: the real `swe` binary in a throwaway `$SWE_HOME`.
+//! Shared harness for the end-to-end tests: the real `shimmer` binary in a throwaway `$SHIMMER_HOME`.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -20,11 +20,11 @@ impl Home {
         self.dir.path().join("d.sock")
     }
 
-    pub fn swe(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_swe"))
+    pub fn shimmer(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_shimmer"))
             .args(args)
-            .env("SWE_HOME", self.dir.path().join("home"))
-            .env("SWE_SOCKET", self.socket())
+            .env("SHIMMER_HOME", self.dir.path().join("home"))
+            .env("SHIMMER_SOCKET", self.socket())
             .output()
             .unwrap()
     }
@@ -34,7 +34,7 @@ impl Home {
 impl Drop for Home {
     fn drop(&mut self) {
         if self.socket().exists() {
-            let _ = self.swe(&["shutdown"]);
+            let _ = self.shimmer(&["shutdown"]);
         }
     }
 }

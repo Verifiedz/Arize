@@ -1,7 +1,7 @@
-//! `swe-store`: files are the truth, SQLite is a disposable index (CLAUDE.md §1.4, §7).
+//! `shimmer-store`: files are the truth, SQLite is a disposable index (CLAUDE.md §1.4, §7).
 //!
-//! * [`Store`] owns `$SWE_HOME`: atomic writes, staged transactions with crash recovery
-//!   (§7.1) and the append-only JSONL event log. It implements `swe_core::StoreBackend`.
+//! * [`Store`] owns `$SHIMMER_HOME`: atomic writes, staged transactions with crash recovery
+//!   (§7.1) and the append-only JSONL event log. It implements `shimmer_core::StoreBackend`.
 //! * [`Index`] is a derived projection of the event log. Delete it and it rebuilds.
 //!
 //! Only the daemon opens a `Store` for writing: one writer, always.
@@ -15,16 +15,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use swe_core::ids::is_valid_name;
-use swe_core::store::validate_path;
-use swe_core::{Error, Event, Result, StoreBackend, TxPlan};
+use shimmer_core::ids::is_valid_name;
+use shimmer_core::store::validate_path;
+use shimmer_core::{Error, Event, Result, StoreBackend, TxPlan};
 
 pub use atomic::write_atomic;
 pub use index::{Index, IndexStats};
 pub use log::EventScan;
 pub use tx::Recovery;
 
-/// Shipped so `$SWE_HOME` is committable as-is: the whole machine-to-machine story.
+/// Shipped so `$SHIMMER_HOME` is committable as-is: the whole machine-to-machine story.
 const GITIGNORE: &str = "\
 # Derived or machine-local. Everything else in this directory is the source of truth.
 index.sqlite*
@@ -122,7 +122,7 @@ impl StoreBackend for Store {
     fn commit(&self, namespace: &str, plan: TxPlan) -> Result<()> {
         let dir = self.namespace_dir(namespace)?;
         for w in &plan.writes {
-            let (swe_core::Write::Put { path, .. } | swe_core::Write::Delete { path }) = w;
+            let (shimmer_core::Write::Put { path, .. } | shimmer_core::Write::Delete { path }) = w;
             validate_path(path)?;
         }
         let _g = self.lock();
