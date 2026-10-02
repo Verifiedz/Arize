@@ -392,10 +392,15 @@ impl QueueInner {
             ls.reorder(id, before)?;
             ls.version
         };
-        self.emit(
-            "queue.task.reordered",
-            json!({"task_id": id, "lane": lane, "before": before, "queue_version": new_version}),
-        );
+        // `LaneState::reorder` only bumps `version` when the order actually changed, so this
+        // also guards against emitting a "reordered" event for a no-op move (e.g. placing a
+        // task before the task already directly after it).
+        if new_version != queue_version {
+            self.emit(
+                "queue.task.reordered",
+                json!({"task_id": id, "lane": lane, "before": before, "queue_version": new_version}),
+            );
+        }
         Ok(json!({"queue_version": new_version}))
     }
 

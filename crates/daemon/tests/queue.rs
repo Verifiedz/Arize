@@ -347,6 +347,38 @@ async fn the_running_task_cannot_be_reordered_over_the_real_socket() {
 }
 
 #[tokio::test]
+async fn a_noop_reorder_changes_nothing_and_emits_no_event() {
+    let env = Env::new();
+    let d = env.start().await;
+    let mut c = Client::connect(&env.sock).await;
+    c.subscribe(&["queue.task.*"]).await;
+    hold_the_lane(&mut c).await;
+    let (a, b) = (quick(&mut c).await, quick(&mut c).await);
+    let (before, version) = waiting(&mut c).await;
+    assert_eq!(before, [a.clone(), b.clone()]);
+
+    // `a` is already directly before `b`, so this asks for the order it's already in.
+    let moved = c
+        .call("queue.reorder", json!({"lane": "slow", "task_id": a, "before": b, "queue_version": version}))
+        .await
+        .unwrap();
+    assert_eq!(moved["queue_version"].as_u64().unwrap(), version, "nothing moved, so the version is unchanged");
+
+    // Enqueue a third task and look at every event up to its `enqueued` — the no-op above
+    // must not have snuck a `queue.task.reordered` in among them.
+    let c_id = quick(&mut c).await;
+    let seen = until(&mut c, "queue.task.enqueued", &c_id).await;
+    assert!(
+        seen.iter().all(|e| e.topic != "queue.task.reordered"),
+        "a no-op reorder must not emit queue.task.reordered"
+    );
+
+    let (after, _) = waiting(&mut c).await;
+    assert_eq!(after, [a, b, c_id], "order unchanged by the no-op");
+    stop(d).await;
+}
+
+#[tokio::test]
 async fn inline_ops_ignore_queue_control() {
     let env = Env::new();
     let d = env.start().await;
