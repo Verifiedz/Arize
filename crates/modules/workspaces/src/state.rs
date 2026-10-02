@@ -1,177 +1,258 @@
-//! The workspace state machine (CLAUDE.md §10.3), exactly as its diagram: plain data and
-//! plain transition functions, no `Ctx`, no I/O (§12 rule 10). Each transition takes the
-//! current state and returns the next one, or an error if the transition does not apply —
-//! never a panic, since a module built on this later must be able to answer a caller's
-//! mistake with `internal` rather than crashing.
+//! The workspace state machine (CLAUDE.md §10.3): plain data and plain transition functions,
+//! no `Ctx`, no I/O (§12 rule 10). Each transition takes the current state and returns the
+//! next one, or an error if it does not apply. Never a panic: the module answers the error.
+//!
+//! Who can cause a wrong transition decides the error code (issue #30):
+//! - a user request that doesn't fit the state (e.g. `reset` on a workspace that isn't dirty)
+//!   is `invalid_params` with a message saying why; activating one that is already launching
+//!   is `conflict`;
+//! - a transition only the module itself drives (`launch_succeeded`, `step_failed`) arriving
+//!   in the wrong state is a bug in the module: `internal`.
 
+use std::fmt;
+
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::json;
-use swe_core::{Error, ErrorCode, Result};
+use shimmer_core::{Error, ErrorCode, Result};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorkspaceState {
     Ready,
     Launching,
     Active,
-    Dirty { reason: String, failed_step: String, log_path: String },
+    /// A launch step failed or timed out (§10.3). Blocks `activate` until cleanup, reset or
+    /// force relaunch.
+    Dirty {
+        /// Why the step failed, e.g. "exit code 1" or "timed out after 60s".
+        reason: String,
+        failed_step: FailedStep,
+        failed_at: DateTime<Utc>,
+        /// The step's log, relative to `$SHIMMER_HOME` (`StepOutcome::log_path`, ADR 0010).
+        log: String,
+    },
 }
 
-/// `ready -> launching` (§10.3's diagram).
-///
-/// Judgment call not pinned by CLAUDE.md: activating an already-`active` or still-
-/// `launching` workspace is treated as a restart (back to `launching`) rather than an
-/// error, since `active` carries no liveness guarantee anyway (§10.3: "active means launch
-/// succeeded, nothing more") — there is no state in which re-running the launch script is
-/// worse than a no-op. Only `dirty` refuses, because a half-configured workspace must never
-/// be launched into (§10.3).
-pub fn activate(state: &WorkspaceState) -> Result<WorkspaceState> {
-    match state {
-        WorkspaceState::Ready | WorkspaceState::Active | WorkspaceState::Launching => Ok(WorkspaceState::Launching),
-        WorkspaceState::Dirty { failed_step, log_path, .. } => {
-            Err(Error::new(ErrorCode::WorkspaceDirty, "workspace is dirty; activate refused")
-                .with_detail(json!({"failed_step": failed_step, "log_path": log_path})))
-        }
+/// Which launch step failed. Shown as `"<index>/<count> <name>"`, e.g. `"1/3 setup"`, the
+/// format of `failed_step` in docs/protocol.md's `workspace_dirty` detail.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FailedStep {
+    /// 1-based, as in `Step::Launch` (ADR 0010 §2a).
+    pub index: u32,
+    pub count: u32,
+    pub name: String,
+}
+
+impl fmt::Display for FailedStep {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{} {}", self.index, self.count, self.name)
     }
 }
 
-/// `launching -> active`: "all steps ok" in §10.3's diagram.
+/// `ready -> launching`, and `active -> launching`: since `active` makes no promise that the
+/// apps are still open (§10.3), activating again simply launches again.
+///
+/// Refused while a launch is already running (`conflict`), and on a dirty workspace
+/// (`workspace_dirty`), because a half-configured workspace must never be launched into
+/// (§10.3). `workspace` and `has_cleanup_script` are only used for that error's `detail`,
+/// which matches docs/protocol.md so a client can offer cleanup, force relaunch or the log.
+pub fn activate(state: &WorkspaceState, workspace: &str, has_cleanup_script: bool) -> Result<WorkspaceState> {
+    match state {
+        WorkspaceState::Ready | WorkspaceState::Active => Ok(WorkspaceState::Launching),
+        WorkspaceState::Launching => Err(Error::conflict(format!("workspace '{workspace}' is already launching"))),
+        WorkspaceState::Dirty { reason, failed_step, failed_at, log } => Err(Error::new(
+            ErrorCode::WorkspaceDirty,
+            format!("workspace '{workspace}' failed at step {failed_step} ({reason}) and was not cleaned up"),
+        )
+        .with_detail(json!({
+            "workspace": workspace,
+            "failed_step": failed_step.to_string(),
+            "failed_at": failed_at.to_rfc3339_opts(SecondsFormat::Secs, true),
+            "log": log,
+            "has_cleanup_script": has_cleanup_script,
+        }))),
+    }
+}
+
+/// `launching -> active`: every step succeeded (§10.3).
 pub fn launch_succeeded(state: &WorkspaceState) -> Result<WorkspaceState> {
     match state {
         WorkspaceState::Launching => Ok(WorkspaceState::Active),
-        _ => Err(Error::internal("launch_succeeded called outside launching")),
+        other => Err(Error::internal(format!("launch_succeeded called in state {other:?}"))),
     }
 }
 
-/// `launching -> dirty`: "step fails" in §10.3's diagram.
+/// `launching -> dirty`: a step failed or timed out (§10.3).
 pub fn step_failed(
     state: &WorkspaceState,
     reason: impl Into<String>,
-    failed_step: impl Into<String>,
-    log_path: impl Into<String>,
+    failed_step: FailedStep,
+    failed_at: DateTime<Utc>,
+    log: impl Into<String>,
 ) -> Result<WorkspaceState> {
     match state {
-        WorkspaceState::Launching => Ok(WorkspaceState::Dirty {
-            reason: reason.into(),
-            failed_step: failed_step.into(),
-            log_path: log_path.into(),
-        }),
-        _ => Err(Error::internal("step_failed called outside launching")),
+        WorkspaceState::Launching => {
+            Ok(WorkspaceState::Dirty { reason: reason.into(), failed_step, failed_at, log: log.into() })
+        }
+        other => Err(Error::internal(format!("step_failed called in state {other:?}"))),
     }
 }
 
-/// `dirty -> ready`: the cleanup script succeeded (§10.3).
+/// Check before running `cleanup.sh`: only a dirty workspace has anything to clean up.
+pub fn start_cleanup(state: &WorkspaceState) -> Result<()> {
+    match state {
+        WorkspaceState::Dirty { .. } => Ok(()),
+        _ => Err(not_dirty("clean up")),
+    }
+}
+
+/// `dirty -> ready`: the cleanup script succeeded (§10.3). Refused if the workspace stopped
+/// being dirty meanwhile (e.g. a `reset` while cleanup was running).
 pub fn cleanup_succeeded(state: &WorkspaceState) -> Result<WorkspaceState> {
     match state {
         WorkspaceState::Dirty { .. } => Ok(WorkspaceState::Ready),
-        _ => Err(Error::internal("cleanup_succeeded called outside dirty")),
+        _ => Err(not_dirty("finish cleaning up")),
     }
 }
 
-/// `dirty -> active`, logged as forced: distinct from [`activate`] on purpose (ADR 0010) so
-/// the audit trail (`workspaces.session.forced`) has something to hang off later.
+/// `dirty -> launching`: the explicit, loud override (§10.3). It still runs every step and can
+/// fail again, so it goes through `launching` like any launch; the module records it as
+/// forced (`workspaces.session.forced`).
 pub fn force_relaunch(state: &WorkspaceState) -> Result<WorkspaceState> {
     match state {
-        WorkspaceState::Dirty { .. } => Ok(WorkspaceState::Active),
-        _ => Err(Error::internal("force_relaunch called outside dirty")),
+        WorkspaceState::Dirty { .. } => Ok(WorkspaceState::Launching),
+        _ => Err(not_dirty("force a relaunch; use activate")),
     }
 }
 
-/// `dirty -> ready` without running a cleanup script — the last resort when there is none
-/// (§10.3: "clears only via explicit force relaunch or `workspaces.reset`").
+/// `dirty -> ready` without running a cleanup script: the last resort when there is none
+/// (§10.3).
 pub fn reset(state: &WorkspaceState) -> Result<WorkspaceState> {
     match state {
         WorkspaceState::Dirty { .. } => Ok(WorkspaceState::Ready),
-        _ => Err(Error::internal("reset called outside dirty")),
+        _ => Err(not_dirty("reset")),
     }
+}
+
+fn not_dirty(action: &str) -> Error {
+    Error::invalid_params(format!("the workspace is not dirty, so there is nothing to {action}"))
 }
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeZone;
+
     use super::*;
+
+    fn at() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 16, 9, 12, 44).unwrap()
+    }
+
+    fn setup_step() -> FailedStep {
+        FailedStep { index: 1, count: 3, name: "setup".into() }
+    }
 
     fn dirty() -> WorkspaceState {
         WorkspaceState::Dirty {
             reason: "exit code 1".into(),
-            failed_step: "launch.sh".into(),
-            log_path: "logs/deep-work.log".into(),
+            failed_step: setup_step(),
+            failed_at: at(),
+            log: "logs/deep-work-01JD2T.log".into(),
+        }
+    }
+
+    const NOT_DIRTY: [WorkspaceState; 3] = [WorkspaceState::Ready, WorkspaceState::Launching, WorkspaceState::Active];
+
+    #[test]
+    fn failed_step_reads_index_count_name() {
+        assert_eq!(setup_step().to_string(), "1/3 setup");
+    }
+
+    #[test]
+    fn activate_from_ready_or_active_launches() {
+        for s in [WorkspaceState::Ready, WorkspaceState::Active] {
+            assert_eq!(activate(&s, "deep-work", false).unwrap(), WorkspaceState::Launching);
         }
     }
 
     #[test]
-    fn activate_from_ready_goes_to_launching() {
-        assert_eq!(activate(&WorkspaceState::Ready).unwrap(), WorkspaceState::Launching);
+    fn activate_while_launching_is_a_conflict() {
+        let e = activate(&WorkspaceState::Launching, "deep-work", false).unwrap_err();
+        assert_eq!(e.code, ErrorCode::Conflict);
+        assert!(e.message.contains("already launching"), "{}", e.message);
     }
 
     #[test]
-    fn activate_from_active_or_launching_restarts_the_launch() {
-        assert_eq!(activate(&WorkspaceState::Active).unwrap(), WorkspaceState::Launching);
-        assert_eq!(activate(&WorkspaceState::Launching).unwrap(), WorkspaceState::Launching);
-    }
-
-    #[test]
-    fn activate_from_dirty_is_refused_with_the_failed_step_and_log_path() {
-        let e = activate(&dirty()).unwrap_err();
+    fn activate_on_dirty_is_refused_with_the_protocol_detail() {
+        let e = activate(&dirty(), "deep-work", true).unwrap_err();
         assert_eq!(e.code, ErrorCode::WorkspaceDirty);
-        assert_eq!(e.detail.unwrap(), json!({"failed_step": "launch.sh", "log_path": "logs/deep-work.log"}));
+        assert!(e.message.contains("step 1/3 setup (exit code 1)"), "{}", e.message);
+        // docs/protocol.md, "workspace_dirty detail".
+        assert_eq!(
+            e.detail.unwrap(),
+            json!({"workspace": "deep-work", "failed_step": "1/3 setup", "failed_at": "2026-09-16T09:12:44Z",
+                   "log": "logs/deep-work-01JD2T.log", "has_cleanup_script": true})
+        );
     }
 
     #[test]
-    fn launch_succeeded_from_launching_goes_active() {
+    fn launch_succeeded_goes_active_and_is_internal_anywhere_else() {
         assert_eq!(launch_succeeded(&WorkspaceState::Launching).unwrap(), WorkspaceState::Active);
-    }
-
-    #[test]
-    fn launch_succeeded_outside_launching_is_an_error() {
         for s in [WorkspaceState::Ready, WorkspaceState::Active, dirty()] {
-            assert!(launch_succeeded(&s).is_err());
+            assert_eq!(launch_succeeded(&s).unwrap_err().code, ErrorCode::Internal);
         }
     }
 
     #[test]
-    fn step_failed_from_launching_goes_dirty_with_the_given_reason() {
-        let d = step_failed(&WorkspaceState::Launching, "exit code 1", "launch.sh", "logs/deep-work.log").unwrap();
-        assert_eq!(d, dirty());
-    }
-
-    #[test]
-    fn step_failed_outside_launching_is_an_error() {
+    fn step_failed_goes_dirty_and_is_internal_anywhere_else() {
+        let d = step_failed(&WorkspaceState::Launching, "exit code 1", setup_step(), at(), "logs/deep-work-01JD2T.log");
+        assert_eq!(d.unwrap(), dirty());
         for s in [WorkspaceState::Ready, WorkspaceState::Active, dirty()] {
-            assert!(step_failed(&s, "r", "s", "l").is_err());
+            let e = step_failed(&s, "r", setup_step(), at(), "l").unwrap_err();
+            assert_eq!(e.code, ErrorCode::Internal);
         }
     }
 
     #[test]
-    fn cleanup_succeeded_from_dirty_goes_ready() {
+    fn cleanup_only_applies_to_a_dirty_workspace() {
+        start_cleanup(&dirty()).unwrap();
         assert_eq!(cleanup_succeeded(&dirty()).unwrap(), WorkspaceState::Ready);
-    }
-
-    #[test]
-    fn cleanup_succeeded_outside_dirty_is_an_error() {
-        for s in [WorkspaceState::Ready, WorkspaceState::Launching, WorkspaceState::Active] {
-            assert!(cleanup_succeeded(&s).is_err());
+        for s in NOT_DIRTY {
+            assert_eq!(start_cleanup(&s).unwrap_err().code, ErrorCode::InvalidParams);
+            assert_eq!(cleanup_succeeded(&s).unwrap_err().code, ErrorCode::InvalidParams);
         }
     }
 
     #[test]
-    fn force_relaunch_from_dirty_goes_active_logged_as_forced() {
-        assert_eq!(force_relaunch(&dirty()).unwrap(), WorkspaceState::Active);
-    }
-
-    #[test]
-    fn force_relaunch_outside_dirty_is_an_error() {
-        for s in [WorkspaceState::Ready, WorkspaceState::Launching, WorkspaceState::Active] {
-            assert!(force_relaunch(&s).is_err());
+    fn force_relaunch_goes_through_launching_and_can_fail_again() {
+        let s = force_relaunch(&dirty()).unwrap();
+        assert_eq!(s, WorkspaceState::Launching);
+        // A forced launch is an ordinary launch from here: its steps can fail again.
+        let again = step_failed(&s, "exit code 1", setup_step(), at(), "logs/deep-work-01JD2T.log").unwrap();
+        assert_eq!(again, dirty());
+        for s in NOT_DIRTY {
+            let e = force_relaunch(&s).unwrap_err();
+            assert_eq!(e.code, ErrorCode::InvalidParams);
+            assert!(e.message.contains("use activate"), "{}", e.message);
         }
     }
 
     #[test]
-    fn reset_from_dirty_goes_ready_without_a_cleanup_script() {
+    fn reset_clears_dirty_without_cleanup_and_is_refused_otherwise() {
         assert_eq!(reset(&dirty()).unwrap(), WorkspaceState::Ready);
+        for s in NOT_DIRTY {
+            assert_eq!(reset(&s).unwrap_err().code, ErrorCode::InvalidParams);
+        }
     }
 
     #[test]
-    fn reset_outside_dirty_is_an_error() {
-        for s in [WorkspaceState::Ready, WorkspaceState::Launching, WorkspaceState::Active] {
-            assert!(reset(&s).is_err());
-        }
+    fn a_full_round_trip() {
+        // ready → launching → dirty → (activate refused) → cleanup → ready → launching → active
+        let s = activate(&WorkspaceState::Ready, "deep-work", true).unwrap();
+        let s = step_failed(&s, "timed out after 60s", setup_step(), at(), "logs/x.log").unwrap();
+        assert!(activate(&s, "deep-work", true).is_err());
+        start_cleanup(&s).unwrap();
+        let s = cleanup_succeeded(&s).unwrap();
+        let s = activate(&s, "deep-work", true).unwrap();
+        assert_eq!(launch_succeeded(&s).unwrap(), WorkspaceState::Active);
     }
 }
