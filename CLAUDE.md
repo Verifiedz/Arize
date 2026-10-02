@@ -451,7 +451,7 @@ $SHIMMER_HOME/
   data/records/collections/*.toml  Record collection definitions (§8, ADR 0008).
   data/records/items/<collection>/<id>.toml  One file per record.
   events/YYYY-MM-DD.jsonl  Append-only event log. One JSON Event per line.
-  data/workspaces/<name>/  workspace.toml + launch/cleanup scripts + state (ADR 0010).
+  data/workspaces/<name>/  workspace.toml + steps/ + cleanup script + state (ADRs 0010, 0012).
   notifications/failed.jsonl  Deliveries that exhausted every sink (§11.3).
   packs/<name>/            Command packs: aliases + animations (§15.1). Client-read only.
   .staging/<txid>/         In-flight store transactions (§7.1). Never edit by hand.
@@ -580,6 +580,33 @@ spawn mode (§10.2) — plus a single `cleanup.sh` / `cleanup.ps1`, unchanged fr
 `SHIMMER_SOCKET` matters most: a user's Hyprland script can run
 `shimmer records complete leetcode/two-sum` and participate in the platform rather than being
 a dead-end launcher.
+
+`workspace.toml` lists the steps in order and says how to run each one (ADR 0012). The id
+is the folder name; step *N* must be `steps/<NN>-<name>.sh` (or `.ps1`), and any mismatch
+between the list and the files is an error:
+
+```toml
+[workspace]
+label = "Deep Work"
+
+[[step]]
+name = "setup"            # steps/01-setup.sh: waited on; failure or timeout → dirty
+mode = "supervised"
+timeout_s = 60
+
+[[step]]
+name = "editor"           # steps/02-editor.sh: started, outlives the daemon
+mode = "detached"
+
+[cleanup]                 # required exactly when cleanup.sh exists
+timeout_s = 30
+
+[env]                     # extra variables for every script; SHIMMER_* is reserved
+PROJECT_DIR = "/home/me/code/shimmer"
+```
+
+`mode` has no default. Unknown keys are rejected. Steps run one at a time and the first
+failure stops the launch; nothing is retried (§11.2). ADR 0012 has every rule and check.
 
 Scripts run through their interpreter (`sh steps/01-setup.sh`, `powershell -File
 steps/01-setup.ps1`), never via the executable bit — an atomic write (§7.1) does not reliably
