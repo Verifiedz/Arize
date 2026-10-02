@@ -244,6 +244,43 @@ async fn hand_edits_are_read_and_a_broken_file_does_not_hide_the_rest() {
 }
 
 #[tokio::test]
+async fn a_broken_collection_file_fails_only_the_requests_that_use_it() {
+    // ADR 0008. Issue #29: one bad file used to fail `records.collections` as a whole, and the
+    // CLI asks for it before every command, so every collection became unusable.
+    let (_, env) = setup().await;
+    env.ctx.store.write("collections/broken.toml", "not [valid toml").unwrap();
+    env.ctx.store.write("collections/Bad Name.toml", "[collection]\nid = \"x\"\nlabel = \"x\"\n").unwrap();
+
+    let restarted = Records::default();
+    restarted.init(&env.ctx).await.expect("a malformed collection must not fail init");
+
+    let data = call(&restarted, &env, "records.collections", json!({})).await.unwrap();
+    let ids: Vec<&str> = data["collections"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["leetcode"]);
+    let skipped: Vec<&str> = data["skipped"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
+    assert_eq!(skipped.len(), 2, "{skipped:?}");
+    assert!(skipped.iter().any(|s| s.starts_with("collection file 'broken.toml': ")), "{skipped:?}");
+    assert!(skipped.iter().any(|s| s.starts_with("collection file 'Bad Name.toml': the file name")), "{skipped:?}");
+
+    // The healthy collection keeps working.
+    add_two_sum(&restarted, &env).await;
+    let list = call(&restarted, &env, "records.list", json!({"collection": "leetcode"})).await.unwrap();
+    assert_eq!(list["total"], 1);
+
+    // A request that uses the broken one still fails, naming the file.
+    let e = call(&restarted, &env, "records.list", json!({"collection": "broken"})).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::InvalidParams);
+    assert!(e.message.contains("'broken.toml'"), "{}", e.message);
+}
+
+#[tokio::test]
+async fn collections_has_no_skipped_key_when_every_file_is_fine() {
+    let (r, env) = setup().await;
+    let data = call(&r, &env, "records.collections", json!({})).await.unwrap();
+    assert!(data.get("skipped").is_none(), "{data}");
+}
+
+#[tokio::test]
 async fn a_new_module_instance_sees_everything() {
     // What a daemon restart looks like to the module: fresh state, same files.
     let (r, env) = setup().await;

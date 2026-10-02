@@ -85,3 +85,34 @@ fn the_records_commands_track_a_problem_across_a_restart() {
     let todo = ok(&["records", "list", "leetcode", "--status", "todo"]);
     assert!(todo.contains("lru-cache") && !todo.contains("two-sum"), "{todo}");
 }
+
+/// Issue #29: one malformed collection file used to break every `shimmer records` command,
+/// because the CLI fetches `records.collections` first and that op failed as a whole.
+#[test]
+fn a_broken_collection_file_breaks_only_itself() {
+    let home = Home::new();
+    let ok = |args: &[&str]| {
+        let o = home.shimmer(args);
+        assert!(o.status.success(), "shimmer {args:?} failed: {}", stderr(&o));
+        stdout(&o)
+    };
+    ok(&["records", "add", "leetcode", "two-sum", "--title", "Two Sum", "--difficulty", "easy"]);
+    let broken = home.dir.path().join("home/data/records/collections/broken.toml");
+    std::fs::write(&broken, "not [valid toml\n").unwrap();
+    ok(&["shutdown"]);
+    wait_gone(&home.socket());
+
+    // The daemon restarts (init must survive the bad file) and leetcode still works.
+    assert!(ok(&["records", "list", "leetcode"]).contains("two-sum"));
+    ok(&["records", "complete", "leetcode/two-sum"]);
+    assert!(ok(&["records", "get", "leetcode/two-sum"]).contains("(done)"));
+
+    let collections = ok(&["records", "collections"]);
+    assert!(collections.contains("leetcode  LeetCode"), "{collections}");
+    assert!(collections.contains("skipped: collection file 'broken.toml': "), "{collections}");
+
+    // Using the broken collection still fails, naming the file.
+    let o = home.shimmer(&["records", "list", "broken"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(stderr(&o).contains("invalid_params: collection file 'broken.toml'"), "{}", stderr(&o));
+}

@@ -15,7 +15,7 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use shimmer_core::ids::is_valid_name;
-use shimmer_core::{CommandSpec, Ctx, Error, Execution, Manifest, Module, Result};
+use shimmer_core::{CommandSpec, Ctx, Error, ErrorCode, Execution, Manifest, Module, Result};
 
 use crate::item::{Item, Status};
 use crate::schema::Collection;
@@ -147,13 +147,28 @@ impl Records {
         self.write.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Every readable collection, plus `skipped` naming each malformed file, the same shape as
+    /// `records.list`. One broken file must not hide the others (ADR 0008): a request that
+    /// uses it still fails, naming the file.
     fn collections(&self, ctx: &Ctx) -> Result<Value> {
-        let mut out = Vec::new();
+        let (mut out, mut skipped) = (Vec::new(), Vec::new());
         for path in ctx.store.list("collections")? {
             let Some(id) = path.strip_prefix("collections/").and_then(|p| p.strip_suffix(".toml")) else { continue };
-            out.push(serde_json::to_value(load_collection(ctx, id)?).unwrap_or_default());
+            if !is_valid_name(id) {
+                skipped.push(format!("collection file '{id}.toml': the file name must match [a-z][a-z0-9_-]*"));
+                continue;
+            }
+            match load_collection(ctx, id) {
+                Ok(c) => out.push(serde_json::to_value(c).unwrap_or_default()),
+                Err(e) if e.code == ErrorCode::InvalidParams => skipped.push(e.message),
+                Err(e) => return Err(e),
+            }
         }
-        Ok(json!({"collections": out}))
+        let mut data = json!({"collections": out});
+        if !skipped.is_empty() {
+            data["skipped"] = json!(skipped);
+        }
+        Ok(data)
     }
 
     fn add(&self, ctx: &Ctx, p: WithFields) -> Result<Value> {
