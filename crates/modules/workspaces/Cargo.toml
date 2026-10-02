@@ -1,6 +1,6 @@
 [package]
 name = "shimmer-workspaces"
-description = "The workspaces module (CLAUDE.md §10). So far the ready/launching/active/dirty state machine; the workspace.toml parser (ADR 0012) and the module follow. Depends on core only."
+description = "The workspaces module (CLAUDE.md §10). So far the ready/launching/active/dirty state machine and the workspace.toml parser (ADR 0012); the module itself follows. Depends on core only."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,4 +13,6 @@ workspace = true
 [dependencies]
 shimmer-core = { path = "../../core" }
 chrono = "0.4"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "1"
