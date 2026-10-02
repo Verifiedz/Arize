@@ -187,8 +187,9 @@ for collection files: issue #29. This ADR designs it out from the start.)
 **`[workspace]`**
 
 - `label` is required and must not be empty or only whitespace.
-- The folder name (the id) must match `[a-z0-9][a-z0-9_-]*`, at most 64 characters, the
-  same rule as step names and record ids. A folder named `Deep Work` is reported as invalid,
+- The folder name (the id) must match `[a-z0-9][a-z0-9_-]*`, at most 64 characters: the same
+  rule as step names. The charset is the one record ids use (ADR 0008), but the length cap is
+  not; record ids allow 128. A folder named `Deep Work` is reported as invalid,
   not ignored.
 
 **`[[step]]`**
