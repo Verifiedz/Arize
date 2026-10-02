@@ -30,6 +30,7 @@ pub mod ops {
     pub const QUEUE_LIST: &str = "queue.list";
     pub const QUEUE_TASK: &str = "queue.task";
     pub const QUEUE_CANCEL: &str = "queue.cancel";
+    pub const QUEUE_REORDER: &str = "queue.reorder";
 }
 
 /// Topics the daemon itself defines.

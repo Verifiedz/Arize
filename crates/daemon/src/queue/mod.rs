@@ -8,8 +8,6 @@
 //!
 //! Fallback (§11.3, ADR 0005): a task that fails structurally and carries a `notify.*`
 //! fallback gets it enqueued in its own lane, after its slot is freed. Rules live in `fallback`.
-//!
-//! Not yet here (M2): `queue.reorder`, blocked on a `proto` change (ADR 0006).
 
 pub mod fallback;
 mod state;
@@ -368,6 +366,37 @@ impl QueueInner {
             }
             done => Err(Error::not_cancellable(format!("task {id} already {}", done.name()))),
         }
+    }
+
+    /// Move a waiting task within its lane (§6.2, ADR 0006). `queue_version` is the
+    /// optimistic-concurrency token the client was last shown; a stale one is `conflict`,
+    /// echoing the lane's current version so the client can re-fetch and retry — the same
+    /// round trip `queue.list` → act → stale → re-fetch already uses for promotion.
+    pub fn reorder(
+        self: &Arc<Self>,
+        lane: &LaneId,
+        id: TaskId,
+        before: Option<TaskId>,
+        queue_version: u64,
+    ) -> Result<Value> {
+        let new_version = {
+            let mut st = self.lock();
+            let ls = st.lanes.get_mut(lane).ok_or_else(|| Error::lane_unknown(format!("no lane '{lane}'")))?;
+            if ls.version != queue_version {
+                return Err(Error::conflict(format!(
+                    "lane '{lane}' is at queue_version {}, not {queue_version}",
+                    ls.version
+                ))
+                .with_detail(json!({"lane": lane, "queue_version": ls.version})));
+            }
+            ls.reorder(id, before)?;
+            ls.version
+        };
+        self.emit(
+            "queue.task.reordered",
+            json!({"task_id": id, "lane": lane, "before": before, "queue_version": new_version}),
+        );
+        Ok(json!({"queue_version": new_version}))
     }
 
     pub fn task_view(&self, id: TaskId) -> Result<Value> {
