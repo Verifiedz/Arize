@@ -305,6 +305,7 @@
             "title": "Two Sum",
             "difficulty": "easy",
             "status": "done",
+            "url": null,
             "last_solved": "2026-09-18"
           },
           {
@@ -312,6 +313,7 @@
             "title": "LRU Cache",
             "difficulty": "medium",
             "status": "todo",
+            "url": null,
             "last_solved": null
           },
           {
@@ -319,6 +321,7 @@
             "title": "Median of Two Sorted Arrays",
             "difficulty": "hard",
             "status": "todo",
+            "url": null,
             "last_solved": null
           }
         ]

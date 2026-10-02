@@ -413,7 +413,7 @@ tolerate unknown topics.
 | `workspaces.session.forced` | Force relaunch of a dirty workspace, with prior reason. |
 | `workspaces.session.cleaned` | Cleanup script succeeded; state back to `ready`. |
 | `records.item.created` / `.updated` / `.completed` / `.removed` | Record mutations. |
-| `records.collection.created` | A collection definition was seeded or hand-added. |
+| `records.collection.created` | The built-in collection was seeded on first start. |
 | `fetchers.item.found` | A source returned a new, deduplicated item. |
 | `fetchers.fetch.finished` / `.failed` | A fetch run ended. |
 | `calendar.date.registered` | A dated entry was stored. |
