@@ -1,11 +1,18 @@
 # 0009. Deriving a local calendar date without storing local time
 
-Status: proposed (Dev A approved, awaiting Dev B) · Raised by Dev A (CLAUDE.md §4, changes `core`)
+Status: accepted (Dev A and Dev B approved, PR #5) · Raised by Dev A (CLAUDE.md §4, changes `core`)
 
-Implemented on `utc-local-date-adr` (off `post-m1-fixes`): `crates/core/src/time.rs`,
-`Ctx.local_tz`, `Config::load`'s detect-and-persist step, and
-`crates/modules/records/src/lib.rs`'s `complete` now stamping via `local_date`. Dev B's
-sign-off is still needed per §4 before this merges past `post-m1-fixes`.
+Implemented on `utc-local-date-adr`: `crates/core/src/time.rs`, `Ctx.local_tz`,
+`Config::load`'s detect-and-persist step, and `crates/modules/records/src/lib.rs`'s
+`complete` now stamping via `local_date`. Merged to `master` via `post-m1-fixes` (PR #6).
+Dev B flagged three review comments on PR #5 (an odd `TZ` value skipping the
+`/etc/localtime` fallback, a failed detection persisting `"UTC"` as if chosen, and the
+`[general]`-insertion doing a plain substring search); Dev A fixed all three on the same
+branch and Dev B confirmed "the full suite passes (180 tests). Approving." One further edge
+case Dev B found in that same final review — inserting after a `[general]` header that is
+the file's last line with no trailing newline corrupts `config.toml` — was **not** fixed
+before merge; it is tracked separately as issue #9 and does not block this ADR's design
+decision, which is otherwise fully implemented and signed off.
 
 ## Context
 

@@ -1,6 +1,6 @@
 # 0005. Fallback targets `notify.*` only, and never nests
 
-Status: proposed · Needs sign-off: Dev A, Dev B
+Status: accepted · Needs sign-off: Dev A, Dev B
 
 ## Context
 

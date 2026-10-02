@@ -1,6 +1,6 @@
 # 0007. CLI command surface and daemon auto-start
 
-Status: proposed (M0) · Raised by Dev B · Needs sign-off: Dev A (touches `crates/app`)
+Status: accepted (M0) · Raised by Dev B · Needs sign-off: Dev A (touches `crates/app`)
 
 ## Context
 
