@@ -365,7 +365,7 @@ as "currently running".
 
 | Op | Execution | Params | Returns |
 |---|---|---|---|
-| `records.collections` | inline | `{}` | `{"collections":[...]}`, each collection definition as JSON. |
+| `records.collections` | inline | `{}` | `{"collections":[...]}`, each collection definition as JSON (+ `"skipped"` naming each malformed collection file). |
 | `records.add` | inline | `{"collection","id","fields"?}` | The new item. `conflict` if the id exists. |
 | `records.get` | inline | `{"collection","id"}` | The item. |
 | `records.list` | inline | `{"collection","filter"?,"limit"?,"offset"?}` | `{"items","total"}` (+ `"skipped"` if a hand-edited file was unreadable). |

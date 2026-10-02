@@ -288,10 +288,15 @@ fn collections(data: &Value) -> String {
                 .collect()
         })
         .unwrap_or_default();
-    if rows.is_empty() {
-        return "no collections".into();
+    let mut out = match rows.is_empty() {
+        true => "no collections".to_owned(),
+        false => table(&["ID".into(), "LABEL".into(), "FIELDS".into()], &rows),
+    };
+    // In full, not cut like a table cell: the message is how the user finds the broken line.
+    for skipped in data["skipped"].as_array().into_iter().flatten() {
+        let _ = write!(out, "\nskipped: {}", skipped.as_str().unwrap_or_default());
     }
-    table(&["ID".into(), "LABEL".into(), "FIELDS".into()], &rows)
+    out
 }
 
 /// `difficulty (easy|medium|hard)`, `title*` for required, `last_solved (date)`.
@@ -589,6 +594,19 @@ lru-cache  todo    LRU Cache  medium      -    -            2         true
             out.contains("leetcode  LeetCode  title*, difficulty (easy|medium|hard), url, last_solved (date)"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn collections_list_skipped_files_in_full() {
+        let message = "collection file 'broken.toml': TOML parse error at line 1, column 5, key with no value";
+        let data = json!({"collections": [leetcode()], "skipped": [message]});
+        let out = show(&RecordsCmd::Collections, &data, &Value::Null);
+        assert!(out.starts_with("ID        LABEL"), "{out}");
+        assert!(out.ends_with(&format!("\nskipped: {message}")), "{out}");
+
+        let only_broken = json!({"collections": [], "skipped": [message]});
+        let out = show(&RecordsCmd::Collections, &only_broken, &Value::Null);
+        assert_eq!(out, format!("no collections\nskipped: {message}"));
     }
 
     #[test]

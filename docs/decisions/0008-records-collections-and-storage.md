@@ -30,7 +30,9 @@ to match. The file name is the collection id and must equal `[collection] id`.
   rule 9).
 
 A malformed collection file fails only the requests that use it (`invalid_params`, naming the file),
-never the module's `init`.
+never the module's `init`. `records.collections` lists every other collection and names each malformed
+file under `"skipped"`, the same way `records.list` reports unreadable record files (added after
+issue #29: the op used to fail as a whole, and the CLI calls it before every command).
 
 **Records are one flat TOML file each:** `data/records/items/<collection>/<id>.toml`, holding
 `status` (`todo` | `done`) and the field values. The id is the file name, so it is limited to
@@ -45,7 +47,7 @@ schema does not know are passed through.
 
 | Op | Params | Returns |
 |---|---|---|
-| `records.collections` | `{}` | `{"collections": [...]}`: each definition as JSON |
+| `records.collections` | `{}` | `{"collections": [...]}`: each definition as JSON (+ `"skipped"` if any file was malformed) |
 | `records.add` | `{"collection", "id", "fields"?}` | the new item; `conflict` if the id exists |
 | `records.get` | `{"collection", "id"}` | the item |
 | `records.list` | `{"collection", "filter"?, "limit"?, "offset"?}` | `{"items", "total"}` (+ `"skipped"` if any file was unreadable) |
