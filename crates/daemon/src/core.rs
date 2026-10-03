@@ -116,6 +116,19 @@ impl Core {
             }
             ops::QUEUE_TASK => self.queue.task_view(task_id(params)?),
             ops::QUEUE_CANCEL => self.queue.cancel(task_id(params)?),
+            ops::QUEUE_REORDER => {
+                #[derive(Deserialize)]
+                struct P {
+                    lane: LaneId,
+                    task_id: String,
+                    before: Option<String>,
+                    queue_version: u64,
+                }
+                let p: P = parse(params)?;
+                let id = p.task_id.parse()?;
+                let before = p.before.map(|s| s.parse()).transpose()?;
+                self.queue.reorder(&p.lane, id, before, p.queue_version)
+            }
             _ if op.starts_with("scheduler.") => match self.scheduler.get() {
                 Some(s) => s.handle(op, params),
                 None => Err(Error::unavailable("scheduler is not running")),
