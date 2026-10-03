@@ -25,6 +25,9 @@ ulid = "1"
 toml = "1.1.6"
 cron = "0.17.0"
 
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["signal", "process"] }
+
 [dev-dependencies]
 chrono = "0.4"
 tempfile = "3"

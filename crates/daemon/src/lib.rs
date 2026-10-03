@@ -11,6 +11,8 @@ mod config;
 mod core;
 mod indexer;
 mod ipc;
+// Linux/macOS only for now (ADR 0010 §7); the module itself documents the scoping.
+#[cfg(unix)]
 mod launcher;
 mod queue;
 mod registry;
