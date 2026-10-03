@@ -1,0 +1,319 @@
+//! The `workspaces` module (CLAUDE.md §10): everything that touches `ctx`. Decisions are made
+//! by the pure parts ([`crate::state`], [`crate::manifest`], [`crate::persist`]); this file
+//! reads files, calls them, and writes the result with its event in one transaction (§7.1).
+//!
+//! Layout, inside the module's namespace `data/workspaces/` (ADR 0010, ADR 0012):
+//! `<id>/workspace.toml`, `<id>/steps/…`, `<id>/cleanup.{sh,ps1}` (all written by the user)
+//! and `<id>/state.toml` (written only here).
+
+use std::collections::BTreeMap;
+use std::sync::{Mutex, MutexGuard};
+
+use async_trait::async_trait;
+use serde::de::DeserializeOwned;
+use serde::Deserialize;
+use serde_json::{json, Map, Value};
+use shimmer_core::{CommandSpec, Ctx, Error, Execution, LaneConfig, Manifest, Module, Result, SpawnMode};
+
+use crate::manifest::{self, Workspace};
+use crate::persist::{self, Saved, STATE_FILE};
+use crate::state::{self, WorkspaceState};
+
+/// Launches touch shared state (a desktop, a terminal multiplexer), so they run one at a time
+/// (CLAUDE.md §6.1).
+pub const LANE: &str = "workspaces";
+
+#[derive(Default)]
+pub struct Workspaces {
+    /// Inline requests run concurrently; this serialises each read-check-write of a
+    /// `state.toml`. Never held across an `.await`.
+    write: Mutex<()>,
+}
+
+#[async_trait]
+impl Module for Workspaces {
+    fn manifest(&self) -> Manifest {
+        Manifest {
+            id: "workspaces".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            namespace: "workspaces".into(),
+            topics: [
+                "workspaces.session.launched",
+                "workspaces.session.dirty",
+                "workspaces.session.forced",
+                "workspaces.session.cleaned",
+                "workspaces.workspace.reset",
+            ]
+            .map(String::from)
+            .to_vec(),
+            // Gets the real `ctx.launcher` (ADR 0010 §4).
+            capabilities: vec!["process".into()],
+        }
+    }
+
+    /// A workspace still saved as `launching` belongs to a launch the daemon never finished
+    /// (it crashed or was killed). Mark it dirty: its earlier steps already ran.
+    async fn init(&self, ctx: &Ctx) -> Result<()> {
+        let _g = self.lock();
+        for (id, folder) in folders(ctx)? {
+            let Some(Ok(saved)) = folder.saved(ctx, &id) else { continue };
+            let Some(dirty) = persist::recover_after_restart(&saved, ctx.clock.now()) else { continue };
+            ctx.store.transaction(|tx| {
+                tx.put(&state_path(&id), persist::encode(&Saved::new(dirty.clone())))?;
+                tx.emit("workspaces.session.dirty", dirty_payload(&id, &dirty))
+            })?;
+        }
+        Ok(())
+    }
+
+    fn lanes(&self) -> Vec<LaneConfig> {
+        vec![LaneConfig::new(LANE, 1)]
+    }
+
+    fn commands(&self) -> Vec<CommandSpec> {
+        let id = json!({"type": "object", "required": ["id"], "properties": {"id": {"type": "string"}}});
+        [
+            ("workspaces.list", "List workspaces and their state", json!({"type": "object"})),
+            ("workspaces.status", "Show one workspace in full", id.clone()),
+            ("workspaces.reset", "Clear dirty without running cleanup (last resort)", id),
+        ]
+        .into_iter()
+        .map(|(op, summary, params_schema)| CommandSpec {
+            op: op.into(),
+            summary: summary.into(),
+            params_schema,
+            execution: Execution::Inline,
+        })
+        .collect()
+    }
+
+    async fn handle(&self, op: &str, params: Value, ctx: &Ctx) -> Result<Value> {
+        match op {
+            "workspaces.list" => self.list(ctx),
+            "workspaces.status" => self.status(ctx, &parse::<Target>(params)?.id),
+            "workspaces.reset" => self.reset(ctx, &parse::<Target>(params)?.id),
+            _ => Err(Error::unknown_op(format!("workspaces has no op '{op}'"))),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct Target {
+    id: String,
+}
+
+impl Workspaces {
+    fn lock(&self) -> MutexGuard<'_, ()> {
+        // The lock guards no data, so a poisoned one carries no information.
+        self.write.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Every workspace, by id. A broken one is listed as `invalid` with the reason; it never
+    /// hides the others (ADR 0012 §6).
+    fn list(&self, ctx: &Ctx) -> Result<Value> {
+        let mut out = Vec::new();
+        for (id, folder) in folders(ctx)? {
+            let mut entry = Map::new();
+            entry.insert("id".into(), json!(id));
+            match folder.load(ctx, &id) {
+                Ok(w) => {
+                    entry.insert("label".into(), json!(w.label));
+                }
+                Err(e) => {
+                    entry.insert("error".into(), json!(e.message));
+                }
+            }
+            match folder.saved(ctx, &id) {
+                Some(Err(e)) => {
+                    entry.entry("error").or_insert(json!(e.message));
+                }
+                Some(Ok(saved)) => add_state(&mut entry, &saved.state),
+                None => add_state(&mut entry, &WorkspaceState::Ready),
+            }
+            if entry.contains_key("error") {
+                entry.insert("state".into(), json!("invalid"));
+            }
+            out.push(Value::Object(entry));
+        }
+        Ok(json!({"workspaces": out}))
+    }
+
+    /// One workspace in full: its definition, state, and why it is dirty or invalid.
+    fn status(&self, ctx: &Ctx, id: &str) -> Result<Value> {
+        let folder = folder(ctx, id)?;
+        let mut out = Map::new();
+        out.insert("id".into(), json!(id));
+        out.insert("has_cleanup_script".into(), json!(folder.has_cleanup_script()));
+        match folder.load(ctx, id) {
+            Ok(w) => describe(&mut out, &w),
+            Err(e) => {
+                out.insert("error".into(), json!(e.message));
+            }
+        }
+        match folder.saved(ctx, id).unwrap_or_else(|| Ok(Saved::ready())) {
+            Ok(saved) => {
+                add_state(&mut out, &saved.state);
+                if let WorkspaceState::Dirty { reason, failed_step, failed_at, log } = &saved.state {
+                    out.insert(
+                        "dirty".into(),
+                        json!({"reason": reason, "failed_step": failed_step.to_string(),
+                               "failed_at": rfc3339(failed_at), "log": log}),
+                    );
+                }
+                if let (WorkspaceState::Launching, Some(step)) = (&saved.state, &saved.running_step) {
+                    out.insert("running_step".into(), json!(step.to_string()));
+                }
+            }
+            Err(e) => {
+                out.entry("error").or_insert(json!(e.message));
+            }
+        }
+        if out.contains_key("error") {
+            out.insert("state".into(), json!("invalid"));
+        }
+        Ok(Value::Object(out))
+    }
+
+    /// `dirty → ready` without running cleanup (§10.3: the last resort when there is no
+    /// cleanup script). Also clears a `state.toml` Shimmer can't read, which is the one way to
+    /// recover from a hand-edit gone wrong.
+    fn reset(&self, ctx: &Ctx, id: &str) -> Result<Value> {
+        let _g = self.lock();
+        let folder = folder(ctx, id)?;
+        let prior = match folder.saved(ctx, id) {
+            Some(Err(e)) => json!({"unreadable_state": e.message}),
+            saved => {
+                let saved = saved.unwrap_or_else(|| Ok(Saved::ready()))?;
+                state::reset(&saved.state)?;
+                dirty_payload(id, &saved.state)
+            }
+        };
+        ctx.store.transaction(|tx| {
+            tx.put(&state_path(id), persist::encode(&Saved::ready()))?;
+            tx.emit("workspaces.workspace.reset", json!({"workspace": id, "prior": prior}))
+        })?;
+        Ok(json!({"id": id, "state": "ready"}))
+    }
+}
+
+// ---------------------------------------------------------------- reading the folders
+
+/// One workspace folder's file list, relative to the folder (`workspace.toml`,
+/// `steps/01-setup.sh`, `state.toml`, …), as `manifest::parse` takes it.
+struct Folder {
+    files: Vec<String>,
+}
+
+impl Folder {
+    fn has(&self, name: &str) -> bool {
+        self.files.iter().any(|f| f == name)
+    }
+
+    fn has_cleanup_script(&self) -> bool {
+        self.has("cleanup.sh") || self.has("cleanup.ps1")
+    }
+
+    /// The checked `workspace.toml`, or why it isn't valid.
+    fn load(&self, ctx: &Ctx, id: &str) -> Result<Workspace> {
+        let text = ctx
+            .store
+            .read_string(&format!("{id}/workspace.toml"))?
+            .ok_or_else(|| Error::invalid_params(format!("{id}: there is no workspace.toml")))?;
+        manifest::parse(id, &text, &self.files)
+    }
+
+    /// `None` when there is no `state.toml` yet.
+    fn saved(&self, ctx: &Ctx, id: &str) -> Option<Result<Saved>> {
+        if !self.has(STATE_FILE) {
+            return None;
+        }
+        Some(ctx.store.read_string(&state_path(id)).and_then(|text| persist::decode(id, &text.unwrap_or_default())))
+    }
+}
+
+/// Every workspace folder under the namespace, by id. Loose files at the top are ignored.
+fn folders(ctx: &Ctx) -> Result<BTreeMap<String, Folder>> {
+    let mut out: BTreeMap<String, Folder> = BTreeMap::new();
+    for path in ctx.store.list("")? {
+        if let Some((id, rest)) = path.split_once('/') {
+            out.entry(id.to_owned()).or_insert_with(|| Folder { files: Vec::new() }).files.push(rest.to_owned());
+        }
+    }
+    Ok(out)
+}
+
+/// The folder for `id`, found by listing, never by building a path from the request: an id
+/// that isn't an existing folder is `not_found` whatever it contains.
+fn folder(ctx: &Ctx, id: &str) -> Result<Folder> {
+    folders(ctx)?.remove(id).ok_or_else(|| Error::not_found(format!("no workspace '{id}'")))
+}
+
+fn state_path(id: &str) -> String {
+    format!("{id}/{STATE_FILE}")
+}
+
+// ---------------------------------------------------------------- output
+
+fn add_state(out: &mut Map<String, Value>, state: &WorkspaceState) {
+    let name = match state {
+        WorkspaceState::Ready => "ready",
+        WorkspaceState::Launching => "launching",
+        WorkspaceState::Active => "active",
+        WorkspaceState::Dirty { reason, failed_step, .. } => {
+            out.insert("dirty_reason".into(), json!(format!("step {failed_step}: {reason}")));
+            "dirty"
+        }
+    };
+    out.insert("state".into(), json!(name));
+}
+
+fn describe(out: &mut Map<String, Value>, w: &Workspace) {
+    out.insert("label".into(), json!(w.label));
+    if let Some(d) = &w.description {
+        out.insert("description".into(), json!(d));
+    }
+    let steps: Vec<Value> = w
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let mut step = json!({"index": i + 1, "name": s.name});
+            match s.mode {
+                SpawnMode::Detached => step["mode"] = json!("detached"),
+                SpawnMode::Supervised { timeout } => {
+                    step["mode"] = json!("supervised");
+                    step["timeout_s"] = json!(timeout.as_secs());
+                }
+            }
+            if let Some(d) = &s.description {
+                step["description"] = json!(d);
+            }
+            step
+        })
+        .collect();
+    out.insert("steps".into(), json!(steps));
+    if let Some(t) = w.cleanup_timeout {
+        out.insert("cleanup_timeout_s".into(), json!(t.as_secs()));
+    }
+}
+
+/// `workspaces.session.dirty`'s payload, and `prior` in `workspaces.workspace.reset`.
+fn dirty_payload(id: &str, state: &WorkspaceState) -> Value {
+    match state {
+        WorkspaceState::Dirty { reason, failed_step, failed_at, log } => json!({
+            "workspace": id, "reason": reason, "failed_step": failed_step.to_string(),
+            "failed_at": rfc3339(failed_at), "log": log,
+        }),
+        _ => json!({"workspace": id}),
+    }
+}
+
+fn rfc3339(t: &chrono::DateTime<chrono::Utc>) -> String {
+    t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+fn parse<T: DeserializeOwned>(params: Value) -> Result<T> {
+    // Absent params decode as null.
+    let params = if params.is_null() { json!({}) } else { params };
+    serde_json::from_value(params).map_err(|e| Error::invalid_params(e.to_string()))
+}
