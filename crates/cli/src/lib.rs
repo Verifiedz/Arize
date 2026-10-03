@@ -9,6 +9,7 @@ mod autostart;
 mod client;
 mod records;
 mod render;
+mod workspaces;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -20,6 +21,7 @@ use shimmer_proto::ops;
 pub use args::{Args, Command, USAGE};
 pub use client::{Client, ConnectError};
 pub use records::RecordsCmd;
+pub use workspaces::WorkspacesCmd;
 
 /// Run `shimmer <args>`: `args` are what follows the binary name. Exit codes: 0 success,
 /// 1 the daemon (or reaching it) failed, 2 bad usage.
@@ -27,7 +29,13 @@ pub async fn run(args: Vec<String>) -> ExitCode {
     let args = match Args::parse(args) {
         Ok(a) => a,
         Err(e) => {
-            let usage = if e.contains("records") { records::USAGE } else { USAGE };
+            let usage = if e.contains("records") {
+                records::USAGE
+            } else if e.contains("workspaces") {
+                workspaces::USAGE
+            } else {
+                USAGE
+            };
             eprintln!("shimmer: {e}\n\n{usage}");
             return ExitCode::from(2);
         }
@@ -49,6 +57,7 @@ async fn execute(args: &Args) -> Result<Option<String>> {
     match &args.command {
         Command::Help => return Ok(Some(USAGE.into())),
         Command::Records(RecordsCmd::Help) => return Ok(Some(records::USAGE.into())),
+        Command::Workspaces(WorkspacesCmd::Help) => return Ok(Some(workspaces::USAGE.into())),
         _ => {}
     }
     let Some(mut client) = connect(args).await? else { return Ok(None) };
@@ -56,12 +65,15 @@ async fn execute(args: &Args) -> Result<Option<String>> {
     if let Command::Records(cmd) = &args.command {
         return records::run(&mut client, cmd, args.json).await.map(Some);
     }
+    if let Command::Workspaces(cmd) = &args.command {
+        return workspaces::run(&mut client, cmd, args.json, &mut workspaces::Terminal).await.map(Some);
+    }
     let (op, params) = match &args.command {
         Command::Ping => (ops::CORE_PING, json!({})),
         Command::Manifest => (ops::CORE_MANIFEST, json!({})),
         Command::Shutdown => (ops::CORE_SHUTDOWN, json!({})),
         Command::Call { op, params } => (op.as_str(), params.clone()),
-        Command::Help | Command::Records(_) => unreachable!("handled above"),
+        Command::Help | Command::Records(_) | Command::Workspaces(_) => unreachable!("handled above"),
     };
     let data = client.call(op, params).await?;
     Ok(Some(output(args, &data)))
@@ -93,7 +105,7 @@ fn output(args: &Args, data: &Value) -> String {
         Command::Ping => render::ping(data),
         Command::Manifest => render::manifest(data),
         Command::Shutdown => render::shutdown(),
-        Command::Call { .. } | Command::Help | Command::Records(_) => render::json(data),
+        Command::Call { .. } | Command::Help | Command::Records(_) | Command::Workspaces(_) => render::json(data),
     }
 }
 

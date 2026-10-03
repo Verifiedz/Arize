@@ -74,6 +74,51 @@ fn uptime(secs: u64) -> String {
     }
 }
 
+// ---------------------------------------------------------------- tables, shared by records and workspaces
+
+pub(crate) const MAX_CELL: usize = 40;
+
+/// One value as table text: strings bare, `null` as `-`, long values cut with `…`.
+pub(crate) fn cell(v: &Value) -> String {
+    let s = match v {
+        Value::Null => "-".to_owned(),
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    if s.chars().count() > MAX_CELL {
+        s.chars().take(MAX_CELL - 1).chain(['…']).collect()
+    } else {
+        s
+    }
+}
+
+pub(crate) fn table(header: &[String], rows: &[Vec<String>]) -> String {
+    let mut widths: Vec<usize> = header.iter().map(|h| h.chars().count()).collect();
+    for row in rows {
+        for (w, c) in widths.iter_mut().zip(row) {
+            *w = (*w).max(c.chars().count());
+        }
+    }
+    let line = |cells: &[String]| {
+        let mut s = String::new();
+        for (i, (c, w)) in cells.iter().zip(&widths).enumerate() {
+            if i + 1 == cells.len() {
+                s.push_str(c);
+            } else {
+                let pad = w - c.chars().count();
+                let _ = write!(s, "{c}{}  ", " ".repeat(pad));
+            }
+        }
+        s
+    };
+    let mut out = line(header);
+    for row in rows {
+        out.push('\n');
+        out.push_str(&line(row));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
