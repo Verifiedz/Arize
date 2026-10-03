@@ -164,6 +164,7 @@ impl Workspaces {
             Ok(saved) => {
                 add_state(&mut out, &saved.state);
                 if let WorkspaceState::Dirty { reason, failed_step, failed_at, log } = &saved.state {
+                    out.insert("log".into(), json!(log));
                     out.insert(
                         "dirty".into(),
                         json!({"reason": reason, "failed_step": failed_step.to_string(),
@@ -173,13 +174,12 @@ impl Workspaces {
                 if let (WorkspaceState::Launching, Some(step)) = (&saved.state, &saved.running_step) {
                     out.insert("running_step".into(), json!(step.to_string()));
                 }
-                if let Some(last) = &saved.last_session {
-                    out.insert(
-                        "last_session".into(),
-                        json!({"id": last.id, "started_at": rfc3339(&last.started_at),
-                               "forced": last.forced, "outcome": last.outcome.as_str()}),
-                    );
-                }
+                // `null` until the first launch, as in crates/mockd/fixtures/workspace-dirty.json.
+                let last = saved.last_session.as_ref().map(|last| {
+                    json!({"id": last.id, "started_at": rfc3339(&last.started_at),
+                           "forced": last.forced, "outcome": last.outcome.as_str()})
+                });
+                out.insert("last_session".into(), json!(last));
             }
             Err(e) => {
                 out.entry("error").or_insert(json!(e.message));

@@ -146,7 +146,7 @@ async fn status_describes_the_workspace_in_full() {
         data,
         json!({
             "id": "deep-work", "label": "Deep Work", "description": "Shimmer on Hyprland",
-            "state": "ready", "has_cleanup_script": true, "cleanup_timeout_s": 30,
+            "state": "ready", "has_cleanup_script": true, "cleanup_timeout_s": 30, "last_session": null,
             "steps": [
                 {"index": 1, "name": "setup", "mode": "supervised", "timeout_s": 60},
                 {"index": 2, "name": "editor", "mode": "detached"},
@@ -161,6 +161,11 @@ async fn status_of_a_dirty_workspace_includes_the_failure() {
     put(&env, "deep-work/state.toml", DIRTY_STATE);
     let data = call(&w, &env, "workspaces.status", json!({"id": "deep-work"})).await.unwrap();
     assert_eq!(data["state"], "dirty");
+    // The fields crates/mockd/fixtures/workspace-dirty.json gives clients.
+    assert_eq!(data["dirty_reason"], "step 1/2 setup: exit code 1");
+    assert_eq!(data["log"], "logs/deep-work-01JD2T.log");
+    assert_eq!(data["has_cleanup_script"], true);
+    assert_eq!(data["last_session"], Value::Null);
     assert_eq!(
         data["dirty"],
         json!({"reason": "exit code 1", "failed_step": "1/2 setup",

@@ -709,6 +709,7 @@ dependencies = [
  "shimmer-proto",
  "shimmer-records",
  "shimmer-store",
+ "shimmer-workspaces",
  "tempfile",
  "tokio",
  "tracing",
