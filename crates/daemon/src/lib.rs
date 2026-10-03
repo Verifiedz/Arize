@@ -11,6 +11,7 @@ mod config;
 mod core;
 mod indexer;
 mod ipc;
+mod launcher;
 mod queue;
 mod registry;
 mod scheduler;
