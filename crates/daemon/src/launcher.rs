@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use shimmer_core::ids::is_valid_id;
 use shimmer_core::launcher::env_names;
 use shimmer_core::store::validate_path;
 use shimmer_core::{Clock, Error, LaunchBackend, LaunchStep, Result, SpawnMode, Step, StepOutcome};
@@ -96,14 +97,16 @@ fn mint_session_id(clock: &Clock, instance_id: u64, sequence: &AtomicU64) -> Str
 
 /// `Step` -> a real path under the workspace's own directory, never outside it (ADR 0010
 /// §2a/§4). `workspace_dir` gets escape-safety only (`validate_path`, the same check every
-/// other module's paths get); `name` additionally gets the stricter `[a-z0-9][a-z0-9_-]*`
-/// charset ([`is_valid_step_name`], closes #14) before either is ever interpolated into a
-/// path.
+/// other module's paths get); `name` additionally gets the stricter
+/// `[a-z0-9][a-z0-9_-]*` charset (`shimmer_core::ids::is_valid_id`, ADR 0008 — closes #14:
+/// `validate_path` alone, the original check here, only rejects path escapes and accepted
+/// anything else, so `Setup.v2` or `my step` passed it despite ADR 0010 §4's claim that
+/// `name` gets this exact charset) before either is ever interpolated into a path.
 fn resolve_script(home: &Path, workspace_dir: &str, step: &Step) -> Result<PathBuf> {
     validate_path(workspace_dir)?;
     let rel = match step {
         Step::Launch { index, name, .. } => {
-            if !is_valid_step_name(name) {
+            if !is_valid_id(name) {
                 return Err(Error::invalid_params(format!("launch step name '{name}' must match [a-z0-9][a-z0-9_-]*")));
             }
             format!("{index:02}-{name}.sh")
@@ -112,25 +115,6 @@ fn resolve_script(home: &Path, workspace_dir: &str, step: &Step) -> Result<PathB
     };
     let rel = if matches!(step, Step::Cleanup) { rel } else { format!("steps/{rel}") };
     Ok(home.join("data/workspaces").join(workspace_dir).join(rel))
-}
-
-/// ADR 0010 §2a/§4's charset for a launch step's `name`: `[a-z0-9][a-z0-9_-]*`, the same
-/// shape ADR 0008 already uses for a record id. Closes #14 — `validate_path` alone (what
-/// this check used to be) only rejects path escapes and accepts anything else, so a `name`
-/// like `Setup.v2` or `my step` passed it despite ADR 0010 §4's claim that `name` gets this
-/// exact charset. Checked before any path is built, so an invalid `name` is `invalid_params`
-/// rather than a path-traversal risk — it can only ever select a file already constrained
-/// under `steps/`.
-///
-/// This duplicates `shimmer_core::ids::is_valid_name` (leading-letter only — doesn't fit, a
-/// step name may start with a digit) and `shimmer_records::item::check_id`'s identical
-/// leading-digit-or-letter charset, rather than sharing one implementation. Flagged, not
-/// resolved: a shared helper belongs in `core`, and CLAUDE.md §12 rule 1 requires explicit
-/// sign-off before touching it.
-fn is_valid_step_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    matches!(chars.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
 /// ADR 0010 §3 "Detached": own process group, stdio to null (same pattern
