@@ -4,15 +4,17 @@ GitHub rulesets are repository settings, not files: GitHub does not read this fo
 files are the rulesets we agreed on, kept here so changes to them are reviewed like code. The repo
 owner applies them by hand.
 
-| File | Applies to | Why |
-|---|---|---|
-| `master.json` | `master` | Everything reaches `master` through an approved PR with green CI. |
-| `integration-branches.json` | `post-*`, `integration/*` | Umbrella branches that collect several PRs before going to `master` get the same review, so nothing lands in them unreviewed. |
+| File | Ruleset name | Applies to | Why |
+|---|---|---|---|
+| `master.json` | `protect-master` | `master` | Everything reaches `master` through an approved PR with green CI. |
+| `integration-branches.json` | `protect-integration-branches` | `post-*`, `integration/*` | Umbrella branches that collect several PRs before going to `master` get the same review, so nothing lands in them unreviewed. |
 
 Feature branches (anything else) have no rules on purpose: their authors must be able to push to
 them freely, including after a PR is open. They are protected by the PR into a protected branch.
 A ruleset that matches every branch blocks those pushes (`GH013: Changes must be made through a
-pull request`), which is what happened on 2026-10-01.
+pull request`) and blocks deleting merged branches. That happened twice: on 2026-10-01 (the old
+`master` and `master-rule` rulesets matched every branch) and again on 2026-10-03 (a ruleset
+named `other-branches`, since deleted). **Never add a ruleset that matches all branches.**
 
 Both rulesets:
 
@@ -24,6 +26,15 @@ Both rulesets:
 - **Require review conversations to be resolved** before merging.
 - **Require CI to pass** on both platforms (`check (ubuntu-latest)`, `check (macos-latest)`, the
   job names from `.github/workflows/ci.yml`; update them here if those change).
+  - On **`master`**, the PR must also be **up to date with `master`**
+    (`strict_required_status_checks_policy: true`): if `master` moved on since CI ran, GitHub
+    shows **Update branch**, and CI runs again on the combined code. So two PRs that pass alone
+    can't merge into `master` untested together.
+  - On **integration branches** it isn't required (`false`): a PR must pass CI on its own
+    commits, but needn't be re-run each time a sibling PR lands in the umbrella. The umbrella
+    itself is held to the stricter rule when it merges into `master`.
+  - Note: updating the branch adds a commit, so with stale-approval dismissal (below) a `master`
+    PR may need re-approving after **Update branch**.
 - **Allow only merge commits**, no squash or rebase merges. Stacked PRs (a PR based on another
   PR's branch) break when their base is squash-merged.
 - **Block force-pushes.** `master` also blocks deletion; integration branches can be deleted once
@@ -37,17 +48,36 @@ Naming: give an umbrella branch a `post-` or `integration/` prefix (e.g. `post-m
 
 From an up-to-date clone, either in the browser:
 
-1. Settings → Rules → Rulesets → **New ruleset** → **Import a ruleset** → pick a file here.
-2. Check the imported rules, then **Create**.
-3. Delete the old rulesets this replaces (`Master Branch`, `master`, `master-rule`).
+**Order matters:** import the new rulesets first, then delete the old ones. Deleting first leaves
+`master` unprotected in between.
 
-or with the GitHub CLI:
+The old rulesets this replaces, all on `master`: `Master Branch`, `master` and `master-rule`
+(the last two also carry a stray `required_deployments` rule). `other-branches`, which matched
+every branch except `master`, was already deleted on 2026-10-03.
+
+In the browser:
+
+1. Settings → Rules → Rulesets → **New ruleset** → **Import a ruleset** → pick a file here.
+2. Check the imported rules, then **Create**. Repeat for the other file.
+3. Delete `Master Branch`, `master` and `master-rule` (each ruleset's page → **Delete**).
+
+Or with the GitHub CLI. Deletes look each ruleset up **by name** and print it first, instead of
+trusting hardcoded ids that change when rulesets are recreated:
 
     gh api -X POST repos/Verifiedz/Shimmer/rulesets --input .github/rulesets/master.json
     gh api -X POST repos/Verifiedz/Shimmer/rulesets --input .github/rulesets/integration-branches.json
-    gh api -X DELETE repos/Verifiedz/Shimmer/rulesets/23237114   # old "Master Branch"
-    gh api -X DELETE repos/Verifiedz/Shimmer/rulesets/23405436   # old "master"
-    gh api -X DELETE repos/Verifiedz/Shimmer/rulesets/23497827   # old "master-rule"
+
+    # See what exists: the two new ones (protect-*) and the three old ones.
+    gh api repos/Verifiedz/Shimmer/rulesets --jq '.[] | "\(.id)  \(.name)"'
+
+    for name in "Master Branch" "master" "master-rule"; do
+      id=$(gh api repos/Verifiedz/Shimmer/rulesets --jq ".[] | select(.name==\"$name\") | .id")
+      echo "deleting $name ($id)"
+      [ -n "$id" ] && gh api -X DELETE "repos/Verifiedz/Shimmer/rulesets/$id"
+    done
+
+The new rulesets are named `protect-*` so they can never be mistaken for the old `master` when
+deleting by name.
 
 To change a ruleset later: edit its file here in a PR, then apply it with
 `gh api -X PUT repos/Verifiedz/Shimmer/rulesets/<id> --input <file>` (or in Settings).
