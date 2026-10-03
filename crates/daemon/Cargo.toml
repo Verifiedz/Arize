@@ -1,5 +1,5 @@
 [package]
-name = "swe-daemon"
+name = "shimmer-daemon"
 description = "Core services: registry, event bus, queue, IPC server, indexer."
 version.workspace = true
 edition.workspace = true
@@ -11,9 +11,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-swe-core = { path = "../core" }
-swe-proto = { path = "../proto" }
-swe-store = { path = "../store" }
+shimmer-core = { path = "../core" }
+shimmer-proto = { path = "../proto" }
+shimmer-store = { path = "../store" }
 async-trait = "0.1"
 chrono = "0.4"
 serde = { version = "1", features = ["derive"] }

@@ -1,13 +1,13 @@
 //! Start the daemon when nobody is listening, then connect (CLAUDE.md §2: like `tmux` or
 //! `ssh-agent`, the user never starts it by hand). The daemon is this same binary run as
-//! `swe daemon`; the CLI never links the daemon crate (§3 rule 2).
+//! `shimmer daemon`; the CLI never links the daemon crate (§3 rule 2).
 
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use swe_core::{Error, Result};
+use shimmer_core::{Error, Result};
 
 use crate::client::Client;
 
@@ -19,9 +19,9 @@ const POLL: Duration = Duration::from_millis(50);
 pub async fn start_and_connect(exe: &Path, socket: &Path) -> Result<Client> {
     let mut child = Command::new(exe)
         .arg("daemon")
-        // `socket` may itself have come from $SWE_SOCKET or $XDG_RUNTIME_DIR; pinning it makes
+        // `socket` may itself have come from $SHIMMER_SOCKET or $XDG_RUNTIME_DIR; pinning it makes
         // the daemon bind exactly where this client is about to look.
-        .env("SWE_SOCKET", socket)
+        .env("SHIMMER_SOCKET", socket)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -37,16 +37,18 @@ pub async fn start_and_connect(exe: &Path, socket: &Path) -> Result<Client> {
             Err(e) if !e.nobody_listening() => return Err(e.into_error(socket)),
             Err(_) => {}
         }
-        // Exited early: usually another daemon already owns this home (a second `swe` raced us
+        // Exited early: usually another daemon already owns this home (a second `shimmer` raced us
         // and won), or the home is unusable. One last look covers the race.
         if let Ok(Some(status)) = child.try_wait() {
             return Client::connect(socket).await.map_err(|_| {
-                Error::unavailable(format!("the daemon exited during startup ({status}); run 'swe daemon' to see why"))
+                Error::unavailable(format!(
+                    "the daemon exited during startup ({status}); run 'shimmer daemon' to see why"
+                ))
             });
         }
         if Instant::now() >= deadline {
             return Err(Error::unavailable(format!(
-                "started the daemon but it was not listening on {} after {}s; run 'swe daemon' to see why",
+                "started the daemon but it was not listening on {} after {}s; run 'shimmer daemon' to see why",
                 socket.display(),
                 START_TIMEOUT.as_secs()
             )));

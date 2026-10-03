@@ -1,6 +1,6 @@
 [package]
-name = "swe-mockd"
-description = "The mock daemon (`swe mockd`): canned responses and a scripted event stream, for building clients without a real daemon. Depends on core and proto only."
+name = "shimmer-mockd"
+description = "The mock daemon (`shimmer mockd`): canned responses and a scripted event stream, for building clients without a real daemon. Depends on core and proto only."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,8 +11,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-swe-core = { path = "../core" }
-swe-proto = { path = "../proto" }
+shimmer-core = { path = "../core" }
+shimmer-proto = { path = "../proto" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "net", "io-util", "sync", "time"] }

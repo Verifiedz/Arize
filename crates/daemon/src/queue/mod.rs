@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
-use swe_core::{
+use shimmer_core::{
     Clock, EnqueueRequest, Error, ErrorCode, Event, LaneConfig, LaneId, ModuleId, Priority, ProgressFn, Result, Task,
     TaskHandle, TaskId, TaskSubmitter,
 };
@@ -137,7 +137,7 @@ impl QueueInner {
 
     /// Durable + published. A failure to log is reported, never allowed to wedge a lane.
     fn emit(&self, topic: &str, payload: Value) {
-        if let Err(e) = swe_core::EventSink::emit(&*self.backend, self.event(topic, payload)) {
+        if let Err(e) = shimmer_core::EventSink::emit(&*self.backend, self.event(topic, payload)) {
             tracing::error!(topic, error = %e, "could not log queue event");
         }
     }

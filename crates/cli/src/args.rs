@@ -1,4 +1,4 @@
-//! `swe <command>` arguments. Hand-rolled like `swe mockd`'s: a handful of commands does not
+//! `shimmer <command>` arguments. Hand-rolled like `shimmer mockd`'s: a handful of commands does not
 //! need a parser crate, and command packs (§15.1) will rewrite the command word before this runs.
 
 use std::path::PathBuf;
@@ -7,16 +7,16 @@ use serde_json::Value;
 
 use crate::records::{self, RecordsCmd};
 
-pub const USAGE: &str = "usage: swe [--socket PATH] [--json] <command>
+pub const USAGE: &str = "usage: shimmer [--socket PATH] [--json] <command>
 
 commands:
   ping                  check the daemon is up
   manifest              list registered modules, their ops and lanes
-  records …             add, list and complete records (swe records --help)
+  records …             add, list and complete records (shimmer records --help)
   call OP [PARAMS]      send any op; PARAMS is a JSON object (default {})
   shutdown              stop the daemon
   daemon                run the daemon in the foreground (Ctrl-C to stop)
-  mockd                 run the mock daemon for building clients (swe mockd --help)
+  mockd                 run the mock daemon for building clients (shimmer mockd --help)
 
 options:
   --socket PATH         talk to this socket instead of the default; never auto-starts
@@ -44,7 +44,7 @@ pub struct Args {
 }
 
 impl Args {
-    /// `args` are what follows `swe`. The global flags below may appear anywhere; any other
+    /// `args` are what follows `shimmer`. The global flags below may appear anywhere; any other
     /// option belongs to the command, which decides whether it takes one.
     pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Self, String> {
         let (mut socket, mut json, mut help) = (None, false, false);
@@ -104,7 +104,7 @@ fn command(words: Vec<String>) -> Result<Command, String> {
 
 fn call(rest: Vec<String>) -> Result<Command, String> {
     let mut rest = rest.into_iter();
-    let op = rest.next().ok_or("call needs an op, e.g. 'swe call core.ping'")?;
+    let op = rest.next().ok_or("call needs an op, e.g. 'shimmer call core.ping'")?;
     let params = match rest.next() {
         None => Value::Object(Default::default()),
         Some(text) => {

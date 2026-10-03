@@ -6,8 +6,8 @@ use std::collections::BTreeSet;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use swe_core::ids::is_valid_name;
-use swe_core::{Error, Result};
+use shimmer_core::ids::is_valid_name;
+use shimmer_core::{Error, Result};
 
 use crate::item::toml_to_json;
 

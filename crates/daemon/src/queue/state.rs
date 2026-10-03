@@ -1,7 +1,7 @@
 //! One lane's bookkeeping as plain data. No runtime, no I/O: a test can drive it directly
 //! (§12 rule 10).
 
-use swe_core::{Error, LaneConfig, Priority, Result, Task, TaskId};
+use shimmer_core::{Error, LaneConfig, Priority, Result, Task, TaskId};
 
 pub struct LaneState {
     pub cfg: LaneConfig,
@@ -114,7 +114,7 @@ fn is_overridden(t: &Task) -> bool {
 mod tests {
     use chrono::Utc;
     use serde_json::json;
-    use swe_core::Origin;
+    use shimmer_core::Origin;
 
     use super::*;
 

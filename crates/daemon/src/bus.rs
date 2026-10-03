@@ -2,7 +2,7 @@
 //! slow one loses its oldest events and is told so (`core.stream.lagged`) instead of
 //! stalling everyone else.
 
-use swe_core::Event;
+use shimmer_core::Event;
 use tokio::sync::broadcast;
 
 #[derive(Clone)]
@@ -12,7 +12,7 @@ pub struct Bus {
 
 impl Bus {
     pub fn new() -> Self {
-        Self { tx: broadcast::channel(swe_proto::EVENT_QUEUE_CAPACITY).0 }
+        Self { tx: broadcast::channel(shimmer_proto::EVENT_QUEUE_CAPACITY).0 }
     }
 
     /// No subscribers is fine.

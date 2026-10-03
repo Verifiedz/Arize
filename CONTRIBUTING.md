@@ -1,11 +1,8 @@
 # Contributing to Shimmer
 
-This page gets you from a fresh clone to passing tests and a working `swe ping`. For the design
+This page gets you from a fresh clone to passing tests and a working `shimmer ping`. For the design
 itself, `CLAUDE.md` is the source of truth: if this page and `CLAUDE.md` disagree, `CLAUDE.md`
 wins.
-
-The command and crate names are still `swe` / `swe-*`. They will be renamed to `shimmer`
-everywhere at once; until then, write `swe`.
 
 ## Prerequisites
 
@@ -28,10 +25,10 @@ cargo run -q -- ping        # "pong (daemon up 0s)": the daemon started and answ
 cargo run -q -- shutdown
 ```
 
-`cargo run -q --` is the `swe` command. The first command you run starts the daemon in the
-background; you never start it by hand. Your data goes to `~/.local/share/swe` (Linux) or
-`~/Library/Application Support/swe` (macOS). To experiment without touching it, point `SWE_HOME`
-at a scratch folder: `SWE_HOME=/tmp/swe-play cargo run -q -- ping`.
+`cargo run -q --` is the `shimmer` command. The first command you run starts the daemon in the
+background; you never start it by hand. Your data goes to `~/.local/share/shimmer` (Linux) or
+`~/Library/Application Support/shimmer` (macOS). To experiment without touching it, point `SHIMMER_HOME`
+at a scratch folder: `SHIMMER_HOME=/tmp/shimmer-play cargo run -q -- ping`.
 
 ### The dev launcher
 
@@ -41,16 +38,16 @@ Typing `cargo run -q --` gets old, and it only works from inside the repo. Insta
 .dev/install-dev-launcher.sh
 ```
 
-It writes a small `swe` script into `~/.cargo/bin` (already on your `PATH` if you installed Rust
-with rustup) that runs `cargo run -q --manifest-path <your clone>/Cargo.toml -p swe -- "$@"`.
-So `swe` works from any folder and always runs your latest code, rebuilding first when something
+It writes a small `shimmer` script into `~/.cargo/bin` (already on your `PATH` if you installed Rust
+with rustup) that runs `cargo run -q --manifest-path <your clone>/Cargo.toml -p shimmer -- "$@"`.
+So `shimmer` works from any folder and always runs your latest code, rebuilding first when something
 changed. It points at the clone you ran the script from, wherever that is.
 
-It refuses to replace an existing `~/.cargo/bin/swe`. If that file is an older launcher (say, from
+It refuses to replace an existing `~/.cargo/bin/shimmer`. If that file is an older launcher (say, from
 a clone you moved), re-run with `--force` to replace it.
 
 One thing to know: the daemon keeps running the binary it was started from. After changing daemon
-or module code, run `swe shutdown` and the next command starts a daemon with your new code.
+or module code, run `shimmer shutdown` and the next command starts a daemon with your new code.
 
 ## Before every push
 
@@ -134,18 +131,18 @@ Docs-only changes and changes inside a crate you own that follow existing rules 
 
 ## Trying the mock daemon
 
-`swe mockd` serves the real protocol from canned responses and a scripted event timeline, so you
+`shimmer mockd` serves the real protocol from canned responses and a scripted event timeline, so you
 can build or test a client without a real daemon:
 
 ```sh
-swe mockd --fixtures crates/mockd/fixtures --socket /tmp/swe-mock.sock
+shimmer mockd --fixtures crates/mockd/fixtures --socket /tmp/shimmer-mock.sock
 ```
 
 In a second terminal, point any command at it with `--socket`:
 
 ```sh
-swe --socket /tmp/swe-mock.sock ping
-swe --socket /tmp/swe-mock.sock manifest
+shimmer --socket /tmp/shimmer-mock.sock ping
+shimmer --socket /tmp/shimmer-mock.sock manifest
 ```
 
 Both flags are required, so the mock can never take over the real daemon's socket, and a command
@@ -154,4 +151,4 @@ real daemon: a `confirmation_required` round-trip, a `workspace_dirty` failure, 
 stream and a long task with progress. The fixture format is in `crates/mockd/fixtures/README.md`;
 add a case by adding a file there.
 
-Without the dev launcher, replace `swe` with `cargo run -q --`.
+Without the dev launcher, replace `shimmer` with `cargo run -q --`.

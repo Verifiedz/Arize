@@ -10,9 +10,6 @@ and no network requirement.
 Today Shimmer is a background daemon plus a command-line client. You use it to define trackers
 and add, list, filter, update and complete records in them.
 
-The command is `swe` for now. It will be renamed to `shimmer` everywhere at once; until then,
-every example here uses `swe`.
-
 ## Overview
 
 Shimmer is built as a few general mechanisms rather than one feature per tracker. A LeetCode
@@ -36,24 +33,24 @@ One long-lived **daemon** owns all state. Every other program is a thin client t
 it over a Unix domain socket:
 
 ```
-swe (CLI) ──→ Unix socket ──→ daemon ──→ files in $SWE_HOME ──→ SQLite index (derived)
+shimmer (CLI) ──→ Unix socket ──→ daemon ──→ files in $SHIMMER_HOME ──→ SQLite index (derived)
 ```
 
 - **The daemon is the only writer.** It hosts the modules, runs the queue and scheduler, and is
   the only process that changes your data.
 - **Clients hold no logic.** The CLI sends a request such as `records.list`, then formats the
-  reply. It finds out which modules and operations exist by asking the daemon (`swe manifest`),
+  reply. It finds out which modules and operations exist by asking the daemon (`shimmer manifest`),
   so nothing about a module is hardcoded into the client.
-- **You never start the daemon yourself.** The first `swe` command starts it in the background
+- **You never start the daemon yourself.** The first `shimmer` command starts it in the background
   if it isn't running, the same way `tmux` or `ssh-agent` do.
 - **The protocol is newline-delimited JSON**, with requests and responses plus a stream of
   events a client can subscribe to. You can talk to the daemon by hand with `nc -U`. The
   contract is in [`docs/protocol.md`](docs/protocol.md).
 
-**Your files are the truth.** Everything durable is a human-readable file under `$SWE_HOME`:
+**Your files are the truth.** Everything durable is a human-readable file under `$SHIMMER_HOME`:
 
 ```
-$SWE_HOME/
+$SHIMMER_HOME/
   config.toml                                Settings
   data/records/collections/<collection>.toml One file per collection definition
   data/records/items/<collection>/<id>.toml  One file per record
@@ -64,8 +61,8 @@ $SWE_HOME/
                                               logs/daemon.log predates this and is safe to delete.
 ```
 
-`$SWE_HOME` defaults to `~/.local/share/swe` on Linux and `~/Library/Application Support/swe` on
-macOS. Set the `SWE_HOME` environment variable to use another folder. The SQLite index exists
+`$SHIMMER_HOME` defaults to `~/.local/share/shimmer` on Linux and `~/Library/Application Support/shimmer` on
+macOS. Set the `SHIMMER_HOME` environment variable to use another folder. The SQLite index exists
 only to make queries fast: delete it and the daemon rebuilds it from the event log on its next
 start. Writes are atomic, so a crash leaves either the old file or the new one, never half of
 one. The folder ships with a `.gitignore` for the derived and machine-local parts, so you can
@@ -84,29 +81,29 @@ cargo build
 cargo run -q -- ping          # starts the daemon if needed, then: "pong (daemon up 0s)"
 ```
 
-`cargo run -q --` is the `swe` command, and it only works from inside the repository. To type
-`swe` from any folder, run `.dev/install-dev-launcher.sh` once (see
+`cargo run -q --` is the `shimmer` command, and it only works from inside the repository. To type
+`shimmer` from any folder, run `.dev/install-dev-launcher.sh` once (see
 [CONTRIBUTING.md](CONTRIBUTING.md#the-dev-launcher)). The examples below assume you have.
 
 ### Track records
 
 ```sh
-swe records collections                  # list collections and their fields
-swe records add leetcode two-sum --title "Two Sum" --difficulty easy
-swe records list leetcode --status todo  # --FIELD VALUE filters on an exact value
-swe records complete leetcode/two-sum    # mark done; stamps last_solved with today's date
-swe records get leetcode/two-sum
-swe records update leetcode/two-sum --url https://leetcode.com/problems/two-sum/
-swe records remove leetcode/two-sum
+shimmer records collections                  # list collections and their fields
+shimmer records add leetcode two-sum --title "Two Sum" --difficulty easy
+shimmer records list leetcode --status todo  # --FIELD VALUE filters on an exact value
+shimmer records complete leetcode/two-sum    # mark done; stamps last_solved with today's date
+shimmer records get leetcode/two-sum
+shimmer records update leetcode/two-sum --url https://leetcode.com/problems/two-sum/
+shimmer records remove leetcode/two-sum
 ```
 
 `list` also takes `--limit N` and `--offset N`, and `update` takes `--unset FIELD`. You can
-write a record as `leetcode/two-sum` or `leetcode two-sum`. Run `swe records --help` for the
+write a record as `leetcode/two-sum` or `leetcode two-sum`. Run `shimmer records --help` for the
 details.
 
 ### Add your own tracker
 
-A new tracker is a TOML file in `$SWE_HOME/data/records/collections/`. For example,
+A new tracker is a TOML file in `$SHIMMER_HOME/data/records/collections/`. For example,
 `jobs.toml`:
 
 ```toml
@@ -133,8 +130,8 @@ type = "date"
 It's usable straight away, with no restart:
 
 ```sh
-swe records add jobs acme --company Acme --stage saved
-swe records list jobs --stage saved
+shimmer records add jobs acme --company Acme --stage saved
+shimmer records list jobs --stage saved
 ```
 
 The built-in `leetcode.toml` sits in the same folder and is a good reference. You can edit it
@@ -143,11 +140,11 @@ too.
 ### Other commands
 
 ```sh
-swe manifest              # registered modules, their operations and lanes
-swe call OP '{...}'       # send any operation with JSON params, e.g. swe call queue.list
-swe shutdown              # stop the daemon
-swe daemon                # run the daemon in the foreground with its logs (stop any running one first)
-swe --help                # every command
+shimmer manifest              # registered modules, their operations and lanes
+shimmer call OP '{...}'       # send any operation with JSON params, e.g. shimmer call queue.list
+shimmer shutdown              # stop the daemon
+shimmer daemon                # run the daemon in the foreground with its logs (stop any running one first)
+shimmer --help                # every command
 ```
 
 Add `--json` to any command to see the daemon's raw reply, and `--socket PATH` to talk to a

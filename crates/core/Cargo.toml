@@ -1,5 +1,5 @@
 [package]
-name = "swe-core"
+name = "shimmer-core"
 description = "Shared contract: Module trait, Ctx, Event, Task, ids, errors. Depends on nothing internal."
 version.workspace = true
 edition.workspace = true

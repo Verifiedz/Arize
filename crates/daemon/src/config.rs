@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use serde_json::Value;
-use swe_core::{Error, LocalTimezone, Result};
+use shimmer_core::{Error, LocalTimezone, Result};
 
 #[derive(Debug, Default)]
 pub struct Config {
@@ -130,7 +130,7 @@ fn persist_detected_timezone(path: &Path, existing: &str, name: &str) -> Result<
     } else {
         format!("{existing}\n[general]\n{addition}")
     };
-    swe_store::write_atomic(path, new_text.as_bytes()).map_err(Error::from)
+    shimmer_store::write_atomic(path, new_text.as_bytes()).map_err(Error::from)
 }
 
 /// Byte offset right after the `[general]` table header line, or `None` if the file has no

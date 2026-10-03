@@ -1,5 +1,5 @@
 //! Shared harness for the socket tests: a demo module, a raw protocol client, and a daemon
-//! environment. Speaks only `swe-proto` frames, exactly what any client sees.
+//! environment. Speaks only `shimmer-proto` frames, exactly what any client sees.
 #![allow(dead_code)]
 
 use std::collections::VecDeque;
@@ -10,11 +10,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 use serde_json::{json, Value};
-use swe_core::{
+use shimmer_core::{
     Clock, CommandSpec, Ctx, Error, ErrorCode, Event, Execution, LaneConfig, Manifest, Module, Result, TriggerSpec,
 };
-use swe_daemon::{Daemon, DaemonConfig};
-use swe_proto::{decode_server, ServerFrame};
+use shimmer_daemon::{Daemon, DaemonConfig};
+use shimmer_proto::{decode_server, ServerFrame};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};

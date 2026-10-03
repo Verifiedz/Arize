@@ -1,4 +1,4 @@
-//! `swe-core`: the shared contract between daemon, modules and clients.
+//! `shimmer-core`: the shared contract between daemon, modules and clients.
 //!
 //! Change-controlled (CLAUDE.md §4). Depends on nothing internal, and never learns what a
 //! user is (§1.5): no identity, session or token types belong here.

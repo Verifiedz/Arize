@@ -1,4 +1,4 @@
-//! `swe records …`: typed commands over the `records.*` ops (ADR 0008).
+//! `shimmer records …`: typed commands over the `records.*` ops (ADR 0008).
 //!
 //! Nothing here knows about LeetCode or any other collection. Field flags (`--title`,
 //! `--company`) and their types come from the daemon at runtime (`records.collections`), so a
@@ -7,17 +7,17 @@
 use std::fmt::Write as _;
 
 use serde_json::{json, Map, Value};
-use swe_core::{Error, Result};
+use shimmer_core::{Error, Result};
 
 use crate::client::Client;
 use crate::render;
 
-pub const USAGE: &str = "usage: swe records <command>
+pub const USAGE: &str = "usage: shimmer records <command>
 
 commands:
   collections                          list collections and their fields
   add COLLECTION ID [--FIELD VALUE]…   add a record, e.g.
-                                         swe records add leetcode two-sum --title \"Two Sum\" --difficulty easy
+                                         shimmer records add leetcode two-sum --title \"Two Sum\" --difficulty easy
   list COLLECTION [--FIELD VALUE]…     list records; each --FIELD filters on an exact value
        [--status todo|done] [--limit N] [--offset N]
   get COLLECTION/ID                    show one record
@@ -26,7 +26,7 @@ commands:
   remove COLLECTION/ID                 delete a record
 
 A record can be written COLLECTION/ID or COLLECTION ID. Field names come from the
-collection: see 'swe records collections'. Add --json to any command for raw output.";
+collection: see 'shimmer records collections'. Add --json to any command for raw output.";
 
 /// `--name value` pairs, in the order given.
 pub type Flags = Vec<(String, String)>;
@@ -45,7 +45,7 @@ pub enum RecordsCmd {
 
 // ---------------------------------------------------------------- parsing
 
-/// `words` are what follows `swe records`, with global flags already removed.
+/// `words` are what follows `shimmer records`, with global flags already removed.
 pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
     let mut words = words.into_iter();
     let Some(sub) = words.next() else { return Ok(RecordsCmd::Help) };
@@ -69,7 +69,7 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
         }
         "list" => {
             let [collection]: [String; 1] =
-                positional.try_into().map_err(|_| "usage: swe records list COLLECTION [--FIELD VALUE]…")?;
+                positional.try_into().map_err(|_| "usage: shimmer records list COLLECTION [--FIELD VALUE]…")?;
             let (mut filter, mut limit, mut offset) = (Vec::new(), None, None);
             for (name, value) in flags {
                 match name.as_str() {
@@ -98,7 +98,7 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
                 _ => RecordsCmd::Remove { collection, id },
             })
         }
-        other => Err(format!("unknown records command '{other}'; see 'swe records --help'")),
+        other => Err(format!("unknown records command '{other}'; see 'shimmer records --help'")),
     }
 }
 
@@ -129,7 +129,7 @@ fn split(words: Vec<String>) -> std::result::Result<(Vec<String>, Flags), String
 
 /// `COLLECTION/ID` or `COLLECTION ID`.
 fn target(sub: &str, positional: Vec<String>) -> std::result::Result<(String, String), String> {
-    let usage = || format!("usage: swe records {sub} COLLECTION/ID");
+    let usage = || format!("usage: shimmer records {sub} COLLECTION/ID");
     match positional.as_slice() {
         [one] => match one.split_once('/') {
             Some((c, id)) if !c.is_empty() && !id.is_empty() => Ok((c.to_owned(), id.to_owned())),
@@ -288,10 +288,15 @@ fn collections(data: &Value) -> String {
                 .collect()
         })
         .unwrap_or_default();
-    if rows.is_empty() {
-        return "no collections".into();
+    let mut out = match rows.is_empty() {
+        true => "no collections".to_owned(),
+        false => table(&["ID".into(), "LABEL".into(), "FIELDS".into()], &rows),
+    };
+    // In full, not cut like a table cell: the message is how the user finds the broken line.
+    for skipped in data["skipped"].as_array().into_iter().flatten() {
+        let _ = write!(out, "\nskipped: {}", skipped.as_str().unwrap_or_default());
     }
-    table(&["ID".into(), "LABEL".into(), "FIELDS".into()], &rows)
+    out
 }
 
 /// `difficulty (easy|medium|hard)`, `title*` for required, `last_solved (date)`.
@@ -589,6 +594,19 @@ lru-cache  todo    LRU Cache  medium      -    -            2         true
             out.contains("leetcode  LeetCode  title*, difficulty (easy|medium|hard), url, last_solved (date)"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn collections_list_skipped_files_in_full() {
+        let message = "collection file 'broken.toml': TOML parse error at line 1, column 5, key with no value";
+        let data = json!({"collections": [leetcode()], "skipped": [message]});
+        let out = show(&RecordsCmd::Collections, &data, &Value::Null);
+        assert!(out.starts_with("ID        LABEL"), "{out}");
+        assert!(out.ends_with(&format!("\nskipped: {message}")), "{out}");
+
+        let only_broken = json!({"collections": [], "skipped": [message]});
+        let out = show(&RecordsCmd::Collections, &only_broken, &Value::Null);
+        assert_eq!(out, format!("no collections\nskipped: {message}"));
     }
 
     #[test]
