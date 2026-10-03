@@ -1,4 +1,4 @@
-//! `swe-cli`: the command-line client. A thin client (CLAUDE.md §2): it parses a command,
+//! `shimmer-cli`: the command-line client. A thin client (CLAUDE.md §2): it parses a command,
 //! sends requests over the socket, and renders the answers. No business logic lives here.
 //!
 //! Depends on `core` and `proto` only (§3 rule 2). Command packs and aliases (§15.1) land
@@ -14,21 +14,21 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use serde_json::{json, Value};
-use swe_core::{Error, Result};
-use swe_proto::ops;
+use shimmer_core::{Error, Result};
+use shimmer_proto::ops;
 
 pub use args::{Args, Command, USAGE};
 pub use client::{Client, ConnectError};
 pub use records::RecordsCmd;
 
-/// Run `swe <args>`: `args` are what follows the binary name. Exit codes: 0 success,
+/// Run `shimmer <args>`: `args` are what follows the binary name. Exit codes: 0 success,
 /// 1 the daemon (or reaching it) failed, 2 bad usage.
 pub async fn run(args: Vec<String>) -> ExitCode {
     let args = match Args::parse(args) {
         Ok(a) => a,
         Err(e) => {
             let usage = if e.contains("records") { records::USAGE } else { USAGE };
-            eprintln!("swe: {e}\n\n{usage}");
+            eprintln!("shimmer: {e}\n\n{usage}");
             return ExitCode::from(2);
         }
     };
@@ -39,7 +39,7 @@ pub async fn run(args: Vec<String>) -> ExitCode {
         }
         Ok(None) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("swe: {}", render::error(&e));
+            eprintln!("shimmer: {}", render::error(&e));
             ExitCode::FAILURE
         }
     }
@@ -67,15 +67,15 @@ async fn execute(args: &Args) -> Result<Option<String>> {
     Ok(Some(output(args, &data)))
 }
 
-/// `None` when there is nothing to do: `swe shutdown` with no daemon running.
+/// `None` when there is nothing to do: `shimmer shutdown` with no daemon running.
 async fn connect(args: &Args) -> Result<Option<Client>> {
-    let socket = args.socket.clone().unwrap_or_else(swe_proto::paths::socket_path);
+    let socket = args.socket.clone().unwrap_or_else(shimmer_proto::paths::socket_path);
     let shutdown = args.command == Command::Shutdown;
     match Client::connect(&socket).await {
         Ok(c) => Ok(Some(c)),
         // Starting a daemon only to stop it again helps nobody.
         Err(e) if e.nobody_listening() && shutdown => {
-            eprintln!("swe: the daemon is not running");
+            eprintln!("shimmer: the daemon is not running");
             Ok(None)
         }
         Err(e) if e.nobody_listening() && args.socket.is_none() => {
@@ -97,8 +97,8 @@ fn output(args: &Args, data: &Value) -> String {
     }
 }
 
-/// The daemon is this same binary, run as `swe daemon`.
+/// The daemon is this same binary, run as `shimmer daemon`.
 fn daemon_exe() -> Result<PathBuf> {
     std::env::current_exe()
-        .map_err(|e| Error::unavailable(format!("cannot find the swe binary to start the daemon: {e}")))
+        .map_err(|e| Error::unavailable(format!("cannot find the shimmer binary to start the daemon: {e}")))
 }

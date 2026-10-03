@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use swe_core::ids::is_valid_name;
-use swe_core::{CommandSpec, Error, Execution, LaneConfig, LaneId, Manifest, Module, ModuleId, Result};
+use shimmer_core::ids::is_valid_name;
+use shimmer_core::{CommandSpec, Error, Execution, LaneConfig, LaneId, Manifest, Module, ModuleId, Result};
 
 use crate::config::Config;
 

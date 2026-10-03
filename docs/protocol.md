@@ -14,11 +14,11 @@ Unix domain socket, stream mode.
 
 | Platform | Socket path |
 |---|---|
-| Linux | `$XDG_RUNTIME_DIR/swe/daemon.sock`, falling back to `$SWE_HOME/daemon.sock` |
-| macOS | `$SWE_HOME/daemon.sock` |
-| Windows | Named pipe `\\.\pipe\swe-daemon` (deferred; not before M6) |
+| Linux | `$XDG_RUNTIME_DIR/shimmer/daemon.sock`, falling back to `$SHIMMER_HOME/daemon.sock` |
+| macOS | `$SHIMMER_HOME/daemon.sock` |
+| Windows | Named pipe `\\.\pipe\shimmer-daemon` (deferred; not before M6) |
 
-The path is also exported to workspace scripts as `SWE_SOCKET`.
+The path is also exported to workspace scripts as `SHIMMER_SOCKET`.
 
 If the socket file exists but connecting returns `ECONNREFUSED`, the daemon died without
 cleaning up. Clients should unlink it and start a daemon.
@@ -169,7 +169,7 @@ Topic patterns support a trailing `*` on a segment boundary: `records.*`,
 `topics` shape.
 
 The event object is byte-identical to the one appended to
-`$SWE_HOME/events/YYYY-MM-DD.jsonl`. One definition in `swe-core`. The one exception to
+`$SHIMMER_HOME/events/YYYY-MM-DD.jsonl`. One definition in `shimmer-core`. The one exception to
 "every streamed event is logged" is `queue.task.progress`, which is streamed only.
 
 **Backpressure:** each connection has a bounded event queue (1024). If a client does not
@@ -365,7 +365,7 @@ as "currently running".
 
 | Op | Execution | Params | Returns |
 |---|---|---|---|
-| `records.collections` | inline | `{}` | `{"collections":[...]}`, each collection definition as JSON. |
+| `records.collections` | inline | `{}` | `{"collections":[...]}`, each collection definition as JSON (+ `"skipped"` naming each malformed collection file). |
 | `records.add` | inline | `{"collection","id","fields"?}` | The new item. `conflict` if the id exists. |
 | `records.get` | inline | `{"collection","id"}` | The item. |
 | `records.list` | inline | `{"collection","filter"?,"limit"?,"offset"?}` | `{"items","total"}` (+ `"skipped"` if a hand-edited file was unreadable). |
@@ -414,7 +414,7 @@ tolerate unknown topics.
 | `workspaces.session.forced` | Force relaunch of a dirty workspace, with prior reason. |
 | `workspaces.session.cleaned` | Cleanup script succeeded; state back to `ready`. |
 | `records.item.created` / `.updated` / `.completed` / `.removed` | Record mutations. |
-| `records.collection.created` | A collection definition was seeded or hand-added. |
+| `records.collection.created` | The built-in collection was seeded on first start. |
 | `fetchers.item.found` | A source returned a new, deduplicated item. |
 | `fetchers.fetch.finished` / `.failed` | A fetch run ended. |
 | `calendar.date.registered` | A dated entry was stored. |
@@ -430,7 +430,7 @@ user.
 
 ## Mock daemon
 
-`crates/tui` develops against the mock daemon, `swe mockd`: a subcommand of the `swe` binary
+`crates/tui` develops against the mock daemon, `shimmer mockd`: a subcommand of the `shimmer` binary
 (`app` is the only binary, CLAUDE.md §3), implemented in `crates/mockd`, which depends on
 `core` and `proto` only. It speaks this protocol, serving canned responses from
 `crates/mockd/fixtures/*.json` and replaying a scripted event timeline. Built at M1. The
@@ -441,8 +441,8 @@ daemon: a `confirmation_required` round-trip, a `workspace_dirty` failure, a
 `core.stream.lagged` drop, and a long queued task emitting progress.
 
 ```
-$ swe mockd --fixtures crates/mockd/fixtures --socket /tmp/swe-mock.sock
-$ swe tui --socket /tmp/swe-mock.sock
+$ shimmer mockd --fixtures crates/mockd/fixtures --socket /tmp/shimmer-mock.sock
+$ shimmer tui --socket /tmp/shimmer-mock.sock
 ```
 
 Both flags are required, so the mock can never silently take over the real daemon's socket.

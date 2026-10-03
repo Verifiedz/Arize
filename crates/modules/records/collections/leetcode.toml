@@ -1,4 +1,4 @@
-# Built in. Written to $SWE_HOME/data/records/collections/ on first start; edit it freely there.
+# Built in. Written to $SHIMMER_HOME/data/records/collections/ on first start; edit it freely there.
 
 [collection]
 id = "leetcode"

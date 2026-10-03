@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use common::*;
 use serde_json::{json, Value};
-use swe_core::{ErrorCode, Event};
-use swe_proto::ServerFrame;
+use shimmer_core::{ErrorCode, Event};
+use shimmer_proto::ServerFrame;
 
 const OVERRIDE: fn() -> Value = || json!({"priority": "override"});
 

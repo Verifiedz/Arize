@@ -1,4 +1,4 @@
-//! End to end over a real Unix socket, speaking only `swe-proto` frames: exactly what any
+//! End to end over a real Unix socket, speaking only `shimmer-proto` frames: exactly what any
 //! client sees.
 
 mod common;
@@ -9,9 +9,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use common::*;
 use serde_json::{json, Value};
-use swe_core::{Clock, CommandSpec, Ctx, ErrorCode, Execution, Manifest, Module, Result};
-use swe_daemon::{Daemon, DaemonConfig};
-use swe_proto::ServerFrame;
+use shimmer_core::{Clock, CommandSpec, Ctx, ErrorCode, Execution, Manifest, Module, Result};
+use shimmer_daemon::{Daemon, DaemonConfig};
+use shimmer_proto::ServerFrame;
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 
@@ -220,7 +220,7 @@ async fn lane_concurrency_and_cancellation() {
 
     assert_eq!(c.call("queue.cancel", json!({"task_id": running})).await.unwrap_err().code, ErrorCode::NotCancellable);
     assert_eq!(
-        c.call("queue.cancel", json!({"task_id": swe_core::TaskId::new()})).await.unwrap_err().code,
+        c.call("queue.cancel", json!({"task_id": shimmer_core::TaskId::new()})).await.unwrap_err().code,
         ErrorCode::NotFound
     );
     assert_eq!(c.call("queue.list", json!({"lane": "ghost"})).await.unwrap_err().code, ErrorCode::LaneUnknown);
@@ -247,11 +247,11 @@ async fn committed_data_survives_a_restart_and_reaches_log_and_index() {
     // The file is truth, human-readable, where CLAUDE.md §7 says it is.
     let file = env.home.path().join("data/demo/items/two-sum.txt");
     assert_eq!(std::fs::read_to_string(file).unwrap(), "done");
-    let scan = swe_store::Store::open(env.home.path()).unwrap().read_events().unwrap();
+    let scan = shimmer_store::Store::open(env.home.path()).unwrap().read_events().unwrap();
     assert!(scan.events.iter().any(|e| e.topic == "demo.item.saved"));
 
     // The index is derived: it has the event too, and would be rebuilt if deleted.
-    let idx = swe_store::Index::open(&env.home.path().join("index.sqlite")).unwrap();
+    let idx = shimmer_store::Index::open(&env.home.path().join("index.sqlite")).unwrap();
     assert_eq!(idx.events_matching("demo.item.saved", 10).unwrap().len(), 1);
 }
 

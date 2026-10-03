@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use serde_json::{Map, Value};
-use swe_core::{Error, Result};
+use shimmer_core::{Error, Result};
 
 use crate::schema::Collection;
 

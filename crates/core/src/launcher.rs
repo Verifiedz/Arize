@@ -15,15 +15,15 @@ use async_trait::async_trait;
 
 use crate::error::{Error, Result};
 
-/// The env var names the launcher injects (CLAUDE.md §10.1). One place, so the coming
-/// `swe`/`swe-` rename (CLAUDE.md's header) touches this module and nothing else.
+/// The env var names the launcher injects (CLAUDE.md §10.1). Defined once, here, so renaming
+/// them (ADR 0011) touches this module and nothing else in the launcher.
 pub mod env_names {
-    pub const WORKSPACE_ID: &str = "SWE_WORKSPACE_ID";
-    pub const WORKSPACE_DIR: &str = "SWE_WORKSPACE_DIR";
-    pub const HOME: &str = "SWE_HOME";
-    pub const SOCKET: &str = "SWE_SOCKET";
-    pub const SESSION_ID: &str = "SWE_SESSION_ID";
-    pub const PLATFORM: &str = "SWE_PLATFORM";
+    pub const WORKSPACE_ID: &str = "SHIMMER_WORKSPACE_ID";
+    pub const WORKSPACE_DIR: &str = "SHIMMER_WORKSPACE_DIR";
+    pub const HOME: &str = "SHIMMER_HOME";
+    pub const SOCKET: &str = "SHIMMER_SOCKET";
+    pub const SESSION_ID: &str = "SHIMMER_SESSION_ID";
+    pub const PLATFORM: &str = "SHIMMER_PLATFORM";
 }
 
 /// Which script, not which file — the backend resolves the real path and `.sh` vs `.ps1` by
@@ -68,15 +68,15 @@ pub enum SpawnMode {
 /// name a script outside a workspace's own directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LaunchStep {
-    /// Becomes `SWE_WORKSPACE_ID`.
+    /// Becomes `SHIMMER_WORKSPACE_ID`.
     pub workspace_id: String,
     /// Namespace-relative, e.g. `"deep-work"` — validated the same way as any other module
     /// path (`crate::store::validate_path`), never an absolute path.
     pub workspace_dir: String,
     pub step: Step,
     pub mode: SpawnMode,
-    /// `workspace.toml`'s `[env]`, nothing else. The backend injects `SWE_HOME`, `SWE_SOCKET`,
-    /// `SWE_PLATFORM` and `SWE_SESSION_ID` itself; an entry here can never override one of
+    /// `workspace.toml`'s `[env]`, nothing else. The backend injects `SHIMMER_HOME`, `SHIMMER_SOCKET`,
+    /// `SHIMMER_PLATFORM` and `SHIMMER_SESSION_ID` itself; an entry here can never override one of
     /// those (ADR 0010 §2). Merge logic lives in the real backend, not this interface.
     pub user_env: Vec<(String, String)>,
 }
@@ -87,7 +87,7 @@ pub struct LaunchStep {
 /// syscall failure) — see [`LaunchBackend::run`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StepOutcome {
-    /// Becomes `SWE_SESSION_ID`. Minted by the backend, fresh per launch attempt (ADR 0010
+    /// Becomes `SHIMMER_SESSION_ID`. Minted by the backend, fresh per launch attempt (ADR 0010
     /// §9), from the daemon's injected `Clock` — never `SystemTime::now()`, and never
     /// supplied by the calling module, which learns it only here (in time to use it in its
     /// own `workspaces.session.launched`/`.dirty` event payloads).
@@ -98,7 +98,7 @@ pub struct StepOutcome {
     /// `true` only when the `Supervised` timeout fired. A cancelled step is not "timed
     /// out" — callers distinguish it via the cancellation token they passed in.
     pub timed_out: bool,
-    /// Relative to `$SWE_HOME`, matching `docs/protocol.md`'s `workspace_dirty` detail shape
+    /// Relative to `$SHIMMER_HOME`, matching `docs/protocol.md`'s `workspace_dirty` detail shape
     /// (whose JSON key is `log`, not `log_path` — see ADR 0010 §3 for the naming note).
     pub log_path: String,
 }
@@ -177,7 +177,7 @@ mod tests {
             env_names::SESSION_ID,
             env_names::PLATFORM,
         ] {
-            assert!(name.starts_with("SWE_"), "{name} does not share the script-ABI prefix");
+            assert!(name.starts_with("SHIMMER_"), "{name} does not share the script-ABI prefix");
         }
     }
 }

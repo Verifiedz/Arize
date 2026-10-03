@@ -19,7 +19,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use swe_core::{
+use shimmer_core::{
     CatchUp, Clock, Emitter, EnqueueRequest, Error, Fallback, LaneId, ModuleId, NamespacedStore, Origin, Priority,
     Result, Schedule, TaskId, TriggerId, TriggerSpec,
 };

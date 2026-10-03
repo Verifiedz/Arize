@@ -1,5 +1,5 @@
 [package]
-name = "swe-cli"
+name = "shimmer-cli"
 description = "Thin client (lib): command parsing, daemon connection and auto-start, output rendering. Depends on core and proto only."
 version.workspace = true
 edition.workspace = true
@@ -11,8 +11,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-swe-core = { path = "../core" }
-swe-proto = { path = "../proto" }
+shimmer-core = { path = "../core" }
+shimmer-proto = { path = "../proto" }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "net", "io-util", "time"] }
 
