@@ -3,3 +3,4 @@ docker/.env
 docker/claude-config/
 target/
 __pycache__/
+.claude/worktrees/
