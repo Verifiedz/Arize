@@ -48,8 +48,8 @@ fn init_stderr_logging() {
 
 /// Logs to stderr (visible when run in the foreground) and, best-effort, to
 /// `$SWE_HOME/logs/daemon.log.<date>` (visible when autostarted, whose stderr is discarded).
-/// Rotates daily and keeps at most `LOG_RETAIN_FILES` files; older ones are deleted, not
-/// archived elsewhere. The returned guard must stay alive for the process lifetime or
+/// Rotates at UTC midnight and keeps at most `LOG_RETAIN_FILES` files; older ones are deleted,
+/// not archived elsewhere. The returned guard must stay alive for the process lifetime or
 /// buffered lines are dropped.
 fn init_daemon_logging(home: &Path) -> Option<WorkerGuard> {
     let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr).with_filter(env_filter());
