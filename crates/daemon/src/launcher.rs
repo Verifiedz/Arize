@@ -1,5 +1,6 @@
 //! The real `LaunchBackend` (ADR 0010). Lands incrementally, one `SpawnMode`/concern per
-//! sub-branch of the `m3-launch-backend` umbrella; this slice is `SpawnMode::Detached` only.
+//! sub-branch of the `m3-launch-backend` umbrella; this slice adds `SpawnMode::Supervised`
+//! on top of the previous one's `Detached`.
 //!
 //! Linux/macOS (`cfg(unix)`) only, same scoping as ADR 0010 §7 — Windows is sketched there,
 //! not implemented. Not yet wired into any `Ctx` (that is the capability-scoped-wiring
@@ -11,6 +12,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use shimmer_core::launcher::env_names;
@@ -39,11 +41,7 @@ impl LaunchBackend for RealLaunchBackend {
         let script = resolve_script(&self.home, &step.workspace_dir, &step.step)?;
         match step.mode {
             SpawnMode::Detached => run_detached(&script, step).await,
-            SpawnMode::Supervised { .. } => {
-                // Lands in the next sub-branch of this umbrella (ADR 0010 §3 "Supervised").
-                let _ = cancel;
-                Err(Error::internal("supervised spawn mode not implemented yet"))
-            }
+            SpawnMode::Supervised { timeout } => run_supervised(&self.home, &script, step, timeout, cancel).await,
         }
     }
 }
@@ -93,6 +91,84 @@ async fn run_detached(script: &Path, step: &LaunchStep) -> Result<StepOutcome> {
         // Detached stdio goes to null (above), so there is nothing to capture.
         log_path: String::new(),
     })
+}
+
+/// ADR 0010 §3 "Supervised": same process-group mechanism as `Detached`, but the handle is
+/// retained and raced against a timeout and the caller's cancellation — both converge on the
+/// same process-group kill (§9: "both paths converge on the same kill"). Unlike `Detached`,
+/// whose stdio goes to null, this captures the child's stdout/stderr to `logs/` (§3 "Logs").
+async fn run_supervised(
+    home: &Path,
+    script: &Path,
+    step: &LaunchStep,
+    timeout: Duration,
+    cancel: &CancellationToken,
+) -> Result<StepOutcome> {
+    if !script.exists() {
+        return Err(Error::unavailable(format!("launch script not found: {}", script.display())));
+    }
+    let log_rel = log_path_for(step);
+    let log_abs = home.join(&log_rel);
+    if let Some(parent) = log_abs.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let stdout_file = std::fs::File::create(&log_abs)?;
+    let stderr_file = stdout_file.try_clone()?;
+
+    let mut cmd = Command::new("sh");
+    cmd.arg(script);
+    inject_env(&mut cmd, step);
+    cmd.stdin(Stdio::null()).stdout(Stdio::from(stdout_file)).stderr(Stdio::from(stderr_file));
+    #[cfg(unix)]
+    cmd.process_group(0);
+    let mut child = cmd.spawn().map_err(|e| Error::unavailable(format!("cannot spawn {}: {e}", script.display())))?;
+    let pid = child.id();
+
+    let (exit_code, timed_out) = tokio::select! {
+        status = child.wait() => {
+            let status = status.map_err(|e| Error::unavailable(format!("waiting on {}: {e}", script.display())))?;
+            (status.code(), false)
+        }
+        _ = tokio::time::sleep(timeout) => {
+            kill_process_group(pid);
+            let _ = child.wait().await;
+            (None, true)
+        }
+        _ = cancel.cancelled() => {
+            kill_process_group(pid);
+            let _ = child.wait().await;
+            (None, false)
+        }
+    };
+
+    Ok(StepOutcome {
+        // Placeholder — minted for real from `Ctx`'s clock in the session-id sub-branch.
+        session_id: String::new(),
+        exit_code,
+        timed_out,
+        log_path: log_rel,
+    })
+}
+
+/// Relative to `$SHIMMER_HOME`, matching `docs/protocol.md`'s `workspace_dirty` detail shape
+/// (ADR 0010 §3 "Logs"). Provisional naming — folds in the real session id once the
+/// session-id sub-branch mints one; nothing downstream depends on this exact shape yet.
+fn log_path_for(step: &LaunchStep) -> String {
+    let label = match &step.step {
+        Step::Launch { name, .. } => name.as_str(),
+        Step::Cleanup => "cleanup",
+    };
+    format!("logs/{}-{}.log", step.workspace_dir, label)
+}
+
+/// Negative PID targets the whole process group (ADR 0010 §3), so a script's own children —
+/// e.g. a build tool's compiler subprocesses — die with it, not just the immediate child.
+/// A no-op if the process already exited and its id could not be read.
+fn kill_process_group(pid: Option<u32>) {
+    if let Some(pid) = pid {
+        let pgid = nix::unistd::Pid::from_raw(-(pid as i32));
+        let _ = nix::sys::signal::kill(pgid, nix::sys::signal::Signal::SIGKILL);
+    }
 }
 
 /// The five vars every spawned script gets (CLAUDE.md §10.1). `step.user_env` is not merged
@@ -198,13 +274,79 @@ mod tests {
         assert!(resolve_script(home, "deep-work", &Step::Launch { index: 1, count: 1, name: "../x".into() }).is_err());
     }
 
+    fn supervised_step(workspace_dir: &str, name: &str, timeout: Duration) -> LaunchStep {
+        let mut s = step(workspace_dir, name);
+        s.mode = SpawnMode::Supervised { timeout };
+        s
+    }
+
     #[tokio::test]
-    async fn supervised_mode_is_not_implemented_yet() {
+    async fn supervised_step_waits_for_exit_and_captures_stdout_verbatim() {
         let home = TempDir::new().unwrap();
+        write_step_script(home.path(), "deep-work", "setup", "echo hello-from-setup\n");
+
         let backend = RealLaunchBackend::new(home.path().to_path_buf());
-        let mut s = step("deep-work", "setup");
-        s.mode = SpawnMode::Supervised { timeout: Duration::from_secs(1) };
-        let e = backend.run(&s, &CancellationToken::new()).await.unwrap_err();
-        assert_eq!(e.code, shimmer_core::ErrorCode::Internal);
+        let outcome = backend
+            .run(&supervised_step("deep-work", "setup", Duration::from_secs(5)), &CancellationToken::new())
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.exit_code, Some(0));
+        assert!(!outcome.timed_out);
+        let log = std::fs::read_to_string(home.path().join(&outcome.log_path)).unwrap();
+        assert_eq!(log, "hello-from-setup\n");
+    }
+
+    #[tokio::test]
+    async fn timeout_kills_the_whole_process_group_not_just_the_immediate_child() {
+        let home = TempDir::new().unwrap();
+        let grandchild_marker = home.path().join("grandchild_marker");
+        // The backgrounded subshell inherits the script's process group (no setsid of its
+        // own), so a process-group kill must take it down too — proving §10's "kills the
+        // grandchild too (proves process-group kill, not just the immediate child)".
+        write_step_script(
+            home.path(),
+            "deep-work",
+            "setup",
+            &format!("(sleep 1 && touch {}) &\nsleep 5\n", grandchild_marker.display()),
+        );
+
+        let backend = RealLaunchBackend::new(home.path().to_path_buf());
+        let outcome = backend
+            .run(&supervised_step("deep-work", "setup", Duration::from_millis(200)), &CancellationToken::new())
+            .await
+            .unwrap();
+
+        assert!(outcome.timed_out);
+        assert_eq!(outcome.exit_code, None);
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert!(!grandchild_marker.exists(), "grandchild survived the process-group kill");
+    }
+
+    #[tokio::test]
+    async fn cancellation_kills_the_group_and_is_not_reported_as_timed_out() {
+        let home = TempDir::new().unwrap();
+        let grandchild_marker = home.path().join("grandchild_marker");
+        write_step_script(
+            home.path(),
+            "deep-work",
+            "setup",
+            &format!("(sleep 1 && touch {}) &\nsleep 5\n", grandchild_marker.display()),
+        );
+
+        let backend = RealLaunchBackend::new(home.path().to_path_buf());
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel_clone.cancel();
+        });
+        let outcome =
+            backend.run(&supervised_step("deep-work", "setup", Duration::from_secs(5)), &cancel).await.unwrap();
+
+        assert!(!outcome.timed_out, "a cancelled step is not timed out (callers distinguish via cancel)");
+        assert_eq!(outcome.exit_code, None);
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert!(!grandchild_marker.exists(), "grandchild survived the process-group kill");
     }
 }
