@@ -35,16 +35,22 @@ pub struct RealLaunchBackend {
     socket: PathBuf,
     /// Source for minted session ids (ADR 0010 §9) — never `SystemTime::now()`.
     clock: Clock,
-    /// Folded into each minted session id's random component in place of true OS randomness
-    /// (see [`mint_session_id`]). Resets to 0 whenever a new backend is constructed, so a
-    /// fresh backend over a fresh `Clock::fake` reproduces the exact same id sequence for
-    /// the same sequence of calls.
+    /// Random for a real daemon process — the caller's responsibility to draw fresh each
+    /// time a real backend is constructed (e.g. `rand::random()` once at daemon startup),
+    /// never generated inside this type, same injected-not-hidden pattern as `clock`. Tests
+    /// pass a fixed value for reproducibility. See [`mint_session_id`] for why this exists
+    /// alongside `sequence` (ADR 0010 §9's "Amendment" below).
+    instance_id: u64,
+    /// Folded into each minted session id's random component alongside `instance_id` (see
+    /// [`mint_session_id`]). Resets to 0 whenever a new backend is constructed, so a fresh
+    /// backend over a fresh `Clock::fake` with the same `instance_id` reproduces the exact
+    /// same id sequence for the same sequence of calls.
     sequence: AtomicU64,
 }
 
 impl RealLaunchBackend {
-    pub fn new(home: PathBuf, socket: PathBuf, clock: Clock) -> Self {
-        Self { home, socket, clock, sequence: AtomicU64::new(0) }
+    pub fn new(home: PathBuf, socket: PathBuf, clock: Clock, instance_id: u64) -> Self {
+        Self { home, socket, clock, instance_id, sequence: AtomicU64::new(0) }
     }
 }
 
@@ -52,7 +58,7 @@ impl RealLaunchBackend {
 impl LaunchBackend for RealLaunchBackend {
     async fn run(&self, step: &LaunchStep, cancel: &CancellationToken) -> Result<StepOutcome> {
         let script = resolve_script(&self.home, &step.workspace_dir, &step.step)?;
-        let session_id = mint_session_id(&self.clock, &self.sequence);
+        let session_id = mint_session_id(&self.clock, self.instance_id, &self.sequence);
         match step.mode {
             SpawnMode::Detached => run_detached(&self.home, &self.socket, &script, step, &session_id).await,
             SpawnMode::Supervised { timeout } => {
@@ -63,14 +69,29 @@ impl LaunchBackend for RealLaunchBackend {
 }
 
 /// Minted here, not by the calling module (ADR 0010 §9) — fresh per launch attempt, from
-/// the injected `Clock`, never `SystemTime::now()`. The random component is this backend's
-/// own monotonic `sequence` rather than true OS randomness: distinct across attempts, and —
-/// paired with a fake clock reset to the same start and a fresh `sequence` (i.e. a fresh
-/// backend) — reproducible for the same sequence of calls, which is what lets a module's
-/// tests assert deterministic session ordering.
-fn mint_session_id(clock: &Clock, sequence: &AtomicU64) -> String {
-    let seq = sequence.fetch_add(1, Ordering::SeqCst) as u128;
-    Ulid::from_parts(clock.now().timestamp_millis() as u64, seq).to_string()
+/// the injected `Clock`, never `SystemTime::now()`.
+///
+/// **Amendment to ADR 0010 §9's sketch** (`Ulid::from_parts(timestamp_ms, rand::random())`):
+/// using fresh OS randomness for every call makes ids collision-resistant but defeats the
+/// reproducibility a module needs for deterministic ordering tests, while a pure in-process
+/// counter (an earlier version of this function) is reproducible but *not*
+/// collision-resistant across daemon lifetimes — it resets to 0 on every restart, so two
+/// daemon runs (a restart, or two machines sharing a git-synced `$SHIMMER_HOME`, CLAUDE.md
+/// §1.4) whose clocks agree on the millisecond could mint the identical session id, which
+/// matters because `session_id` lands in the event log (`workspaces.session.launched`/
+/// `.dirty` payloads) and in a log file's name — a collision there is a real correctness
+/// bug, not a cosmetic one.
+///
+/// This resolves both: the 80-bit random field is `instance_id`'s low 48 bits as the high
+/// bits, `sequence`'s low 32 bits as the low bits. `instance_id` is random per daemon
+/// process (the caller's job to draw fresh for a real backend), so two different daemon
+/// lifetimes essentially never collide even if their clocks and sequences agree;
+/// `sequence` alone still gives exact, deterministic ordering within one process, since a
+/// fresh backend's `sequence` always starts at 0.
+fn mint_session_id(clock: &Clock, instance_id: u64, sequence: &AtomicU64) -> String {
+    let seq = sequence.fetch_add(1, Ordering::SeqCst) & 0xFFFF_FFFF;
+    let random = ((instance_id & 0xFFFF_FFFF_FFFF) as u128) << 32 | seq as u128;
+    Ulid::from_parts(clock.now().timestamp_millis() as u64, random).to_string()
 }
 
 /// `Step` -> a real path under the workspace's own directory, never outside it (ADR 0010
@@ -241,12 +262,20 @@ mod tests {
 
     use super::*;
 
+    /// Arbitrary but fixed, so tests that care about `session_id` are reproducible. A real
+    /// daemon must draw this fresh (e.g. `rand::random()`) at startup instead.
+    const TEST_INSTANCE_ID: u64 = 0x1234_5678_9abc;
+
     fn backend(home: &TempDir) -> RealLaunchBackend {
         backend_with_clock(home, Clock::system())
     }
 
     fn backend_with_clock(home: &TempDir, clock: Clock) -> RealLaunchBackend {
-        RealLaunchBackend::new(home.path().to_path_buf(), home.path().join("d.sock"), clock)
+        backend_with_clock_and_instance(home, clock, TEST_INSTANCE_ID)
+    }
+
+    fn backend_with_clock_and_instance(home: &TempDir, clock: Clock, instance_id: u64) -> RealLaunchBackend {
+        RealLaunchBackend::new(home.path().to_path_buf(), home.path().join("d.sock"), clock, instance_id)
     }
 
     fn write_step_script(home: &Path, workspace_dir: &str, name: &str, body: &str) -> PathBuf {
@@ -345,6 +374,23 @@ mod tests {
         let second = three_ids(&home, start).await;
         assert_eq!(first, second, "resetting the clock and starting a fresh backend must reproduce the same sequence");
         assert_eq!(first.iter().collect::<HashSet<_>>().len(), 3, "still distinct within one run");
+    }
+
+    #[tokio::test]
+    async fn different_daemon_instances_do_not_collide_even_with_the_same_clock_and_sequence() {
+        // Regression test for the gap a pure sequence-only design has: two daemon
+        // lifetimes (e.g. a restart) whose clocks and per-process sequences happen to
+        // agree must still mint different session ids.
+        let home = TempDir::new().unwrap();
+        write_step_script(home.path(), "deep-work", "setup", "true\n");
+        let start = DateTime::parse_from_rfc3339("2026-10-03T00:00:00Z").unwrap().to_utc();
+
+        let a = backend_with_clock_and_instance(&home, Clock::fake(start), 0x1111_1111_1111);
+        let b = backend_with_clock_and_instance(&home, Clock::fake(start), 0x2222_2222_2222);
+        let id_a = a.run(&step("deep-work", "setup"), &CancellationToken::new()).await.unwrap().session_id;
+        let id_b = b.run(&step("deep-work", "setup"), &CancellationToken::new()).await.unwrap().session_id;
+
+        assert_ne!(id_a, id_b, "two different instance_ids at the same clock+sequence state must not collide");
     }
 
     #[tokio::test]
