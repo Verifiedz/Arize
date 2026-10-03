@@ -1,15 +1,11 @@
 //! The real `LaunchBackend` (ADR 0010). Lands incrementally, one `SpawnMode`/concern per
-//! sub-branch of the `m3-launch-backend` umbrella; this slice adds explicit charset
-//! validation for a launch step's `name` (closes #14), on top of the previous slices' spawn
-//! mechanics, env injection, and session-id minting.
+//! sub-branch of the `m3-launch-backend` umbrella — spawn mechanics, env injection,
+//! session-id minting, and step-name validation (closes #14) in the previous slices; this
+//! one is wired into `Ctx` for any module whose manifest declares the `"process"`
+//! capability (`crates/daemon/src/core.rs`'s `Core::new`, ADR 0010 §4).
 //!
 //! Linux/macOS (`cfg(unix)`) only, same scoping as ADR 0010 §7 — Windows is sketched there,
-//! not implemented. Not yet wired into any `Ctx` (that is the capability-scoped-wiring
-//! sub-branch); this module is exercised only by its own tests until then.
-
-// Unwired until the capability-scoped-wiring sub-branch has `Core::new` construct this
-// behind the module's `"process"` capability — remove once it does.
-#![allow(dead_code)]
+//! not implemented.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
