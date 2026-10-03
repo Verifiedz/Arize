@@ -1,7 +1,7 @@
 //! The real `LaunchBackend` (ADR 0010). Lands incrementally, one `SpawnMode`/concern per
-//! sub-branch of the `m3-launch-backend` umbrella; this slice replaces the `session_id`
-//! placeholder with real minting from the injected `Clock`, on top of the previous slices'
-//! spawn mechanics and env injection.
+//! sub-branch of the `m3-launch-backend` umbrella; this slice adds explicit charset
+//! validation for a launch step's `name` (closes #14), on top of the previous slices' spawn
+//! mechanics, env injection, and session-id minting.
 //!
 //! Linux/macOS (`cfg(unix)`) only, same scoping as ADR 0010 §7 — Windows is sketched there,
 //! not implemented. Not yet wired into any `Ctx` (that is the capability-scoped-wiring
@@ -95,20 +95,42 @@ fn mint_session_id(clock: &Clock, instance_id: u64, sequence: &AtomicU64) -> Str
 }
 
 /// `Step` -> a real path under the workspace's own directory, never outside it (ADR 0010
-/// §2a/§4). Only escape-safety is checked here (`validate_path`, already applied to every
-/// other module's paths); the stricter `[a-z0-9][a-z0-9_-]*` charset on `name` lands in the
-/// step-name-validation sub-branch (closes #14).
+/// §2a/§4). `workspace_dir` gets escape-safety only (`validate_path`, the same check every
+/// other module's paths get); `name` additionally gets the stricter `[a-z0-9][a-z0-9_-]*`
+/// charset ([`is_valid_step_name`], closes #14) before either is ever interpolated into a
+/// path.
 fn resolve_script(home: &Path, workspace_dir: &str, step: &Step) -> Result<PathBuf> {
     validate_path(workspace_dir)?;
     let rel = match step {
         Step::Launch { index, name, .. } => {
-            validate_path(name)?;
+            if !is_valid_step_name(name) {
+                return Err(Error::invalid_params(format!("launch step name '{name}' must match [a-z0-9][a-z0-9_-]*")));
+            }
             format!("{index:02}-{name}.sh")
         }
         Step::Cleanup => "cleanup.sh".to_string(),
     };
     let rel = if matches!(step, Step::Cleanup) { rel } else { format!("steps/{rel}") };
     Ok(home.join("data/workspaces").join(workspace_dir).join(rel))
+}
+
+/// ADR 0010 §2a/§4's charset for a launch step's `name`: `[a-z0-9][a-z0-9_-]*`, the same
+/// shape ADR 0008 already uses for a record id. Closes #14 — `validate_path` alone (what
+/// this check used to be) only rejects path escapes and accepts anything else, so a `name`
+/// like `Setup.v2` or `my step` passed it despite ADR 0010 §4's claim that `name` gets this
+/// exact charset. Checked before any path is built, so an invalid `name` is `invalid_params`
+/// rather than a path-traversal risk — it can only ever select a file already constrained
+/// under `steps/`.
+///
+/// This duplicates `shimmer_core::ids::is_valid_name` (leading-letter only — doesn't fit, a
+/// step name may start with a digit) and `shimmer_records::item::check_id`'s identical
+/// leading-digit-or-letter charset, rather than sharing one implementation. Flagged, not
+/// resolved: a shared helper belongs in `core`, and CLAUDE.md §12 rule 1 requires explicit
+/// sign-off before touching it.
+fn is_valid_step_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
 /// ADR 0010 §3 "Detached": own process group, stdio to null (same pattern
@@ -436,6 +458,28 @@ mod tests {
 
         assert!(resolve_script(home, "../escape", &Step::Cleanup).is_err());
         assert!(resolve_script(home, "deep-work", &Step::Launch { index: 1, count: 1, name: "../x".into() }).is_err());
+    }
+
+    #[test]
+    fn invalid_step_names_are_rejected_before_any_path_is_built() {
+        let home = Path::new("/home/shimmer");
+        // #14's exact examples: a disallowed char, a path escape, and a path separator —
+        // none of these should ever reach a path join, let alone the filesystem.
+        for bad in ["Setup.v2", "../x", "a/b"] {
+            let e =
+                resolve_script(home, "deep-work", &Step::Launch { index: 1, count: 1, name: bad.into() }).unwrap_err();
+            assert_eq!(e.code, shimmer_core::ErrorCode::InvalidParams, "name = {bad:?}");
+        }
+    }
+
+    #[test]
+    fn step_names_may_start_with_a_digit() {
+        // Unlike shimmer_core::ids::is_valid_name (leading letter only) — a step name uses
+        // the record-id charset instead (ADR 0008), which also allows a leading digit.
+        let home = Path::new("/home/shimmer");
+        let launch =
+            resolve_script(home, "deep-work", &Step::Launch { index: 1, count: 1, name: "1-setup".into() }).unwrap();
+        assert_eq!(launch, home.join("data/workspaces/deep-work/steps/01-1-setup.sh"));
     }
 
     fn supervised_step(workspace_dir: &str, name: &str, timeout: Duration) -> LaunchStep {
