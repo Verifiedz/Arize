@@ -4,12 +4,18 @@
 //! A thin client (CLAUDE.md §2): the daemon decides everything (whether a workspace may launch,
 //! what dirty means). The CLI only sends ops, shows what comes back, and asks before the two
 //! actions that skip safety: `reset` and `force-relaunch`.
+//!
+//! `activate`, `cleanup` and `force-relaunch` are queued ops: the request returns a task handle
+//! at once. With `--wait` the CLI follows the task over the subscription stream (docs/protocol.md,
+//! `subscribe`) and prints how it ended. Without it, it returns straight away; that is the
+//! default because a workspace's own step calling `shimmer workspaces activate … --wait` would
+//! wait on a launch that cannot start until its own launch ends (one lane slot, §6.1).
 
 use std::fmt::Write as _;
 use std::io::{BufRead, IsTerminal, Write as _};
 
 use serde_json::{json, Value};
-use shimmer_core::{Error, Result};
+use shimmer_core::{Error, ErrorCode, Result};
 
 use crate::client::Client;
 use crate::render::{self, cell, table};
@@ -17,9 +23,17 @@ use crate::render::{self, cell, table};
 pub const USAGE: &str = "usage: shimmer workspaces <command>
 
 commands:
-  list                list workspaces and their state
-  status NAME         show one workspace in full: steps, last session, why it is dirty
-  reset NAME [--yes]  clear dirty without running cleanup (asks first)
+  list                                  list workspaces and their state
+  status NAME                           show one workspace in full: steps, last session, why it is dirty
+  activate NAME [--wait]                launch its steps in order
+  cleanup NAME [--wait]                 run a dirty workspace's cleanup script
+  force-relaunch NAME [--yes] [--wait]  launch a dirty workspace anyway (asks first)
+  reset NAME [--yes]                    clear dirty without running cleanup (asks first)
+
+--wait  follow the launch until it ends and show how it went. Without it the command
+        returns once the launch is queued; check on it with 'shimmer workspaces status NAME'.
+        Don't use --wait from a workspace's own step scripts: launches run one at a time.
+--yes   skip the question. Needed when no one is at the keyboard (scripts).
 
 A workspace is a folder under data/workspaces/ in your Shimmer folder, holding a
 workspace.toml and its steps/ scripts (ADR 0012). Add --json to any command for raw output.";
@@ -29,6 +43,9 @@ pub enum WorkspacesCmd {
     Help,
     List,
     Status { id: String },
+    Activate { id: String, wait: bool },
+    Cleanup { id: String, wait: bool },
+    ForceRelaunch { id: String, yes: bool, wait: bool },
     Reset { id: String, yes: bool },
 }
 
@@ -39,40 +56,46 @@ pub fn parse(words: Vec<String>) -> std::result::Result<WorkspacesCmd, String> {
     let mut words = words.into_iter();
     let Some(sub) = words.next() else { return Ok(WorkspacesCmd::Help) };
     let mut positional = Vec::new();
-    let mut yes = false;
+    let (mut yes, mut wait) = (false, false);
     for word in words {
         match word.as_str() {
             "--yes" | "-y" => yes = true,
+            "--wait" => wait = true,
             w if w.starts_with('-') && w.len() > 1 => {
                 return Err(format!("unknown option '{}'", w.split('=').next().unwrap_or(w)));
             }
             _ => positional.push(word),
         }
     }
-    let only_yes_for = |cmd: &str| match yes {
-        true => Err(format!("'workspaces {cmd}' takes no --yes")),
-        false => Ok(()),
+    // Which command takes which flag; anything else is a mistake worth naming.
+    let (takes_yes, takes_wait) = match sub.as_str() {
+        "force-relaunch" => (true, true),
+        "activate" | "cleanup" => (false, true),
+        "reset" => (true, false),
+        _ => (false, false),
     };
-    let name = |cmd: &str, positional: Vec<String>| -> std::result::Result<String, String> {
+    for (given, allowed, flag) in [(yes, takes_yes, "--yes"), (wait, takes_wait, "--wait")] {
+        if given && !allowed {
+            return Err(format!("'workspaces {sub}' takes no {flag}"));
+        }
+    }
+    let name = |positional: Vec<String>| -> std::result::Result<String, String> {
         match <[String; 1]>::try_from(positional) {
             Ok([id]) => Ok(id),
-            Err(_) => Err(format!("usage: shimmer workspaces {cmd} NAME")),
+            Err(_) => Err(format!("usage: shimmer workspaces {sub} NAME")),
         }
     };
     match sub.as_str() {
         "help" => Ok(WorkspacesCmd::Help),
-        "list" => {
-            only_yes_for("list")?;
-            match positional.is_empty() {
-                true => Ok(WorkspacesCmd::List),
-                false => Err("'workspaces list' takes no arguments".into()),
-            }
-        }
-        "status" => {
-            only_yes_for("status")?;
-            Ok(WorkspacesCmd::Status { id: name("status", positional)? })
-        }
-        "reset" => Ok(WorkspacesCmd::Reset { id: name("reset", positional)?, yes }),
+        "list" => match positional.is_empty() {
+            true => Ok(WorkspacesCmd::List),
+            false => Err("'workspaces list' takes no arguments".into()),
+        },
+        "status" => Ok(WorkspacesCmd::Status { id: name(positional)? }),
+        "activate" => Ok(WorkspacesCmd::Activate { id: name(positional)?, wait }),
+        "cleanup" => Ok(WorkspacesCmd::Cleanup { id: name(positional)?, wait }),
+        "force-relaunch" => Ok(WorkspacesCmd::ForceRelaunch { id: name(positional)?, yes, wait }),
+        "reset" => Ok(WorkspacesCmd::Reset { id: name(positional)?, yes }),
         other => Err(format!("unknown workspaces command '{other}'; see 'shimmer workspaces --help'")),
     }
 }
@@ -138,6 +161,18 @@ pub async fn run(client: &mut Client, cmd: &WorkspacesCmd, json: bool, prompt: &
             let data = client.call("workspaces.status", id_params(id)).await?;
             Ok(out(&data, status(&data)))
         }
+        WorkspacesCmd::Activate { id, wait } => queued(client, Queued::Activate, id, *wait, json).await,
+        WorkspacesCmd::Cleanup { id, wait } => queued(client, Queued::Cleanup, id, *wait, json).await,
+        WorkspacesCmd::ForceRelaunch { id, yes, wait } => {
+            if !*yes {
+                let current = client.call("workspaces.status", id_params(id)).await?;
+                let question = "Launch it anyway, without cleaning up?";
+                if !confirm(prompt, false, "force a relaunch of", question, id, &current)? {
+                    return Ok(format!("{id} was not relaunched"));
+                }
+            }
+            queued(client, Queued::ForceRelaunch, id, *wait, json).await
+        }
         WorkspacesCmd::Reset { id, yes } => {
             if !*yes {
                 let current = client.call("workspaces.status", id_params(id)).await?;
@@ -150,6 +185,135 @@ pub async fn run(client: &mut Client, cmd: &WorkspacesCmd, json: bool, prompt: &
             Ok(out(&data, format!("✓ {id} reset to ready")))
         }
     }
+}
+
+/// The three queued ops, for what they print.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Queued {
+    Activate,
+    Cleanup,
+    ForceRelaunch,
+}
+
+impl Queued {
+    fn op(self) -> &'static str {
+        match self {
+            Self::Activate => "workspaces.activate",
+            Self::Cleanup => "workspaces.cleanup",
+            Self::ForceRelaunch => "workspaces.force_relaunch",
+        }
+    }
+
+    fn what(self) -> &'static str {
+        match self {
+            Self::Activate => "launch",
+            Self::Cleanup => "cleanup",
+            Self::ForceRelaunch => "forced relaunch",
+        }
+    }
+
+    fn done(self, id: &str) -> String {
+        match self {
+            Self::Activate | Self::ForceRelaunch => format!("✓ {id} is active"),
+            Self::Cleanup => format!("✓ {id} is cleaned up and ready"),
+        }
+    }
+}
+
+/// Send a queued op; with `wait`, follow its task to the end.
+async fn queued(client: &mut Client, kind: Queued, id: &str, wait: bool, json: bool) -> Result<String> {
+    if wait {
+        // Before the request, so not even the first event can be missed.
+        client.subscribe(&["queue.task.*"]).await?;
+    }
+    let handle = client.call(kind.op(), json!({"id": id})).await?;
+    let task = handle["task_id"].as_str().ok_or_else(|| Error::internal("no task_id in the queued response"))?;
+    if !wait {
+        return Ok(if json { render::json(&handle) } else { queued_message(kind, id, task) });
+    }
+    match follow(client, task, json).await {
+        Ok(result) => Ok(if json { render::json(&result) } else { kind.done(id) }),
+        Err(e) if json => Err(e),
+        Err(e) => Err(explain(e, id)),
+    }
+}
+
+fn queued_message(kind: Queued, id: &str, task: &str) -> String {
+    format!("queued the {} of {id} (task {task})\ncheck on it with: shimmer workspaces status {id}", kind.what())
+}
+
+/// Follow task `task` over the subscription stream until it ends: its result, or the error it
+/// failed with (e.g. `workspace_dirty`, with its detail). Progress notes go to stderr.
+async fn follow(client: &mut Client, task: &str, json: bool) -> Result<Value> {
+    let mut last_note = String::new();
+    loop {
+        let ev = client.next_event().await?;
+        if ev.topic == "core.stream.lagged" {
+            // Events were dropped, maybe the one we wait for: ask directly instead.
+            if let Some(outcome) = finished_task(client, task).await? {
+                return outcome;
+            }
+            continue;
+        }
+        if ev.payload["task_id"] != task {
+            continue;
+        }
+        match ev.topic.as_str() {
+            "queue.task.progress" => {
+                let note = ev.payload["note"].as_str().unwrap_or_default();
+                if !json && !note.is_empty() && note != last_note {
+                    eprintln!("  {note} …");
+                    last_note = note.to_owned();
+                }
+            }
+            "queue.task.finished" => return Ok(ev.payload["result"].clone()),
+            "queue.task.failed" => return Err(task_error(&ev.payload)),
+            "queue.task.cancelled" => return Err(cancelled()),
+            _ => {}
+        }
+    }
+}
+
+/// After `core.stream.lagged`: has the task ended? `None` while it is still queued or running.
+async fn finished_task(client: &mut Client, task: &str) -> Result<Option<Result<Value>>> {
+    let t = client.call("queue.task", json!({"task_id": task})).await?;
+    Ok(match t["status"].as_str() {
+        Some("succeeded") => Some(Ok(t["result"].clone())),
+        Some("failed") => {
+            Some(Err(Error::new(ErrorCode::ModuleError, t["error"].as_str().unwrap_or("the task failed").to_owned())))
+        }
+        Some("cancelled") => Some(Err(cancelled())),
+        _ => None,
+    })
+}
+
+/// The error a `queue.task.failed` event carries, rebuilt as the daemon sent it.
+fn task_error(payload: &Value) -> Error {
+    let code: ErrorCode = serde_json::from_value(payload["code"].clone()).unwrap_or(ErrorCode::ModuleError);
+    let mut e = Error::new(code, payload["error"].as_str().unwrap_or("the task failed").to_owned());
+    if let Some(detail) = payload.get("detail").filter(|d| !d.is_null()) {
+        e = e.with_detail(detail.clone());
+    }
+    e
+}
+
+fn cancelled() -> Error {
+    Error::new(ErrorCode::ModuleError, "the task was cancelled")
+}
+
+/// For people: a dirty workspace's error says where to look and what to do (§10.3), instead
+/// of raw JSON detail. Other errors are shown as they are.
+fn explain(e: Error, id: &str) -> Error {
+    if e.code != ErrorCode::WorkspaceDirty {
+        return e;
+    }
+    let detail = e.detail.clone().unwrap_or(Value::Null);
+    let mut message = e.message.clone();
+    if let Some(log) = detail["log"].as_str().filter(|l| !l.is_empty()) {
+        let _ = write!(message, "\n  log: {log}");
+    }
+    let _ = write!(message, "\n{}", ways_out(id, detail["has_cleanup_script"] == true));
+    Error::new(ErrorCode::WorkspaceDirty, message)
 }
 
 // ---------------------------------------------------------------- output
@@ -293,6 +457,83 @@ mod tests {
         for yes in [&["reset", "--yes", "deep-work"][..], &["reset", "deep-work", "-y"]] {
             assert_eq!(parse_words(yes).unwrap(), WorkspacesCmd::Reset { id: "deep-work".into(), yes: true });
         }
+    }
+
+    #[test]
+    fn queued_commands_take_wait_and_force_relaunch_takes_yes() {
+        assert_eq!(
+            parse_words(&["activate", "deep-work"]).unwrap(),
+            WorkspacesCmd::Activate { id: "deep-work".into(), wait: false }
+        );
+        assert_eq!(
+            parse_words(&["activate", "--wait", "deep-work"]).unwrap(),
+            WorkspacesCmd::Activate { id: "deep-work".into(), wait: true }
+        );
+        assert_eq!(
+            parse_words(&["cleanup", "deep-work", "--wait"]).unwrap(),
+            WorkspacesCmd::Cleanup { id: "deep-work".into(), wait: true }
+        );
+        assert_eq!(
+            parse_words(&["force-relaunch", "deep-work", "--yes", "--wait"]).unwrap(),
+            WorkspacesCmd::ForceRelaunch { id: "deep-work".into(), yes: true, wait: true }
+        );
+        for (words, expected) in [
+            (&["activate", "x", "--yes"][..], "'workspaces activate' takes no --yes"),
+            (&["reset", "x", "--wait"], "'workspaces reset' takes no --wait"),
+            (&["status", "x", "--wait"], "'workspaces status' takes no --wait"),
+            (&["force_relaunch", "x"], "unknown workspaces command 'force_relaunch'"),
+        ] {
+            let e = parse_words(words).unwrap_err();
+            assert!(e.contains(expected), "{words:?}: {e}");
+        }
+    }
+
+    #[test]
+    fn without_wait_it_points_to_status_never_to_a_second_launch() {
+        // Re-running `activate --wait` would queue another launch, so the hint is `status`.
+        let m = queued_message(Queued::ForceRelaunch, "deep-work", "01TASK");
+        assert_eq!(
+            m,
+            "queued the forced relaunch of deep-work (task 01TASK)\ncheck on it with: shimmer workspaces status deep-work"
+        );
+        assert!(!m.contains("--wait"), "{m}");
+    }
+
+    #[test]
+    fn a_failed_task_keeps_its_code_and_detail() {
+        let payload = json!({"task_id": "01", "error": "workspace 'deep-work' failed at step 1/3 setup (exit code 1)",
+                             "code": "workspace_dirty",
+                             "detail": {"workspace": "deep-work", "log": "logs/x.log", "has_cleanup_script": true}});
+        let e = task_error(&payload);
+        assert_eq!(e.code, ErrorCode::WorkspaceDirty);
+        assert_eq!(e.detail.as_ref().unwrap()["log"], "logs/x.log");
+
+        let other =
+            task_error(&json!({"task_id": "01", "error": "no launch backend registered", "code": "unavailable"}));
+        assert_eq!((other.code, other.detail), (ErrorCode::Unavailable, None));
+        assert_eq!(task_error(&json!({"task_id": "01"})).code, ErrorCode::ModuleError, "unknown code still fails");
+    }
+
+    #[test]
+    fn a_dirty_failure_is_explained_for_people() {
+        let e = task_error(
+            &json!({"error": "workspace 'deep-work' failed at step 1/3 setup (exit code 1) and was not cleaned up",
+                                    "code": "workspace_dirty",
+                                    "detail": {"log": "logs/x.log", "has_cleanup_script": false}}),
+        );
+        let explained = explain(e, "deep-work");
+        assert_eq!(explained.code, ErrorCode::WorkspaceDirty);
+        assert_eq!(explained.detail, None, "the detail is in the message now, not as raw JSON");
+        assert_eq!(
+            explained.message,
+            format!(
+                "workspace 'deep-work' failed at step 1/3 setup (exit code 1) and was not cleaned up\n  log: logs/x.log\n{}",
+                ways_out("deep-work", false)
+            )
+        );
+        // Anything else is passed through untouched.
+        let other = explain(Error::unavailable("no launch backend registered"), "deep-work");
+        assert_eq!(other.message, "no launch backend registered");
     }
 
     #[test]
