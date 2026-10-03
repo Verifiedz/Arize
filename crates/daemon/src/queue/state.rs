@@ -74,8 +74,6 @@ impl LaneState {
     /// Only waiting tasks are movable (the running one cannot be reordered, §6.2), and the
     /// overridden block stays ahead of everything else: reordering is not a second, unaudited
     /// way to promote.
-    // Wired up by `queue.reorder`, which waits on a `proto` change (docs/decisions/0006).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn reorder(&mut self, id: TaskId, before: Option<TaskId>) -> Result<usize> {
         let from = self
             .queued

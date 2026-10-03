@@ -56,7 +56,9 @@ $SHIMMER_HOME/
   data/records/items/<collection>/<id>.toml  One file per record
   events/YYYY-MM-DD.jsonl                    Append-only log of every event
   index.sqlite                               Derived from the files; safe to delete
-  logs/daemon.log                            Daemon logs
+  logs/daemon.log.<date>                     Daemon logs, rotated daily at UTC midnight; oldest
+                                              deleted past 8 files. A leftover undated
+                                              logs/daemon.log predates this and is safe to delete.
 ```
 
 `$SHIMMER_HOME` defaults to `~/.local/share/shimmer` on Linux and `~/Library/Application Support/shimmer` on
