@@ -404,6 +404,7 @@ tolerate unknown topics.
 | `queue.task.failed` | Task failed. Payload includes `error`, `attempts`, `lane`, `origin`. |
 | `queue.task.cancelled` | Task cancelled before or during execution. |
 | `queue.task.promoted` | A task jumped the lane. Payload lists displaced task ids. |
+| `queue.task.reordered` | A waiting task moved within its lane. Payload `{task_id, lane, before, queue_version}`. |
 | `scheduler.trigger.fired` | Trigger fired and enqueued a task. |
 | `scheduler.trigger.skipped` | Trigger fired while its previous task was still pending (`reason: "overlap"`), or its task could not be enqueued (`reason: "enqueue_failed"`). |
 | `scheduler.trigger.missed` | A `catch_up` policy dropped due occurrences. Payload `{trigger_id, count, catch_up}`. |
