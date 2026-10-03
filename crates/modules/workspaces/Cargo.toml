@@ -21,3 +21,4 @@ toml = "1"
 [dev-dependencies]
 shimmer-core = { path = "../../core", features = ["testing"] }
 tokio = { version = "1", features = ["macros", "rt"] }
+tokio-util = "0.7"

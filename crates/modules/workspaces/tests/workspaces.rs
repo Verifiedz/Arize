@@ -68,17 +68,22 @@ async fn call(w: &Workspaces, env: &TestEnv, op: &str, params: Value) -> Result<
 // ---------------------------------------------------------------- manifest
 
 #[test]
-fn it_declares_its_lane_the_process_capability_and_inline_ops() {
+fn it_declares_its_lane_the_process_capability_and_the_protocol_ops() {
     let w = Workspaces::default();
     assert_eq!(w.manifest().capabilities, ["process"]);
     let lanes = w.lanes();
     assert_eq!((lanes[0].id.as_str(), lanes[0].max_concurrent), ("workspaces", 1));
+    // docs/protocol.md "Workspace ops": what runs scripts is queued on the workspaces lane.
+    let queued = || Execution::Queued { lane: "workspaces".into() };
     let ops: Vec<_> = w.commands().into_iter().map(|c| (c.op, c.execution)).collect();
     assert_eq!(
         ops,
         [
             ("workspaces.list".to_owned(), Execution::Inline),
             ("workspaces.status".to_owned(), Execution::Inline),
+            ("workspaces.activate".to_owned(), queued()),
+            ("workspaces.cleanup".to_owned(), queued()),
+            ("workspaces.force_relaunch".to_owned(), queued()),
             ("workspaces.reset".to_owned(), Execution::Inline),
         ]
     );

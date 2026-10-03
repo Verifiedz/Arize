@@ -12,7 +12,16 @@
 //! ```
 //!
 //! While launching, `step` records the step that is running, so a daemon that dies mid-launch
-//! can say which step it was on when it restarts.
+//! can say which step it was on when it restarts. `[last_session]` describes the most recent
+//! launch attempt, for `workspaces.status`:
+//!
+//! ```toml
+//! [last_session]
+//! id = "01JD2T…"
+//! started_at = "2026-09-16T09:12:30Z"
+//! forced = false
+//! outcome = "dirty"
+//! ```
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
@@ -29,11 +38,47 @@ pub struct Saved {
     pub state: WorkspaceState,
     /// While `Launching`: the step that was running when this was written.
     pub running_step: Option<FailedStep>,
+    pub last_session: Option<LastSession>,
+}
+
+/// The most recent launch attempt.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LastSession {
+    /// `SHIMMER_SESSION_ID` (ADR 0010 §9), as the launcher reported it.
+    pub id: String,
+    pub started_at: DateTime<Utc>,
+    pub forced: bool,
+    pub outcome: Outcome,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// Every step succeeded.
+    Launched,
+    /// A step failed; the workspace is dirty.
+    Dirty,
+    /// Cancelled part-way; the workspace is dirty.
+    Cancelled,
+}
+
+impl Outcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Launched => "launched",
+            Self::Dirty => "dirty",
+            Self::Cancelled => "cancelled",
+        }
+    }
 }
 
 impl Saved {
     pub fn new(state: WorkspaceState) -> Self {
-        Self { state, running_step: None }
+        Self { state, running_step: None, last_session: None }
+    }
+
+    pub fn with_last_session(mut self, last: Option<LastSession>) -> Self {
+        self.last_session = last;
+        self
     }
 
     /// No `state.toml` yet: a workspace nobody has launched.
@@ -69,7 +114,23 @@ pub fn decode(id: &str, text: &str) -> Result<Saved> {
         (_, None) => None,
         (_, Some(_)) => return Err(bad("step is only valid when state = \"launching\"".into())),
     };
-    Ok(Saved { state, running_step })
+    let last_session = match file.last_session {
+        None => None,
+        Some(l) => Some(LastSession {
+            id: l.id,
+            started_at: DateTime::parse_from_rfc3339(&l.started_at)
+                .map_err(|e| bad(format!("[last_session] started_at: {e}")))?
+                .with_timezone(&Utc),
+            forced: l.forced,
+            outcome: match l.outcome.as_str() {
+                "launched" => Outcome::Launched,
+                "dirty" => Outcome::Dirty,
+                "cancelled" => Outcome::Cancelled,
+                other => return Err(bad(format!("[last_session] unknown outcome \"{other}\""))),
+            },
+        }),
+    };
+    Ok(Saved { state, running_step, last_session })
 }
 
 pub fn encode(saved: &Saved) -> String {
@@ -91,11 +152,18 @@ pub fn encode(saved: &Saved) -> String {
         WorkspaceState::Launching => saved.running_step.as_ref().map(Into::into),
         _ => None,
     };
-    toml::to_string(&File { state: state.into(), step, dirty }).expect("state.toml always serialises")
+    let last_session = saved.last_session.as_ref().map(|l| LastSessionTable {
+        id: l.id.clone(),
+        started_at: l.started_at.to_rfc3339_opts(SecondsFormat::Secs, true),
+        forced: l.forced,
+        outcome: l.outcome.as_str().into(),
+    });
+    toml::to_string(&File { state: state.into(), step, dirty, last_session }).expect("state.toml always serialises")
 }
 
 /// The daemon found a workspace still saved as `launching` on startup: it stopped in the middle
-/// of a launch. Steps that already ran can't be undone, so it is `dirty` (§10.3, §7.1).
+/// of a launch. Steps that already ran can't be undone, so it is `dirty` (§10.3, §7.1). Any
+/// `last_session` is kept as it was.
 pub fn recover_after_restart(saved: &Saved, now: DateTime<Utc>) -> Option<WorkspaceState> {
     if saved.state != WorkspaceState::Launching {
         return None;
@@ -119,6 +187,17 @@ struct File {
     step: Option<StepTable>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     dirty: Option<DirtyTable>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_session: Option<LastSessionTable>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LastSessionTable {
+    id: String,
+    started_at: String,
+    forced: bool,
+    outcome: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -176,13 +255,17 @@ mod tests {
 
     #[test]
     fn every_state_round_trips() {
-        let launching = Saved { state: WorkspaceState::Launching, running_step: Some(step()) };
+        let launching = Saved { state: WorkspaceState::Launching, running_step: Some(step()), last_session: None };
+        let session = |outcome| LastSession { id: "01JD2T".into(), started_at: at(), forced: true, outcome };
         for saved in [
             Saved::ready(),
             Saved::new(WorkspaceState::Active),
             Saved::new(WorkspaceState::Launching),
             launching,
             Saved::new(dirty()),
+            Saved::new(WorkspaceState::Active).with_last_session(Some(session(Outcome::Launched))),
+            Saved::new(dirty()).with_last_session(Some(session(Outcome::Dirty))),
+            Saved::new(dirty()).with_last_session(Some(session(Outcome::Cancelled))),
         ] {
             assert_eq!(decode("deep-work", &encode(&saved)).unwrap(), saved);
         }
@@ -198,7 +281,7 @@ mod tests {
 
     #[test]
     fn running_step_is_only_kept_while_launching() {
-        let text = encode(&Saved { state: WorkspaceState::Active, running_step: Some(step()) });
+        let text = encode(&Saved { state: WorkspaceState::Active, running_step: Some(step()), last_session: None });
         assert_eq!(decode("deep-work", &text).unwrap(), Saved::new(WorkspaceState::Active));
     }
 
@@ -211,6 +294,7 @@ mod tests {
             "state = \"ready\"\n[dirty]\nreason = \"x\"\nfailed_at = \"2026-09-16T09:12:44Z\"\nlog = \"\"\nstep = { index = 1, count = 1, name = \"a\" }",
             "state = \"ready\"\nstep = { index = 1, count = 1, name = \"a\" }",
             "state = \"ready\"\ncolour = \"red\"",
+            "state = \"ready\"\n[last_session]\nid = \"x\"\nstarted_at = \"2026-09-16T09:12:44Z\"\nforced = false\noutcome = \"exploded\"",
         ] {
             let e = decode("deep-work", text).unwrap_err();
             assert_eq!(e.code, ErrorCode::InvalidParams);
@@ -220,7 +304,7 @@ mod tests {
 
     #[test]
     fn a_launch_cut_short_by_a_restart_comes_back_dirty() {
-        let saved = Saved { state: WorkspaceState::Launching, running_step: Some(step()) };
+        let saved = Saved { state: WorkspaceState::Launching, running_step: Some(step()), last_session: None };
         let state = recover_after_restart(&saved, at()).unwrap();
         let WorkspaceState::Dirty { reason, failed_step, failed_at, .. } = state else { panic!("{state:?}") };
         assert_eq!(reason, "the daemon stopped during step 1/3 setup");

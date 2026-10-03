@@ -5,6 +5,8 @@
 //! Layout, inside the module's namespace `data/workspaces/` (ADR 0010, ADR 0012):
 //! `<id>/workspace.toml`, `<id>/steps/…`, `<id>/cleanup.{sh,ps1}` (all written by the user)
 //! and `<id>/state.toml` (written only here).
+//!
+//! The ops that run scripts (`activate`, `force_relaunch`, `cleanup`) live in [`crate::launch`].
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard};
@@ -59,7 +61,8 @@ impl Module for Workspaces {
             let Some(Ok(saved)) = folder.saved(ctx, &id) else { continue };
             let Some(dirty) = persist::recover_after_restart(&saved, ctx.clock.now()) else { continue };
             ctx.store.transaction(|tx| {
-                tx.put(&state_path(&id), persist::encode(&Saved::new(dirty.clone())))?;
+                let next = Saved::new(dirty.clone()).with_last_session(saved.last_session.clone());
+                tx.put(&state_path(&id), persist::encode(&next))?;
                 tx.emit("workspaces.session.dirty", dirty_payload(&id, &dirty))
             })?;
         }
@@ -72,17 +75,21 @@ impl Module for Workspaces {
 
     fn commands(&self) -> Vec<CommandSpec> {
         let id = json!({"type": "object", "required": ["id"], "properties": {"id": {"type": "string"}}});
+        let queued = || Execution::Queued { lane: LANE.into() };
         [
-            ("workspaces.list", "List workspaces and their state", json!({"type": "object"})),
-            ("workspaces.status", "Show one workspace in full", id.clone()),
-            ("workspaces.reset", "Clear dirty without running cleanup (last resort)", id),
+            ("workspaces.list", "List workspaces and their state", json!({"type": "object"}), Execution::Inline),
+            ("workspaces.status", "Show one workspace in full", id.clone(), Execution::Inline),
+            ("workspaces.activate", "Launch a workspace's steps in order", id.clone(), queued()),
+            ("workspaces.cleanup", "Run a dirty workspace's cleanup script", id.clone(), queued()),
+            ("workspaces.force_relaunch", "Launch a dirty workspace anyway (logged as forced)", id.clone(), queued()),
+            ("workspaces.reset", "Clear dirty without running cleanup (last resort)", id, Execution::Inline),
         ]
         .into_iter()
-        .map(|(op, summary, params_schema)| CommandSpec {
+        .map(|(op, summary, params_schema, execution)| CommandSpec {
             op: op.into(),
             summary: summary.into(),
             params_schema,
-            execution: Execution::Inline,
+            execution,
         })
         .collect()
     }
@@ -92,6 +99,9 @@ impl Module for Workspaces {
             "workspaces.list" => self.list(ctx),
             "workspaces.status" => self.status(ctx, &parse::<Target>(params)?.id),
             "workspaces.reset" => self.reset(ctx, &parse::<Target>(params)?.id),
+            "workspaces.activate" => self.activate(ctx, &parse::<Target>(params)?.id).await,
+            "workspaces.force_relaunch" => self.force_relaunch(ctx, &parse::<Target>(params)?.id).await,
+            "workspaces.cleanup" => self.cleanup(ctx, &parse::<Target>(params)?.id).await,
             _ => Err(Error::unknown_op(format!("workspaces has no op '{op}'"))),
         }
     }
@@ -103,7 +113,7 @@ struct Target {
 }
 
 impl Workspaces {
-    fn lock(&self) -> MutexGuard<'_, ()> {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, ()> {
         // The lock guards no data, so a poisoned one carries no information.
         self.write.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -163,6 +173,13 @@ impl Workspaces {
                 if let (WorkspaceState::Launching, Some(step)) = (&saved.state, &saved.running_step) {
                     out.insert("running_step".into(), json!(step.to_string()));
                 }
+                if let Some(last) = &saved.last_session {
+                    out.insert(
+                        "last_session".into(),
+                        json!({"id": last.id, "started_at": rfc3339(&last.started_at),
+                               "forced": last.forced, "outcome": last.outcome.as_str()}),
+                    );
+                }
             }
             Err(e) => {
                 out.entry("error").or_insert(json!(e.message));
@@ -180,16 +197,16 @@ impl Workspaces {
     fn reset(&self, ctx: &Ctx, id: &str) -> Result<Value> {
         let _g = self.lock();
         let folder = folder(ctx, id)?;
-        let prior = match folder.saved(ctx, id) {
-            Some(Err(e)) => json!({"unreadable_state": e.message}),
+        let (prior, last_session) = match folder.saved(ctx, id) {
+            Some(Err(e)) => (json!({"unreadable_state": e.message}), None),
             saved => {
                 let saved = saved.unwrap_or_else(|| Ok(Saved::ready()))?;
                 state::reset(&saved.state)?;
-                dirty_payload(id, &saved.state)
+                (dirty_payload(id, &saved.state), saved.last_session)
             }
         };
         ctx.store.transaction(|tx| {
-            tx.put(&state_path(id), persist::encode(&Saved::ready()))?;
+            tx.put(&state_path(id), persist::encode(&Saved::ready().with_last_session(last_session)))?;
             tx.emit("workspaces.workspace.reset", json!({"workspace": id, "prior": prior}))
         })?;
         Ok(json!({"id": id, "state": "ready"}))
@@ -200,21 +217,21 @@ impl Workspaces {
 
 /// One workspace folder's file list, relative to the folder (`workspace.toml`,
 /// `steps/01-setup.sh`, `state.toml`, …), as `manifest::parse` takes it.
-struct Folder {
-    files: Vec<String>,
+pub(crate) struct Folder {
+    pub(crate) files: Vec<String>,
 }
 
 impl Folder {
-    fn has(&self, name: &str) -> bool {
+    pub(crate) fn has(&self, name: &str) -> bool {
         self.files.iter().any(|f| f == name)
     }
 
-    fn has_cleanup_script(&self) -> bool {
+    pub(crate) fn has_cleanup_script(&self) -> bool {
         self.has("cleanup.sh") || self.has("cleanup.ps1")
     }
 
     /// The checked `workspace.toml`, or why it isn't valid.
-    fn load(&self, ctx: &Ctx, id: &str) -> Result<Workspace> {
+    pub(crate) fn load(&self, ctx: &Ctx, id: &str) -> Result<Workspace> {
         let text = ctx
             .store
             .read_string(&format!("{id}/workspace.toml"))?
@@ -223,7 +240,7 @@ impl Folder {
     }
 
     /// `None` when there is no `state.toml` yet.
-    fn saved(&self, ctx: &Ctx, id: &str) -> Option<Result<Saved>> {
+    pub(crate) fn saved(&self, ctx: &Ctx, id: &str) -> Option<Result<Saved>> {
         if !self.has(STATE_FILE) {
             return None;
         }
@@ -244,11 +261,11 @@ fn folders(ctx: &Ctx) -> Result<BTreeMap<String, Folder>> {
 
 /// The folder for `id`, found by listing, never by building a path from the request: an id
 /// that isn't an existing folder is `not_found` whatever it contains.
-fn folder(ctx: &Ctx, id: &str) -> Result<Folder> {
+pub(crate) fn folder(ctx: &Ctx, id: &str) -> Result<Folder> {
     folders(ctx)?.remove(id).ok_or_else(|| Error::not_found(format!("no workspace '{id}'")))
 }
 
-fn state_path(id: &str) -> String {
+pub(crate) fn state_path(id: &str) -> String {
     format!("{id}/{STATE_FILE}")
 }
 
@@ -298,7 +315,7 @@ fn describe(out: &mut Map<String, Value>, w: &Workspace) {
 }
 
 /// `workspaces.session.dirty`'s payload, and `prior` in `workspaces.workspace.reset`.
-fn dirty_payload(id: &str, state: &WorkspaceState) -> Value {
+pub(crate) fn dirty_payload(id: &str, state: &WorkspaceState) -> Value {
     match state {
         WorkspaceState::Dirty { reason, failed_step, failed_at, log } => json!({
             "workspace": id, "reason": reason, "failed_step": failed_step.to_string(),
@@ -308,7 +325,7 @@ fn dirty_payload(id: &str, state: &WorkspaceState) -> Value {
     }
 }
 
-fn rfc3339(t: &chrono::DateTime<chrono::Utc>) -> String {
+pub(crate) fn rfc3339(t: &chrono::DateTime<chrono::Utc>) -> String {
     t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 

@@ -823,6 +823,7 @@ dependencies = [
  "serde_json",
  "shimmer-core",
  "tokio",
+ "tokio-util",
  "toml",
 ]
 

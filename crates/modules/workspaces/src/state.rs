@@ -59,18 +59,28 @@ pub fn activate(state: &WorkspaceState, workspace: &str, has_cleanup_script: boo
     match state {
         WorkspaceState::Ready | WorkspaceState::Active => Ok(WorkspaceState::Launching),
         WorkspaceState::Launching => Err(Error::conflict(format!("workspace '{workspace}' is already launching"))),
-        WorkspaceState::Dirty { reason, failed_step, failed_at, log } => Err(Error::new(
-            ErrorCode::WorkspaceDirty,
-            format!("workspace '{workspace}' failed at step {failed_step} ({reason}) and was not cleaned up"),
-        )
-        .with_detail(json!({
-            "workspace": workspace,
-            "failed_step": failed_step.to_string(),
-            "failed_at": failed_at.to_rfc3339_opts(SecondsFormat::Secs, true),
-            "log": log,
-            "has_cleanup_script": has_cleanup_script,
-        }))),
+        WorkspaceState::Dirty { .. } => Err(dirty_error(state, workspace, has_cleanup_script)),
     }
+}
+
+/// The `workspace_dirty` error, with docs/protocol.md's `detail`. Returned by [`activate`] on a
+/// dirty workspace, and by a launch whose step just failed, so both look the same to a client.
+/// Called with any other state it is `internal`: only a dirty workspace has this error.
+pub fn dirty_error(state: &WorkspaceState, workspace: &str, has_cleanup_script: bool) -> Error {
+    let WorkspaceState::Dirty { reason, failed_step, failed_at, log } = state else {
+        return Error::internal(format!("dirty_error called in state {state:?}"));
+    };
+    Error::new(
+        ErrorCode::WorkspaceDirty,
+        format!("workspace '{workspace}' failed at step {failed_step} ({reason}) and was not cleaned up"),
+    )
+    .with_detail(json!({
+        "workspace": workspace,
+        "failed_step": failed_step.to_string(),
+        "failed_at": failed_at.to_rfc3339_opts(SecondsFormat::Secs, true),
+        "log": log,
+        "has_cleanup_script": has_cleanup_script,
+    }))
 }
 
 /// `launching -> active`: every step succeeded (§10.3).
