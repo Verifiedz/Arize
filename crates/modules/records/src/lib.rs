@@ -8,14 +8,12 @@
 mod item;
 mod schema;
 
-use std::sync::{Mutex, MutexGuard};
-
 use async_trait::async_trait;
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use shimmer_core::ids::is_valid_name;
-use shimmer_core::{CommandSpec, Ctx, Error, ErrorCode, Execution, Manifest, Module, Result};
+use shimmer_core::params::decode;
+use shimmer_core::{CommandSpec, Ctx, Error, ErrorCode, Execution, Manifest, Module, Result, WriteLock};
 
 use crate::item::{Item, Status};
 use crate::schema::Collection;
@@ -28,7 +26,7 @@ const MAX_LIMIT: usize = 500;
 pub struct Records {
     /// Inline requests run concurrently. Held across each read-check-write so two `records.add`
     /// calls for one id cannot both pass the existence check. Never held across an `.await`.
-    write: Mutex<()>,
+    write: WriteLock,
 }
 
 #[async_trait]
@@ -54,7 +52,7 @@ impl Module for Records {
     /// Seed the built-in LeetCode collection when there are no collections at all, so a fresh
     /// install has something to track.
     async fn init(&self, ctx: &Ctx) -> Result<()> {
-        let _g = self.lock();
+        let _g = self.write.lock();
         if !ctx.store.list("collections")?.is_empty() {
             return Ok(());
         }
@@ -101,16 +99,16 @@ impl Module for Records {
     async fn handle(&self, op: &str, params: Value, ctx: &Ctx) -> Result<Value> {
         match op {
             "records.collections" => self.collections(ctx),
-            "records.add" => self.add(ctx, parse(params)?),
+            "records.add" => self.add(ctx, decode(params)?),
             "records.get" => {
-                let t: Target = parse(params)?;
+                let t: Target = decode(params)?;
                 let c = load_collection(ctx, &t.collection)?;
                 Ok(load_item(ctx, &c, &t.id)?.to_wire(&c))
             }
-            "records.list" => self.list(ctx, parse(params)?),
-            "records.update" => self.update(ctx, parse(params)?),
-            "records.complete" => self.complete(ctx, parse(params)?),
-            "records.remove" => self.remove(ctx, parse(params)?),
+            "records.list" => self.list(ctx, decode(params)?),
+            "records.update" => self.update(ctx, decode(params)?),
+            "records.complete" => self.complete(ctx, decode(params)?),
+            "records.remove" => self.remove(ctx, decode(params)?),
             _ => Err(Error::unknown_op(format!("records has no op '{op}'"))),
         }
     }
@@ -142,11 +140,6 @@ struct ListParams {
 }
 
 impl Records {
-    fn lock(&self) -> MutexGuard<'_, ()> {
-        // The lock guards no data, so a poisoned one carries no information.
-        self.write.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
     /// Every readable collection, plus `skipped` naming each malformed file, the same shape as
     /// `records.list`. One broken file must not hide the others (ADR 0008): a request that
     /// uses it still fails, naming the file.
@@ -182,7 +175,7 @@ impl Records {
         let item = Item::new(&p.id, p.fields);
         let wire = item.to_wire(&c);
 
-        let _g = self.lock();
+        let _g = self.write.lock();
         let path = item_path(&c.id, &p.id);
         ctx.store.transaction(|tx| {
             if tx.read(&path)?.is_some() {
@@ -241,7 +234,7 @@ impl Records {
         let mut changed: Vec<String> = p.fields.keys().cloned().collect();
         changed.sort();
 
-        let _g = self.lock();
+        let _g = self.write.lock();
         let mut item = load_item(ctx, &c, &p.id)?;
         item.apply(p.fields);
         c.check_required(&item.fields_map())?;
@@ -259,7 +252,7 @@ impl Records {
         // of UTC must not stamp tomorrow.
         let today = shimmer_core::local_date(ctx.clock.now(), &ctx.local_tz).format("%Y-%m-%d").to_string();
 
-        let _g = self.lock();
+        let _g = self.write.lock();
         let mut item = load_item(ctx, &c, &t.id)?;
         item.status = Status::Done;
         if let Some(stamp) = &c.stamp_on_complete {
@@ -275,7 +268,7 @@ impl Records {
 
     fn remove(&self, ctx: &Ctx, t: Target) -> Result<Value> {
         let c = load_collection(ctx, &t.collection)?;
-        let _g = self.lock();
+        let _g = self.write.lock();
         load_item(ctx, &c, &t.id)?;
         ctx.store.transaction(|tx| {
             tx.delete(&item_path(&c.id, &t.id))?;
@@ -304,10 +297,4 @@ fn load_item(ctx: &Ctx, c: &Collection, id: &str) -> Result<Item> {
 
 fn item_path(collection: &str, id: &str) -> String {
     format!("items/{collection}/{id}.toml")
-}
-
-fn parse<T: DeserializeOwned>(params: Value) -> Result<T> {
-    // Absent params decode as null.
-    let params = if params.is_null() { json!({}) } else { params };
-    serde_json::from_value(params).map_err(|e| Error::invalid_params(e.to_string()))
 }

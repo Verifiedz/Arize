@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use serde::Deserialize;
+use shimmer_core::ids::is_valid_id;
 use shimmer_core::{Error, Result, SpawnMode, Step};
 
 /// File numbers are two digits (ADR 0012 §6).
@@ -227,13 +228,11 @@ struct RawCleanup {
 
 // ---------------------------------------------------------------- checks
 
-/// `[a-z0-9][a-z0-9_-]*`, at most 64 characters: workspace ids and step names. The charset is
-/// the one record ids use (ADR 0008); ADR 0010 §2a requires it before a name is used in a path.
+/// `[a-z0-9][a-z0-9_-]*` (`core::ids::is_valid_id`, shared with record ids, ADR 0008), at most 64
+/// characters: workspace ids and step names. ADR 0010 §2a requires it before a name is used in a
+/// path.
 pub(crate) fn valid_name(s: &str) -> bool {
-    let mut chars = s.chars();
-    s.len() <= MAX_NAME_LEN
-        && chars.next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    s.len() <= MAX_NAME_LEN && is_valid_id(s)
 }
 
 fn timeout(seconds: i64) -> std::result::Result<Duration, String> {

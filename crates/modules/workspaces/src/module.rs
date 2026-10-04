@@ -9,13 +9,12 @@
 //! The ops that run scripts (`activate`, `force_relaunch`, `cleanup`) live in [`crate::launch`].
 
 use std::collections::BTreeMap;
-use std::sync::{Mutex, MutexGuard};
 
 use async_trait::async_trait;
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use shimmer_core::{CommandSpec, Ctx, Error, Execution, LaneConfig, Manifest, Module, Result, SpawnMode};
+use shimmer_core::params::decode;
+use shimmer_core::{CommandSpec, Ctx, Error, Execution, LaneConfig, Manifest, Module, Result, SpawnMode, WriteLock};
 
 use crate::manifest::{self, Workspace};
 use crate::persist::{self, Saved, STATE_FILE};
@@ -29,7 +28,7 @@ pub const LANE: &str = "workspaces";
 pub struct Workspaces {
     /// Inline requests run concurrently; this serialises each read-check-write of a
     /// `state.toml`. Never held across an `.await`.
-    write: Mutex<()>,
+    pub(crate) write: WriteLock,
 }
 
 #[async_trait]
@@ -57,7 +56,7 @@ impl Module for Workspaces {
     /// A workspace still saved as `launching` belongs to a launch the daemon never finished
     /// (it crashed or was killed). Mark it dirty: its earlier steps already ran.
     async fn init(&self, ctx: &Ctx) -> Result<()> {
-        let _g = self.lock();
+        let _g = self.write.lock();
         for (id, folder) in folders(ctx)? {
             let Some(Ok(saved)) = folder.saved(ctx, &id) else { continue };
             let Some(dirty) = persist::recover_after_restart(&saved, ctx.clock.now()) else { continue };
@@ -98,11 +97,11 @@ impl Module for Workspaces {
     async fn handle(&self, op: &str, params: Value, ctx: &Ctx) -> Result<Value> {
         match op {
             "workspaces.list" => self.list(ctx),
-            "workspaces.status" => self.status(ctx, &parse::<Target>(params)?.id),
-            "workspaces.reset" => self.reset(ctx, &parse::<Target>(params)?.id),
-            "workspaces.activate" => self.activate(ctx, &parse::<Target>(params)?.id).await,
-            "workspaces.force_relaunch" => self.force_relaunch(ctx, &parse::<Target>(params)?.id).await,
-            "workspaces.cleanup" => self.cleanup(ctx, &parse::<Target>(params)?.id).await,
+            "workspaces.status" => self.status(ctx, &decode::<Target>(params)?.id),
+            "workspaces.reset" => self.reset(ctx, &decode::<Target>(params)?.id),
+            "workspaces.activate" => self.activate(ctx, &decode::<Target>(params)?.id).await,
+            "workspaces.force_relaunch" => self.force_relaunch(ctx, &decode::<Target>(params)?.id).await,
+            "workspaces.cleanup" => self.cleanup(ctx, &decode::<Target>(params)?.id).await,
             _ => Err(Error::unknown_op(format!("workspaces has no op '{op}'"))),
         }
     }
@@ -114,11 +113,6 @@ struct Target {
 }
 
 impl Workspaces {
-    pub(crate) fn lock(&self) -> MutexGuard<'_, ()> {
-        // The lock guards no data, so a poisoned one carries no information.
-        self.write.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
     /// Every workspace, by id. A broken one is listed as `invalid` with the reason; it never
     /// hides the others (ADR 0012 §6).
     fn list(&self, ctx: &Ctx) -> Result<Value> {
@@ -181,7 +175,7 @@ impl Workspaces {
     /// cleanup script). Also clears a `state.toml` Shimmer can't read, which is the one way to
     /// recover from a hand-edit gone wrong.
     fn reset(&self, ctx: &Ctx, id: &str) -> Result<Value> {
-        let _g = self.lock();
+        let _g = self.write.lock();
         let folder = folder(ctx, id)?;
         let (prior, last_session) = match folder.saved(ctx, id) {
             Some(Err(e)) => (json!({"unreadable_state": e.message}), None),
@@ -351,10 +345,4 @@ pub(crate) fn dirty_payload(id: &str, state: &WorkspaceState) -> Value {
 
 pub(crate) fn rfc3339(t: &chrono::DateTime<chrono::Utc>) -> String {
     t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-}
-
-fn parse<T: DeserializeOwned>(params: Value) -> Result<T> {
-    // Absent params decode as null.
-    let params = if params.is_null() { json!({}) } else { params };
-    serde_json::from_value(params).map_err(|e| Error::invalid_params(e.to_string()))
 }
