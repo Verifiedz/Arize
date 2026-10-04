@@ -10,6 +10,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use shimmer_core::params::decode;
 use shimmer_core::{
     Clock, Ctx, Emitter, Error, Execution, HttpGateway, LaneConfig, LaneId, ModuleConfig, ModuleId, NamespacedStore,
     Origin, Priority, ProgressFn, QueueHandle, Result,
@@ -135,7 +136,7 @@ impl Core {
                 struct P {
                     lane: Option<LaneId>,
                 }
-                let p: P = parse(params)?;
+                let p: P = decode(params)?;
                 self.queue.list(p.lane.as_ref())
             }
             ops::QUEUE_TASK => self.queue.task_view(task_id(params)?),
@@ -148,7 +149,7 @@ impl Core {
                     before: Option<String>,
                     queue_version: u64,
                 }
-                let p: P = parse(params)?;
+                let p: P = decode(params)?;
                 let id = p.task_id.parse()?;
                 let before = p.before.map(|s| s.parse()).transpose()?;
                 self.queue.reorder(&p.lane, id, before, p.queue_version)
@@ -245,16 +246,10 @@ impl OpRunner for Core {
     }
 }
 
-fn parse<T: for<'de> Deserialize<'de>>(params: Value) -> Result<T> {
-    // `params` may be absent on the wire, which decodes as null.
-    let params = if params.is_null() { json!({}) } else { params };
-    serde_json::from_value(params).map_err(|e| Error::invalid_params(e.to_string()))
-}
-
 fn task_id(params: Value) -> Result<TaskId> {
     #[derive(Deserialize)]
     struct P {
         task_id: String,
     }
-    parse::<P>(params)?.task_id.parse()
+    decode::<P>(params)?.task_id.parse()
 }
