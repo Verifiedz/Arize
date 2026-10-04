@@ -171,7 +171,7 @@ async fn run_supervised(
     if !script.exists() {
         return Err(Error::unavailable(format!("launch script not found: {}", script.display())));
     }
-    let log_rel = log_path_for(step);
+    let log_rel = log_path_for(step, session_id);
     let log_abs = home.join(&log_rel);
     if let Some(parent) = log_abs.parent() {
         std::fs::create_dir_all(parent)?;
@@ -209,14 +209,15 @@ async fn run_supervised(
 }
 
 /// Relative to `$SHIMMER_HOME`, matching `docs/protocol.md`'s `workspace_dirty` detail shape
-/// (ADR 0010 §3 "Logs"). Provisional naming — folds in the real session id once the
-/// session-id sub-branch mints one; nothing downstream depends on this exact shape yet.
-fn log_path_for(step: &LaunchStep) -> String {
+/// (ADR 0010 §3 "Logs"). The session id is part of the name (#69) so that a relaunch or a
+/// force relaunch never overwrites the log a previous `dirty` state still points at — each
+/// launch attempt mints its own `session_id` (ADR 0010 §9), so each gets its own log file.
+fn log_path_for(step: &LaunchStep, session_id: &str) -> String {
     let label = match &step.step {
         Step::Launch { name, .. } => name.as_str(),
         Step::Cleanup => "cleanup",
     };
-    format!("logs/{}-{}.log", step.workspace_dir, label)
+    format!("logs/{}-{}-{}.log", step.workspace_dir, session_id, label)
 }
 
 /// Negative PID targets the whole process group (ADR 0010 §3), so a script's own children —
@@ -230,10 +231,9 @@ fn kill_process_group(pid: Option<u32>) {
 }
 
 /// The six vars every spawned script gets (CLAUDE.md §10.1), then `workspace.toml`'s
-/// `[env]` for every key that is not one of those six — the override guard (ADR 0010 §2):
-/// "a `workspace.toml` that (accidentally or otherwise) declares `SHIMMER_SOCKET = "..."`
-/// cannot redirect a script's daemon connection." Checked by membership, not by call order,
-/// since `Command::env` is last-write-wins for a repeated key.
+/// `[env]` for every key that is not reserved — the override guard (ADR 0010 §2): "a
+/// `workspace.toml` that (accidentally or otherwise) declares `SHIMMER_SOCKET = "..."`
+/// cannot redirect a script's daemon connection."
 fn inject_env(cmd: &mut Command, home: &Path, socket: &Path, step: &LaunchStep, session_id: &str) {
     let workspace_dir = home.join("data/workspaces").join(&step.workspace_dir);
     let injected = [
@@ -248,10 +248,20 @@ fn inject_env(cmd: &mut Command, home: &Path, socket: &Path, step: &LaunchStep, 
         cmd.env(k, v);
     }
     for (k, v) in &step.user_env {
-        if !injected.iter().any(|(ik, _)| ik == k) {
+        if !is_shimmer_reserved(k) {
             cmd.env(k, v);
         }
     }
+}
+
+const SHIMMER_ENV_PREFIX: &str = "SHIMMER_";
+
+/// ADR 0012 §6 reserves the *whole* `SHIMMER_` prefix, case-insensitively (Windows env names
+/// are case-insensitive), not just the six names currently injected — so a `user_env` entry
+/// can never collide with a `SHIMMER_*` variable this backend (or a future one) adds later,
+/// without this guard needing to grow a matching entry of its own (#69).
+fn is_shimmer_reserved(name: &str) -> bool {
+    name.to_ascii_uppercase().starts_with(SHIMMER_ENV_PREFIX)
 }
 
 fn platform() -> &'static str {
@@ -307,6 +317,24 @@ mod tests {
         }
     }
 
+    /// Polls for a detached script's output file instead of a fixed sleep (#69) — a
+    /// `Detached` step is never waited on, so a fixed sleep is a flakiness risk on a slow CI
+    /// runner. Polls every 20ms, up to 5s, then panics with what was (or wasn't) there.
+    async fn wait_for_file(path: &Path) -> String {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(contents) = std::fs::read_to_string(path) {
+                if !contents.is_empty() {
+                    return contents;
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!("timed out waiting for {} to be written", path.display());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
     #[tokio::test]
     async fn detached_script_outlives_the_backend_that_spawned_it() {
         let home = TempDir::new().unwrap();
@@ -337,10 +365,9 @@ mod tests {
 
         let b = backend(&home);
         let outcome = b.run(&step("deep-work", "setup"), &CancellationToken::new()).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(200)).await;
 
         assert!(!outcome.session_id.is_empty());
-        let seen = std::fs::read_to_string(&out).unwrap();
+        let seen = wait_for_file(&out).await;
         let expected = format!(
             "deep-work|{}|{}|{}|{}|{}",
             home.path().join("data/workspaces/deep-work").display(),
@@ -368,9 +395,8 @@ mod tests {
         );
 
         backend(&home).run(&step("deep-work", "setup"), &CancellationToken::new()).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(200)).await;
 
-        let seen = std::fs::read_to_string(&out).unwrap();
+        let seen = wait_for_file(&out).await;
         assert_eq!(seen.trim(), home.path().join("data/workspaces/deep-work").display().to_string());
     }
 
@@ -468,10 +494,42 @@ mod tests {
             ("MY_VAR".into(), "from-workspace-toml".into()),
         ];
         backend(&home).run(&s, &CancellationToken::new()).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(200)).await;
 
-        let seen = std::fs::read_to_string(&out).unwrap();
+        let seen = wait_for_file(&out).await;
         assert_eq!(seen.trim(), format!("{}|from-workspace-toml", home.path().join("d.sock").display()));
+    }
+
+    #[tokio::test]
+    async fn user_env_cannot_override_any_shimmer_prefixed_name() {
+        // ADR 0012 §6 reserves the whole SHIMMER_ prefix, case-insensitively, not just the
+        // six names currently injected (#69) — a workspace.toml declaring a future SHIMMER_*
+        // var, or one in a different case, must not reach the script either.
+        let home = TempDir::new().unwrap();
+        let out = home.path().join("out");
+        write_step_script(
+            home.path(),
+            "deep-work",
+            "setup",
+            &format!(
+                "echo \"${{SHIMMER_SOMETHING_NEW:-unset}}|${{shimmer_socket:-unset}}|$MY_VAR\" > {}\n",
+                out.display()
+            ),
+        );
+
+        let mut s = step("deep-work", "setup");
+        s.user_env = vec![
+            ("SHIMMER_SOMETHING_NEW".into(), "from-workspace-toml".into()),
+            ("shimmer_socket".into(), "attacker-controlled".into()),
+            ("MY_VAR".into(), "from-workspace-toml".into()),
+        ];
+        backend(&home).run(&s, &CancellationToken::new()).await.unwrap();
+
+        let seen = wait_for_file(&out).await;
+        assert_eq!(
+            seen.trim(),
+            "unset|unset|from-workspace-toml",
+            "both SHIMMER_SOMETHING_NEW and shimmer_socket must be dropped"
+        );
     }
 
     #[tokio::test]
@@ -539,6 +597,30 @@ mod tests {
         assert!(!outcome.timed_out);
         let log = std::fs::read_to_string(home.path().join(&outcome.log_path)).unwrap();
         assert_eq!(log, "hello-from-setup\n");
+    }
+
+    #[tokio::test]
+    async fn two_launches_of_the_same_workspace_leave_two_separate_logs() {
+        // #69: log_path_for used to be workspace+step only, so a relaunch (or a force
+        // relaunch of a dirty workspace) overwrote the very log a dirty state's `log_path`
+        // still pointed at. Each attempt now mints its own session_id (ADR 0010 §9), so
+        // folding it into the log name keeps every attempt's log distinct.
+        let home = TempDir::new().unwrap();
+        write_step_script(home.path(), "deep-work", "setup", "echo run\n");
+        let backend = backend(&home);
+
+        let first = backend
+            .run(&supervised_step("deep-work", "setup", Duration::from_secs(5)), &CancellationToken::new())
+            .await
+            .unwrap();
+        let second = backend
+            .run(&supervised_step("deep-work", "setup", Duration::from_secs(5)), &CancellationToken::new())
+            .await
+            .unwrap();
+
+        assert_ne!(first.log_path, second.log_path, "two attempts must not share a log file");
+        assert_eq!(std::fs::read_to_string(home.path().join(&first.log_path)).unwrap(), "run\n");
+        assert_eq!(std::fs::read_to_string(home.path().join(&second.log_path)).unwrap(), "run\n");
     }
 
     #[tokio::test]
