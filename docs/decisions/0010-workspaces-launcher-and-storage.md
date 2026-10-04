@@ -238,10 +238,16 @@ above already forces, since the type carries a `Step` enum (`Launch { index, cou
 script. The backend resolves the real path as
 `$SWE_HOME/data/workspaces/<workspace_dir>/steps/<index>-<name>.{sh,ps1}` for `Launch`, or
 `$SWE_HOME/data/workspaces/<workspace_dir>/cleanup.{sh,ps1}` for `Cleanup`, after validating
-both `workspace_dir` and `name` with `swe_core::store::validate_path`-style charset checks
-(already rejects `..`, absolute paths, empty segments, and now, per §2a, anything outside
-`[a-z0-9][a-z0-9_-]*` for `name` — the same check `NamespacedStore` applies to every other
-module's paths, reused rather than reinvented). A module cannot ask the launcher to run
+`workspace_dir` with `swe_core::store::validate_path` (the same escape-safety check
+`NamespacedStore` applies to every other module's paths: rejects `..`, absolute paths,
+empty segments) and separately validating `name` against its own, stricter charset,
+`[a-z0-9][a-z0-9_-]*` (§2a) — **not** the same check as `validate_path`, which only rejects
+path escapes and would accept a `name` like `Setup.v2` or `my step`. The two checks compose
+(an invalid `name` can never reach `validate_path` with anything `validate_path` itself
+would reject, since the charset is a strict subset of what `validate_path` allows), but
+they are enforced separately, by separate logic, and `name`'s check is `invalid_params` on
+failure rather than a generic path-validation error — see issue #14, closed by the
+sub-branch that implements this. A module cannot ask the launcher to run
 "anything named in workspace.toml" because the interface gives it no field to name an
 arbitrary path with — `name` selects a filename fragment under a fixed, backend-owned
 directory, not a path. This is the safer of the two choices ADR 0010's task asked to decide
