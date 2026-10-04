@@ -1,7 +1,7 @@
 //! The real `LaunchBackend` (ADR 0010). Lands incrementally, one `SpawnMode`/concern per
-//! sub-branch of the `m3-launch-backend` umbrella; this slice adds the full injected-env
-//! build (all six `SHIMMER_*` vars) plus `workspace.toml`'s `[env]` merge and its override
-//! guard, on top of the previous slices' `Detached`/`Supervised` spawn mechanics.
+//! sub-branch of the `m3-launch-backend` umbrella; this slice replaces the `session_id`
+//! placeholder with real minting from the injected `Clock`, on top of the previous slices'
+//! spawn mechanics and env injection.
 //!
 //! Linux/macOS (`cfg(unix)`) only, same scoping as ADR 0010 §7 — Windows is sketched there,
 //! not implemented. Not yet wired into any `Ctx` (that is the capability-scoped-wiring
@@ -13,14 +13,16 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use shimmer_core::launcher::env_names;
 use shimmer_core::store::validate_path;
-use shimmer_core::{Error, LaunchBackend, LaunchStep, Result, SpawnMode, Step, StepOutcome};
+use shimmer_core::{Clock, Error, LaunchBackend, LaunchStep, Result, SpawnMode, Step, StepOutcome};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
+use ulid::Ulid;
 
 /// Implements [`LaunchBackend`] for real, spawning scripts under
 /// `$SHIMMER_HOME/data/workspaces/<workspace_dir>/`.
@@ -31,11 +33,24 @@ pub struct RealLaunchBackend {
     /// `$SHIMMER_SOCKET`, injected into every spawned script so it can call back in
     /// (CLAUDE.md §10.1).
     socket: PathBuf,
+    /// Source for minted session ids (ADR 0010 §9) — never `SystemTime::now()`.
+    clock: Clock,
+    /// Random for a real daemon process — the caller's responsibility to draw fresh each
+    /// time a real backend is constructed (e.g. `rand::random()` once at daemon startup),
+    /// never generated inside this type, same injected-not-hidden pattern as `clock`. Tests
+    /// pass a fixed value for reproducibility. See [`mint_session_id`] for why this exists
+    /// alongside `sequence` (ADR 0010 §9's "Amendment" below).
+    instance_id: u64,
+    /// Folded into each minted session id's random component alongside `instance_id` (see
+    /// [`mint_session_id`]). Resets to 0 whenever a new backend is constructed, so a fresh
+    /// backend over a fresh `Clock::fake` with the same `instance_id` reproduces the exact
+    /// same id sequence for the same sequence of calls.
+    sequence: AtomicU64,
 }
 
 impl RealLaunchBackend {
-    pub fn new(home: PathBuf, socket: PathBuf) -> Self {
-        Self { home, socket }
+    pub fn new(home: PathBuf, socket: PathBuf, clock: Clock, instance_id: u64) -> Self {
+        Self { home, socket, clock, instance_id, sequence: AtomicU64::new(0) }
     }
 }
 
@@ -43,9 +58,12 @@ impl RealLaunchBackend {
 impl LaunchBackend for RealLaunchBackend {
     async fn run(&self, step: &LaunchStep, cancel: &CancellationToken) -> Result<StepOutcome> {
         let script = resolve_script(&self.home, &step.workspace_dir, &step.step)?;
-        // Placeholder — minted for real from `Ctx`'s clock in the session-id sub-branch.
-        // Threaded through once so that change touches one line, not every call site.
-        let session_id = String::new();
+        // Reuse the id the module threaded back from this attempt's first step; mint only when
+        // this is that first step (ADR 0010 §9 amendment — "One id per attempt").
+        let session_id = match &step.session_id {
+            Some(id) => id.clone(),
+            None => mint_session_id(&self.clock, self.instance_id, &self.sequence),
+        };
         match step.mode {
             SpawnMode::Detached => run_detached(&self.home, &self.socket, &script, step, &session_id).await,
             SpawnMode::Supervised { timeout } => {
@@ -53,6 +71,34 @@ impl LaunchBackend for RealLaunchBackend {
             }
         }
     }
+}
+
+/// Minted here, not by the calling module (ADR 0010 §9) — only for the first step of a launch
+/// attempt (`run`'s caller leaves `LaunchStep.session_id` `None`); every later step of that same
+/// attempt reuses the id the module threaded back, so `run` never calls this a second time
+/// within one attempt. From the injected `Clock`, never `SystemTime::now()`.
+///
+/// **Amendment to ADR 0010 §9's sketch** (`Ulid::from_parts(timestamp_ms, rand::random())`):
+/// using fresh OS randomness for every call makes ids collision-resistant but defeats the
+/// reproducibility a module needs for deterministic ordering tests, while a pure in-process
+/// counter (an earlier version of this function) is reproducible but *not*
+/// collision-resistant across daemon lifetimes — it resets to 0 on every restart, so two
+/// daemon runs (a restart, or two machines sharing a git-synced `$SHIMMER_HOME`, CLAUDE.md
+/// §1.4) whose clocks agree on the millisecond could mint the identical session id, which
+/// matters because `session_id` lands in the event log (`workspaces.session.launched`/
+/// `.dirty` payloads) and in a log file's name — a collision there is a real correctness
+/// bug, not a cosmetic one.
+///
+/// This resolves both: the 80-bit random field is `instance_id`'s low 48 bits as the high
+/// bits, `sequence`'s low 32 bits as the low bits. `instance_id` is random per daemon
+/// process (the caller's job to draw fresh for a real backend), so two different daemon
+/// lifetimes essentially never collide even if their clocks and sequences agree;
+/// `sequence` alone still gives exact, deterministic ordering within one process, since a
+/// fresh backend's `sequence` always starts at 0.
+fn mint_session_id(clock: &Clock, instance_id: u64, sequence: &AtomicU64) -> String {
+    let seq = sequence.fetch_add(1, Ordering::SeqCst) & 0xFFFF_FFFF;
+    let random = ((instance_id & 0xFFFF_FFFF_FFFF) as u128) << 32 | seq as u128;
+    Ulid::from_parts(clock.now().timestamp_millis() as u64, random).to_string()
 }
 
 /// `Step` -> a real path under the workspace's own directory, never outside it (ADR 0010
@@ -215,14 +261,28 @@ fn platform() -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::time::Duration;
 
+    use chrono::{DateTime, Utc};
     use tempfile::TempDir;
 
     use super::*;
 
+    /// Arbitrary but fixed, so tests that care about `session_id` are reproducible. A real
+    /// daemon must draw this fresh (e.g. `rand::random()`) at startup instead.
+    const TEST_INSTANCE_ID: u64 = 0x1234_5678_9abc;
+
     fn backend(home: &TempDir) -> RealLaunchBackend {
-        RealLaunchBackend::new(home.path().to_path_buf(), home.path().join("d.sock"))
+        backend_with_clock(home, Clock::system())
+    }
+
+    fn backend_with_clock(home: &TempDir, clock: Clock) -> RealLaunchBackend {
+        backend_with_clock_and_instance(home, clock, TEST_INSTANCE_ID)
+    }
+
+    fn backend_with_clock_and_instance(home: &TempDir, clock: Clock, instance_id: u64) -> RealLaunchBackend {
+        RealLaunchBackend::new(home.path().to_path_buf(), home.path().join("d.sock"), clock, instance_id)
     }
 
     fn write_step_script(home: &Path, workspace_dir: &str, name: &str, body: &str) -> PathBuf {
@@ -240,6 +300,7 @@ mod tests {
             step: Step::Launch { index: 1, count: 1, name: name.into() },
             mode: SpawnMode::Detached,
             user_env: vec![],
+            session_id: None,
         }
     }
 
@@ -272,17 +333,96 @@ mod tests {
         write_step_script(home.path(), "deep-work", "setup", &format!("{ECHO_ALL_INJECTED} > {}\n", out.display()));
 
         let b = backend(&home);
-        b.run(&step("deep-work", "setup"), &CancellationToken::new()).await.unwrap();
+        let outcome = b.run(&step("deep-work", "setup"), &CancellationToken::new()).await.unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
 
+        assert!(!outcome.session_id.is_empty());
         let seen = std::fs::read_to_string(&out).unwrap();
         let expected = format!(
-            "deep-work|deep-work|{}|{}||{}",
+            "deep-work|deep-work|{}|{}|{}|{}",
             home.path().display(),
             home.path().join("d.sock").display(),
+            outcome.session_id,
             platform()
         );
-        assert_eq!(seen.trim(), expected, "SHIMMER_SESSION_ID is an empty placeholder until the session-id sub-branch");
+        assert_eq!(seen.trim(), expected);
+    }
+
+    #[tokio::test]
+    async fn distinct_session_ids_across_separate_launch_attempts() {
+        // Each call here leaves `session_id: None`, exactly as the module does for the first
+        // step of a new attempt — so this is two separate attempts, not two steps of one.
+        let home = TempDir::new().unwrap();
+        write_step_script(home.path(), "deep-work", "setup", "true\n");
+        let b = backend(&home);
+
+        let first = b.run(&step("deep-work", "setup"), &CancellationToken::new()).await.unwrap();
+        let second = b.run(&step("deep-work", "setup"), &CancellationToken::new()).await.unwrap();
+
+        assert_ne!(first.session_id, second.session_id);
+    }
+
+    #[tokio::test]
+    async fn a_later_step_of_the_same_attempt_reuses_the_first_steps_id() {
+        // ADR 0010 §9 amendment ("one id per attempt"): the module threads the first step's
+        // returned id into every later `LaunchStep` of that attempt via `session_id`, and the
+        // backend must echo it back rather than minting again.
+        let home = TempDir::new().unwrap();
+        write_step_script(home.path(), "deep-work", "setup", "true\n");
+        write_step_script(home.path(), "deep-work", "editor", "true\n");
+        let b = backend(&home);
+
+        let first = b.run(&step("deep-work", "setup"), &CancellationToken::new()).await.unwrap();
+        let mut continued = step("deep-work", "editor");
+        continued.session_id = Some(first.session_id.clone());
+        let second = b.run(&continued, &CancellationToken::new()).await.unwrap();
+
+        assert_eq!(first.session_id, second.session_id);
+
+        // A later, separate attempt (session_id: None again) still gets a fresh id.
+        let third = b.run(&step("deep-work", "setup"), &CancellationToken::new()).await.unwrap();
+        assert_ne!(third.session_id, first.session_id);
+    }
+
+    #[tokio::test]
+    async fn session_id_sequence_is_reproducible_when_the_fake_clock_resets_to_the_same_state() {
+        let home = TempDir::new().unwrap();
+        write_step_script(home.path(), "deep-work", "setup", "true\n");
+        let start = DateTime::parse_from_rfc3339("2026-10-03T00:00:00Z").unwrap().to_utc();
+
+        async fn three_ids(home: &TempDir, start: DateTime<Utc>) -> Vec<String> {
+            let b = backend_with_clock(home, Clock::fake(start));
+            let mut ids = Vec::new();
+            for _ in 0..3 {
+                ids.push(b.run(&step("deep-work", "setup"), &CancellationToken::new()).await.unwrap().session_id);
+            }
+            ids
+        }
+
+        // A fresh backend over a fresh fake clock reset to the same start reproduces the
+        // exact same sequence — what lets a module write deterministic tests against
+        // session ordering (not just distinctness).
+        let first = three_ids(&home, start).await;
+        let second = three_ids(&home, start).await;
+        assert_eq!(first, second, "resetting the clock and starting a fresh backend must reproduce the same sequence");
+        assert_eq!(first.iter().collect::<HashSet<_>>().len(), 3, "still distinct within one run");
+    }
+
+    #[tokio::test]
+    async fn different_daemon_instances_do_not_collide_even_with_the_same_clock_and_sequence() {
+        // Regression test for the gap a pure sequence-only design has: two daemon
+        // lifetimes (e.g. a restart) whose clocks and per-process sequences happen to
+        // agree must still mint different session ids.
+        let home = TempDir::new().unwrap();
+        write_step_script(home.path(), "deep-work", "setup", "true\n");
+        let start = DateTime::parse_from_rfc3339("2026-10-03T00:00:00Z").unwrap().to_utc();
+
+        let a = backend_with_clock_and_instance(&home, Clock::fake(start), 0x1111_1111_1111);
+        let b = backend_with_clock_and_instance(&home, Clock::fake(start), 0x2222_2222_2222);
+        let id_a = a.run(&step("deep-work", "setup"), &CancellationToken::new()).await.unwrap().session_id;
+        let id_b = b.run(&step("deep-work", "setup"), &CancellationToken::new()).await.unwrap().session_id;
+
+        assert_ne!(id_a, id_b, "two different instance_ids at the same clock+sequence state must not collide");
     }
 
     #[tokio::test]

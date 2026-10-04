@@ -2,7 +2,12 @@
 
 Status: proposed · Raised by Dev A · Needs sign-off: Dev A, Dev B (CLAUDE.md §4, changes `core`)
 · Amended after PR review: §2a (multi-step launches), and code/doc drift on `session_id`
-resolved (§2, §9, "Not done here")
+resolved (§2, §9, "Not done here") · Amended during the real `LaunchBackend`'s
+implementation (`m3-launch-backend`): §9's `session_id` random field is no longer
+`rand::random()` — see §9 "Amendment: `instance_id`, not pure `rand::random()`". · Amended
+after #56/#57 review (session-id question raised there): §9's "fresh per launch attempt" was
+implemented as fresh per `run()` *call*, which is fresh per step, not per attempt, whenever a
+launch has more than one step — see §9 "Amendment: one id per attempt, not per `run` call".
 
 > **Renamed since:** `swe`, `swe-*` and `SWE_*` in this ADR are now `shimmer`, `shimmer-*` and
 > `SHIMMER_*` (ADR 0011). The text below is kept as written.
@@ -77,6 +82,7 @@ pub struct LaunchStep {
     pub step: Step,
     pub mode: SpawnMode,
     pub user_env: Vec<(String, String)>,  // workspace.toml's [env], nothing else
+    pub session_id: Option<String>,  // None mints fresh; Some reuses — see §9's amendment
 }
 
 pub struct StepOutcome {
@@ -97,11 +103,14 @@ it doesn't need one.** `SWE_PLATFORM` is a value the launcher injects into the c
 environment; nothing upstream of the launcher needs to branch on platform, so nothing
 upstream needs to carry it.
 
-The module supplies exactly three things on `LaunchStep`: `workspace_id`, `workspace_dir`,
-and the user's `[env]` from `workspace.toml`. The launcher injects `SWE_HOME`, `SWE_SOCKET`,
-`SWE_PLATFORM` and `SWE_SESSION_ID` itself, from values only the daemon has — `session_id` is
-never a `LaunchStep` input at all; it comes back on `StepOutcome` (§9 justifies why the
-launcher, not the module, is the one that mints it). **A module-supplied env var must not
+The module supplies `workspace_id`, `workspace_dir`, and the user's `[env]` from
+`workspace.toml` on every `LaunchStep`. It also supplies `session_id`, but only ever a value
+the launcher itself handed back earlier in the same attempt — never one of the module's own
+making (§9's amendment below: `None` for an attempt's first step, `Some` echoing the first
+step's `StepOutcome.session_id` for every step after). The launcher injects `SHIMMER_HOME`,
+`SHIMMER_SOCKET`, `SHIMMER_PLATFORM` and `SHIMMER_SESSION_ID` into the child itself, from values
+only the daemon has (§9 justifies why the launcher, not the module, is the one that mints a
+session id in the first place). **A module-supplied env var must not
 override an injected one** — the launcher builds the child's environment injected-first,
 then applies `user_env` only for keys not already set, so a `workspace.toml` that
 (accidentally or otherwise) declares `SWE_SOCKET = "..."` cannot redirect a script's daemon
@@ -411,6 +420,78 @@ window).
 `52b6863`) originally lagged this doc, still carrying `session_id` as a `LaunchStep` input —
 that drift is fixed in the same commit as the §2a multi-step amendment, so code and doc agree
 again as of this revision.
+
+**Amendment (during the real `LaunchBackend`'s implementation, `m3-launch-backend`):
+`instance_id`, not pure `rand::random()`, for the 80-bit random field.** The sketch above —
+`Ulid::from_parts(clock.now().timestamp_millis(), rand::random())` — turned out to be in
+tension with a real requirement raised during implementation: a module needs to write
+*deterministic* tests against session ordering (same sequence of calls against a fake clock
+reset to the same start must reproduce the same ids). Fresh OS randomness on every call
+can't give that; it is reproducible by construction in neither draw.
+
+The first implementation swapped `rand::random()` for an in-process monotonic counter
+(`sequence`) instead, which *is* reproducible — but that traded away collision resistance.
+`sequence` resets to 0 every time a `RealLaunchBackend` is constructed, i.e. every daemon
+start, so two separate daemon lifetimes (a restart, or two machines sharing a git-synced
+`$SHIMMER_HOME`, §1.4's portability goal) whose clocks happen to agree on the millisecond
+for the same call index would mint the *identical* `session_id`. That is a real
+correctness bug, not a cosmetic one: `session_id` is not only a display value — it lands in
+`workspaces.session.launched`/`.dirty` event payloads (durable, git-syncable) and in a log
+file's name, so a collision there means two distinguishable launch attempts become
+indistinguishable, or one log file silently overwrites another's.
+
+**Decision: split the 80-bit random field into two parts instead of choosing one property
+over the other.** The high 48 bits are `instance_id` — drawn fresh and random exactly once
+per real daemon process (the caller's job, e.g. `rand::random()` at daemon startup; never
+generated inside the backend itself, so it stays injected rather than hidden, the same
+posture as `clock`). The low 32 bits are `sequence`, as before. Two different daemon
+lifetimes essentially never collide even if their clocks and sequences happen to agree,
+because they almost certainly don't share an `instance_id`; within one process, `sequence`
+alone still gives the exact, deterministic ordering a module's tests need, since a fresh
+backend's `sequence` always starts at 0. Implemented in `crates/daemon/src/launcher.rs`'s
+`mint_session_id`; `RealLaunchBackend::new` takes `instance_id` as an explicit parameter,
+not an internal `rand::random()` call, for the same reason tests pass `clock` explicitly
+rather than this type reaching for `Clock::system()` on its own.
+
+**Amendment (after #56/#57 review): one id per attempt, not per `run` call.** "Fresh per
+launch attempt" above was implemented as fresh per call to `RealLaunchBackend::run` — correct
+only by accident, because every attempt happened to be reviewed as a single step. A real
+multi-step launch calls `run` once per step *within one attempt* (§2a), so as written, every
+step of one launch got its own `SHIMMER_SESSION_ID`, while `crates/modules/workspaces`
+(correctly, per this section's original intent) only ever reads the *first* step's
+`StepOutcome.session_id` and uses that one value for the whole attempt's
+`workspaces.session.*` payloads. The mismatch was silent: nothing failed, scripts just saw a
+different id per step instead of one shared id to correlate by, the exact thing
+`SHIMMER_SESSION_ID` exists for (CLAUDE.md §10.1: "unique per launch").
+
+Minting still belongs in the backend — the reasoning above for keeping it off the module
+(no time or randomness source needed there) is unaffected by this amendment, so the fix does
+not move it. Instead, `LaunchStep` gains a field the module uses to say "this step continues
+an attempt already under way":
+
+```rust
+pub struct LaunchStep {
+    // ...as above...
+    /// `None` for the first step of an attempt: the backend mints a fresh id. `Some` for every
+    /// later step of that same attempt: the id the module got back from the first step's
+    /// `StepOutcome`, which the backend then just echoes instead of minting again.
+    pub session_id: Option<String>,
+}
+```
+
+`RealLaunchBackend::run` mints via `mint_session_id` only when `step.session_id` is `None`;
+otherwise it uses the given value unchanged. The module already keeps an
+`Option<String>` accumulator across its step loop (seeded from the first step's outcome) — it
+now also threads that accumulator into each subsequent `LaunchStep`, rather than only reading
+from `StepOutcome`. `cleanup` and `force_relaunch` are unaffected: `cleanup` is always a
+single-step attempt (so always `None`), and `force_relaunch` goes through the same step loop
+as `activate`, which already ensures a cleanup or a later attempt mints its own id (§9's
+original "not reused across a later `cleanup` or `force_relaunch`" still holds — it was never
+the attempt-to-attempt boundary that was wrong, only the step-to-step one within an attempt).
+
+This is a `core` change (`LaunchStep` gains a field), so it needs the same Dev A + Dev B
+sign-off as the rest of this ADR, landing on `m3-session-id` (#64) since that is the branch
+that introduced the minting logic this amends.
 
 ### 10. Tests Dev A will write against the real `LaunchBackend`
 
