@@ -107,10 +107,10 @@ The module supplies `workspace_id`, `workspace_dir`, and the user's `[env]` from
 `workspace.toml` on every `LaunchStep`. It also supplies `session_id`, but only ever a value
 the launcher itself handed back earlier in the same attempt — never one of the module's own
 making (§9's amendment below: `None` for an attempt's first step, `Some` echoing the first
-step's `StepOutcome.session_id` for every step after). The launcher injects `SWE_HOME`,
-`SWE_SOCKET`, `SWE_PLATFORM` and `SWE_SESSION_ID` into the child itself, from values only the
-daemon has (§9 justifies why the launcher, not the module, is the one that mints a session id
-in the first place). **A module-supplied env var must not
+step's `StepOutcome.session_id` for every step after). The launcher injects `SHIMMER_HOME`,
+`SHIMMER_SOCKET`, `SHIMMER_PLATFORM` and `SHIMMER_SESSION_ID` into the child itself, from values
+only the daemon has (§9 justifies why the launcher, not the module, is the one that mints a
+session id in the first place). **A module-supplied env var must not
 override an injected one** — the launcher builds the child's environment injected-first,
 then applies `user_env` only for keys not already set, so a `workspace.toml` that
 (accidentally or otherwise) declares `SWE_SOCKET = "..."` cannot redirect a script's daemon
