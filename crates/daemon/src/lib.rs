@@ -11,6 +11,9 @@ mod config;
 mod core;
 mod indexer;
 mod ipc;
+// Linux/macOS only for now (ADR 0010 §7); the module itself documents the scoping.
+#[cfg(unix)]
+mod launcher;
 mod queue;
 mod registry;
 mod scheduler;
@@ -101,7 +104,7 @@ impl Daemon {
         let shutdown = CancellationToken::new();
         let bus = Bus::new();
         let backend = Arc::new(Backend { store: store.clone(), bus: bus.clone() });
-        let core = Core::new(registry, lanes, &cfg, backend, config.clock.clone(), shutdown.clone());
+        let core = Core::new(registry, lanes, &cfg, backend, config.clock.clone(), shutdown.clone(), &config.socket);
         let tracker = TaskTracker::new();
 
         // Subscribe before init so events a module emits while initialising are not missed.
