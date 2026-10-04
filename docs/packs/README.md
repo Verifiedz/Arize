@@ -1,0 +1,128 @@
+# Command packs
+
+A command pack gives Shimmer's commands themed names. Each alias stands for `shimmer` **and** a
+whole command:
+
+```
+$ shimmer packs use anime-tropes
+✓ active pack: anime-tropes (Anime Tropes)
+  linked 16 commands into /home/me/.local/bin
+try it: ohayo
+
+$ ikuzo deep-work            # = shimmer workspaces activate deep-work
+$ climax leetcode/two-sum    # = shimmer records complete leetcode/two-sum
+```
+
+Packs are optional. With no pack on, Shimmer is plain `shimmer …`, and the real names always work
+whichever pack is on. The design and every rule are in
+[ADR 0013](../decisions/0013-command-packs.md).
+
+## Using a pack
+
+| Command | What it does |
+|---|---|
+| `shimmer packs list` | Every pack, built in or yours, and which one is on |
+| `shimmer packs show NAME` | A pack's aliases and the command each one runs |
+| `shimmer packs use NAME` | Turn a pack on; its aliases work on their own (`ikuzo …`) and after `shimmer` |
+| `shimmer packs use NAME --no-link` | Turn it on, but aliases only work after `shimmer` (`shimmer ikuzo …`) |
+| `shimmer packs use none` | Turn packs off; the commands they added are removed |
+| `shimmer packs link` / `unlink` | Add the active pack's commands again, or remove them |
+| `shimmer --pack NAME …` | Use a pack for one command, without switching |
+| `shimmer --help` | Shows the active pack's aliases; `--help --canonical` leaves them out |
+
+Your choice is kept in `~/.config/shimmer/cli.toml` (or `$XDG_CONFIG_HOME/shimmer/cli.toml`). It
+belongs to this machine, so copying your Shimmer folder elsewhere doesn't bring it along.
+
+## The built-in packs
+
+| Command | `anime-tropes` | `ship-it` | `starship` | `short` |
+|---|---|---|---|---|
+| ping | `ohayo` | `on-call` | `comms` | `up` |
+| shutdown | `hiatus` | `ooo` | `cryo` | `down` |
+| manifest | `power-scaling` | `readme` | `blueprints` | `ops` |
+| records collections | `arcs` | `boards` | `fleets` | `rcol` |
+| records add | `foreshadow` | `ticket` | `waypoint` | `radd` |
+| records list | `episodes` | `triage` | `logbook` | `rlist` |
+| records get | `flashback` | `blame` | `scan` | `rget` |
+| records update | `awakening` | `amend` | `retrofit` | `rset` |
+| records complete | `climax` | `lgtm` | `landed` | `rdone` |
+| records remove | `axed` | `wontfix` | `airlock` | `rrm` |
+| workspaces list | `minna` | `envs` | `sectors` | `wlist` |
+| workspaces status | `nani` | `standup` | `diagnostics` | `wst` |
+| workspaces activate | `ikuzo` | `deploy` | `engage` | `wgo` |
+| workspaces cleanup | `daijoubu` | `postmortem` | `damage-control` | `wclean` |
+| workspaces force-relaunch | `yatte-yaru` | `force-push` | `override` | `wforce` |
+| workspaces reset | `tadaima` | `rollback` | `cold-start` | `wreset` |
+
+## Writing your own
+
+A pack is a folder in `packs/` inside your Shimmer folder (`$SHIMMER_HOME`, by default
+`~/.local/share/shimmer`, or `~/Library/Application Support/shimmer` on macOS), holding one
+`pack.toml`. Start from the example:
+
+```
+cp -r docs/packs/my-first-pack ~/.local/share/shimmer/packs/
+```
+
+```toml
+[pack]
+id = "my-first-pack"          # must match the folder name
+label = "My First Pack"       # shown in 'shimmer packs list'
+
+[alias]
+"hello"    = "core.ping"
+"focus"    = "workspaces.activate"
+"finished" = "records.complete"
+```
+
+On the right of each alias goes the command it runs, by its op name:
+
+| Op | Runs |
+|---|---|
+| `core.ping`, `core.shutdown`, `core.manifest` | `shimmer ping`, `shutdown`, `manifest` |
+| `records.collections`, `.add`, `.list`, `.get`, `.update`, `.complete`, `.remove` | `shimmer records <verb>` |
+| `workspaces.list`, `.status`, `.activate`, `.cleanup`, `.force_relaunch`, `.reset` | `shimmer workspaces <verb>` |
+
+Then check it, and turn it on:
+
+```
+$ shimmer packs check my-first-pack
+✓ my-first-pack: 7 aliases, no problems
+$ shimmer packs use my-first-pack
+```
+
+`shimmer packs check` lists every problem at once. The rules:
+
+- `id` matches the folder name. `id` and every alias start with a lowercase letter, use only
+  `a-z`, `0-9`, `-` and `_`, and are at most 32 characters. `label` is one line, at most 40.
+- An alias can't be one of Shimmer's own command words (`ping`, `records`, `workspaces`, `packs`,
+  `help`, …, plus `queue`, `scheduler`, `calendar` and a few others kept for commands to come).
+- A pack has 1 to 64 aliases. Several aliases may run the same command.
+- Unknown keys are errors, so a typo is caught rather than ignored.
+- Packs are data only: no scripts, ever.
+
+A folder with the same name as a built-in pack replaces it.
+
+If your pack ever breaks, Shimmer doesn't: it prints one warning and runs with the real names,
+and `shimmer packs check NAME` tells you what to fix.
+
+## Commands on their own: where they go, and what's skipped
+
+`shimmer packs use` puts a link per alias in `~/.local/bin` (or `link_dir` in `cli.toml`), pointing
+at the `shimmer` program. That folder must be on your `PATH`; if it isn't, Shimmer says so.
+
+It is careful with that folder:
+
+- It never overwrites anything. If a name is already taken there, already a program elsewhere on
+  your `PATH`, or a common tool name (`git`, `go`, `rg`, …), that alias is skipped and named in the
+  output. It still works as `shimmer <alias>`.
+- It only ever removes links it made itself, and only while they are still links.
+
+If you switch packs by editing `cli.toml` by hand, an old alias tells you to run
+`shimmer packs link`, which tidies up.
+
+## Sharing a pack
+
+A pack is just a folder: share it as a git repo, a gist or a zip, and others copy it into their
+`packs/`. Packs built into Shimmer itself must be original: no names from someone else's game,
+show, film or brand.

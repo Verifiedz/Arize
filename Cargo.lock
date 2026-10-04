@@ -744,6 +744,7 @@ dependencies = [
  "shimmer-proto",
  "tempfile",
  "tokio",
+ "toml",
 ]
 
 [[package]]

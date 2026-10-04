@@ -470,6 +470,9 @@ Ship a `.gitignore` in `$SHIMMER_HOME` covering `index.sqlite`, `cache/`, `logs/
 `.staging/` so the directory is committable as-is. That is the entire machine-to-machine
 transfer story.
 
+Client settings are not in `$SHIMMER_HOME`: the CLI keeps its own (the active command pack,
+§15.1) in `~/.config/shimmer/cli.toml`, which only the CLI reads and writes (ADR 0013).
+
 ### 7.1 Atomicity: all or nothing
 
 Every mutation either happens completely or not at all. There is no state in which a
@@ -823,10 +826,11 @@ CLI-first. The GUI is not in scope for any milestone below.
 
 ## 15. Command naming
 
-Commands have a **canonical name** and an **anime alias**. Both work.
+Commands have a **canonical name** and, when a command pack is active, an **alias**. Both
+work.
 
 - Canonical names are used everywhere internal: IPC ops, `commands()`, logs, docs, tests,
-  error messages. Boring on purpose — `records.list`, not `bankai.list`.
+  error messages. Boring on purpose — `records.list`, not `episodes`.
 - Aliases are a **client presentation concern only**, supplied by a **command pack**.
   Nothing in the daemon, the protocol, or any module knows they exist.
 
@@ -835,8 +839,8 @@ daemon, and keeps stack traces readable at 2am.
 
 ### 15.1 Command packs
 
-A pack is a themed set of aliases, plus optional animations and styling — a Bleach pack, a
-Solo Leveling pack, a general anime pack. Packs are how the theme becomes pluggable.
+A pack is a themed set of aliases, plus optional animations. Packs are how the theme becomes
+pluggable. ADR 0013 has every rule and check.
 
 ```
 $SHIMMER_HOME/packs/<name>/
@@ -846,29 +850,40 @@ $SHIMMER_HOME/packs/<name>/
 
 ```toml
 [pack]
-id = "bleach"
-label = "Bleach"
+id = "anime-tropes"
+label = "Anime Tropes"
 
 [alias]
-"bankai"  = "workspaces.activate"
-"shikai"  = "workspaces.status"
-"kido"    = "scheduler.add"
+"ikuzo"  = "workspaces.activate"
+"nani"   = "workspaces.status"
+"climax" = "records.complete"
 
 [anim]
-"workspaces.activate" = "anim/bankai.txt"
+"workspaces.activate" = "anim/ikuzo.txt"
 ```
 
 Rules:
 
 - **Packs are data, never code.** TOML plus text assets. No scripts, no dylibs (§12 rule 8).
   A pack cannot add an op, only a name for an existing canonical one.
-- **One active pack**, set in `config.toml` (`[cli] pack = "bleach"`). Canonical names
-  always work regardless of which pack is active.
-- The default pack (`arise`, `bankai`, …) ships **embedded in the binary**, so a fresh
-  install is themed with no files present.
-- **Collisions are rejected at load time.** A pack mapping one alias to two ops, or an
-  alias shadowing a canonical name, fails to load with a clear error and the CLI falls
-  back to the default pack. For the built-in pack this is also checked in a test.
+- **No pack is active by default.** A fresh install uses canonical names only. Canonical names
+  always work, whichever pack is active.
+- **One active pack**, chosen with `shimmer packs use <name>` and stored in the client's own
+  `~/.config/shimmer/cli.toml` (§7), never in `config.toml`. `--pack <name>` uses one for a
+  single command.
+- **Built-in packs ship embedded in the binary and are unbranded**: `anime-tropes`, `ship-it`,
+  `starship`, `short`. No built-in pack uses a name from another company's game, show,
+  film or brand. Users add their own as folders in `packs/`; a folder replaces a built-in of the
+  same id.
+- **Packs are checked at load time.** An alias that is also a canonical command word, points at
+  a command that doesn't exist, or breaks the charset, and an animation path that leaves the
+  pack folder, all fail the pack with a clear error. Every built-in pack is checked in a test.
+- **A broken pack never breaks a command.** The CLI prints one warning and runs with canonical
+  names.
+- **An alias replaces `shimmer` and the whole command**: `ikuzo deep-work` runs
+  `shimmer workspaces activate deep-work`. `shimmer packs use` makes this work by linking each
+  alias to the binary in `~/.local/bin` (`--no-link` to skip). Linking never overwrites a file
+  or shadows a program, and only removes links it made.
 - **Animations never gate execution.** The daemon request is sent immediately; the
   animation plays alongside or after. Animations are disabled automatically when stdout
   is not a TTY, and by `--no-anim` — a workspace script calling `shimmer` through
@@ -876,11 +891,13 @@ Rules:
 - Clients read `packs/` directly and **read-only**. It is presentation config, like a
   terminal theme; the daemon never loads it.
 
-| Default alias | Canonical | Meaning |
-|---|---|---|
-| `arise` | `daemon start` | Start the daemon / dashboard. |
-| `bankai` | `workspaces activate` | Activate a workspace. |
-| _TBD_ | ... | Fill in as commands land. |
+| Built-in pack | Sample aliases |
+|---|---|
+| `anime-tropes` | `ohayo` (ping), `ikuzo` (workspaces activate), `climax` (records complete) |
+| `ship-it` | `on-call` (ping), `deploy` (workspaces activate), `lgtm` (records complete) |
+| `starship` | `comms` (ping), `engage` (workspaces activate), `landed` (records complete) |
+| `short` | `up` (ping), `wgo` (workspaces activate), `rdone` (records complete) |
 
-`shimmer --help` shows the active pack's aliases; `shimmer --help --canonical` shows the real
-names; `shimmer packs list` shows installed packs.
+`shimmer packs list` shows every pack; `shimmer packs show <name>` its aliases;
+`shimmer --help` shows the active pack's aliases and `shimmer --help --canonical` the real
+names.
