@@ -6,15 +6,18 @@
         "workspaces": [
           {
             "id": "deep-work",
+            "label": "Deep Work",
             "state": "dirty",
-            "dirty_reason": "step 3/7 tmux-session exited 1"
+            "dirty_reason": "step 3/7 tmux-session: exit code 1"
           },
           {
             "id": "focus",
+            "label": "Focus",
             "state": "ready"
           },
           {
             "id": "review",
+            "label": "Code review",
             "state": "active"
           }
         ]
@@ -27,11 +30,66 @@
       },
       "data": {
         "id": "deep-work",
+        "label": "Deep Work",
+        "description": "Shimmer development on Hyprland workspace 3",
         "state": "dirty",
-        "dirty_reason": "step 3/7 tmux-session exited 1",
-        "last_session": null,
+        "steps": [
+          {
+            "index": 1,
+            "name": "setup",
+            "mode": "supervised",
+            "timeout_s": 60,
+            "description": "Pull the latest code and start the database"
+          },
+          {
+            "index": 2,
+            "name": "desktop",
+            "mode": "supervised",
+            "timeout_s": 10
+          },
+          {
+            "index": 3,
+            "name": "tmux-session",
+            "mode": "supervised",
+            "timeout_s": 30
+          },
+          {
+            "index": 4,
+            "name": "editor",
+            "mode": "detached"
+          },
+          {
+            "index": 5,
+            "name": "browser",
+            "mode": "detached"
+          },
+          {
+            "index": 6,
+            "name": "terminal",
+            "mode": "detached"
+          },
+          {
+            "index": 7,
+            "name": "music",
+            "mode": "detached"
+          }
+        ],
+        "has_cleanup_script": true,
+        "cleanup_timeout_s": 30,
+        "dirty_reason": "step 3/7 tmux-session: exit code 1",
         "log": "logs/deep-work-01JD2T.log",
-        "has_cleanup_script": true
+        "dirty": {
+          "reason": "exit code 1",
+          "failed_step": "3/7 tmux-session",
+          "failed_at": "2026-09-16T09:12:44Z",
+          "log": "logs/deep-work-01JD2T.log"
+        },
+        "last_session": {
+          "id": "01JD2T00000000000000000000",
+          "started_at": "2026-09-16T09:12:30Z",
+          "forced": false,
+          "outcome": "dirty"
+        }
       }
     },
     {
@@ -41,7 +99,7 @@
       },
       "error": {
         "code": "workspace_dirty",
-        "message": "workspace 'deep-work' failed setup and was not cleaned up",
+        "message": "workspace 'deep-work' failed at step 3/7 tmux-session (exit code 1) and was not cleaned up",
         "detail": {
           "workspace": "deep-work",
           "failed_step": "3/7 tmux-session",
@@ -77,8 +135,13 @@
           "topic": "workspaces.session.dirty",
           "payload": {
             "workspace": "focus",
+            "reason": "exit code 1",
             "failed_step": "3/7 tmux-session",
-            "log": "logs/focus-01JD2U.log"
+            "failed_at": "2026-09-16T09:12:44Z",
+            "log": "logs/focus-01JD2U.log",
+            "session_id": "01JD2U00000000000000000000",
+            "forced": false,
+            "has_cleanup_script": true
           }
         },
         {
@@ -91,7 +154,7 @@
             "origin": {
               "type": "user"
             },
-            "error": "step 3/7 exited 1",
+            "error": "workspace 'focus' failed at step 3/7 tmux-session (exit code 1) and was not cleaned up",
             "code": "workspace_dirty",
             "detail": {
               "workspace": "focus",
