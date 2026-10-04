@@ -198,6 +198,7 @@ impl Module for ProcessUser {
                     step: shimmer_core::Step::Cleanup,
                     mode: shimmer_core::SpawnMode::Detached,
                     user_env: vec![],
+                    session_id: None,
                 };
                 let outcome = ctx.launcher.run(&step, &ctx.cancel).await?;
                 Ok(json!({"session_id_is_empty": outcome.session_id.is_empty()}))
