@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use serde_json::Value;
 
 use crate::records::{self, RecordsCmd};
+use crate::workspaces::{self, WorkspacesCmd};
 
 pub const USAGE: &str = "usage: shimmer [--socket PATH] [--json] <command>
 
@@ -13,6 +14,7 @@ commands:
   ping                  check the daemon is up
   manifest              list registered modules, their ops and lanes
   records …             add, list and complete records (shimmer records --help)
+  workspaces …          list, inspect and reset workspaces (shimmer workspaces --help)
   call OP [PARAMS]      send any op; PARAMS is a JSON object (default {})
   shutdown              stop the daemon
   daemon                run the daemon in the foreground (Ctrl-C to stop)
@@ -33,6 +35,7 @@ pub enum Command {
     Shutdown,
     Call { op: String, params: Value },
     Records(RecordsCmd),
+    Workspaces(WorkspacesCmd),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -71,6 +74,7 @@ impl Args {
         }
         let command = match (help, words.first().map(String::as_str)) {
             (true, Some("records")) => Command::Records(RecordsCmd::Help),
+            (true, Some("workspaces")) => Command::Workspaces(WorkspacesCmd::Help),
             (true, _) => Command::Help,
             (false, _) => command(words)?,
         };
@@ -84,6 +88,9 @@ fn command(words: Vec<String>) -> Result<Command, String> {
     let rest: Vec<String> = words.collect();
     if word == "records" {
         return records::parse(rest).map(Command::Records);
+    }
+    if word == "workspaces" {
+        return workspaces::parse(rest).map(Command::Workspaces);
     }
     if let Some(opt) = rest.iter().find(|w| w.starts_with('-') && w.len() > 1) {
         return Err(format!("unknown option '{}'", opt.split('=').next().unwrap_or(opt)));
