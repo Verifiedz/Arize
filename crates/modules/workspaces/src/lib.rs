@@ -18,6 +18,6 @@ pub mod state;
 pub use manifest::{parse, script_name, ScriptExt, StepSpec, Workspace};
 pub use module::{Workspaces, LANE};
 pub use state::{
-    activate, cleanup_succeeded, dirty_error, force_relaunch, launch_succeeded, reset, start_cleanup, step_failed,
-    FailedStep, WorkspaceState,
+    activate, cleanup_succeeded, dirty_error, force_relaunch, launch_abandoned, launch_succeeded, reset, start_cleanup,
+    step_failed, FailedStep, WorkspaceState,
 };

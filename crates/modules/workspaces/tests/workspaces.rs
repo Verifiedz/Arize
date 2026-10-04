@@ -136,6 +136,42 @@ async fn an_unreadable_state_file_makes_the_workspace_invalid() {
     assert_eq!(data["workspaces"][0]["error"], "deep-work/state.toml: unknown state \"sleeping\"");
 }
 
+#[tokio::test]
+async fn an_invalid_workspace_shows_its_error_not_a_stale_dirty_reason() {
+    // Review on #57: dirty, then workspace.toml hand-edited into something unparseable.
+    let (w, env) = setup().await;
+    put(&env, "deep-work/state.toml", DIRTY_STATE);
+    put(&env, "deep-work/workspace.toml", "[workspace\n");
+
+    let list = call(&w, &env, "workspaces.list", json!({})).await.unwrap();
+    let entry = &list["workspaces"][0];
+    assert_eq!(entry["state"], "invalid");
+    assert!(entry["error"].as_str().unwrap().starts_with("deep-work/workspace.toml: "), "{entry}");
+    assert!(entry.get("dirty_reason").is_none(), "no stale reason: {entry}");
+
+    let status = call(&w, &env, "workspaces.status", json!({"id": "deep-work"})).await.unwrap();
+    assert_eq!(status["state"], "invalid");
+    for stale in ["dirty_reason", "dirty", "log", "running_step"] {
+        assert!(status.get(stale).is_none(), "no stale {stale}: {status}");
+    }
+}
+
+#[tokio::test]
+async fn when_both_files_are_broken_both_errors_are_shown() {
+    // Review on #56: fixing one file shouldn't be the only way to discover the other.
+    let (w, env) = setup().await;
+    put(&env, "deep-work/workspace.toml", "[workspace\n");
+    put(&env, "deep-work/state.toml", "state = \"sleeping\"\n");
+    for data in [
+        call(&w, &env, "workspaces.list", json!({})).await.unwrap()["workspaces"][0].clone(),
+        call(&w, &env, "workspaces.status", json!({"id": "deep-work"})).await.unwrap(),
+    ] {
+        let error = data["error"].as_str().unwrap();
+        assert!(error.contains("deep-work/workspace.toml: "), "{error}");
+        assert!(error.contains("deep-work/state.toml: unknown state \"sleeping\""), "{error}");
+    }
+}
+
 // ---------------------------------------------------------------- status
 
 #[tokio::test]

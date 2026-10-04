@@ -1,13 +1,14 @@
 //! The workspaces module in the real daemon, through the real binary (issue #32). No launch
 //! backend is wired in yet (ADR 0010, Dev A), so this covers what works today: the module is
 //! registered with its lane, `list`/`status` read real folders, and `activate` fails cleanly
-//! with `unavailable` without leaving the workspace half-configured.
+//! with `unavailable` without leaving the workspace half-configured. The last tests drive the
+//! same through `shimmer workspaces …`, the CLI commands (issue #33).
 
 mod common;
 
 use std::time::{Duration, Instant};
 
-use common::{stderr, wait_gone, Home};
+use common::{stderr, stdout, wait_gone, Home};
 use serde_json::{json, Value};
 
 fn call(home: &Home, op: &str, params: Value) -> Value {
@@ -101,4 +102,96 @@ fn activate_without_a_launch_backend_fails_cleanly_and_survives_a_restart() {
     assert!(home.shimmer(&["shutdown"]).status.success());
     wait_gone(&home.socket());
     assert_eq!(state(&home), "ready");
+}
+
+// ---------------------------------------------------------------- shimmer workspaces … (#33)
+
+const DIRTY_STATE: &str = "state = \"dirty\"\n\n[dirty]\nreason = \"exit code 1\"\n\
+                           step = { index = 1, count = 1, name = \"setup\" }\n\
+                           failed_at = \"2026-10-02T09:12:44Z\"\nlog = \"logs/deep-work-01.log\"\n";
+
+/// Run `shimmer args…` (stdin is not a terminal here, as in a script) and return
+/// (exit code, stdout, stderr).
+fn shimmer(home: &Home, args: &[&str]) -> (i32, String, String) {
+    let o = home.shimmer(args);
+    (o.status.code().unwrap_or(-1), stdout(&o), stderr(&o))
+}
+
+#[test]
+fn the_cli_lists_and_shows_workspaces() {
+    let home = Home::new();
+    call(&home, "core.ping", json!({}));
+    workspace(&home, "deep-work", &[("workspace.toml", DEEP_WORK), ("steps/01-setup.sh", "echo hi\n")]);
+    workspace(&home, "broken", &[("workspace.toml", "[workspace\n")]);
+
+    let (code, out, _) = shimmer(&home, &["workspaces", "list"]);
+    assert_eq!(code, 0);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines[0], "ID         STATE    LABEL      WHY");
+    assert!(lines[1].starts_with("broken     invalid  -          broken/workspace.toml: "), "{out}");
+    assert_eq!(lines[2].trim_end(), "deep-work  ready    Deep Work");
+
+    let (code, out, _) = shimmer(&home, &["workspaces", "status", "deep-work"]);
+    assert_eq!(code, 0);
+    assert!(out.starts_with("deep-work  (ready)  Deep Work\n  steps:\n    1  setup  supervised, timeout 30s"), "{out}");
+    assert!(out.contains("last session: none yet"), "{out}");
+
+    let (code, _, err) = shimmer(&home, &["workspaces", "status", "nope"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("not_found: no workspace 'nope'"), "{err}");
+
+    let (_, help, _) = shimmer(&home, &["--help"]);
+    assert!(help.contains("workspaces …"), "{help}");
+}
+
+#[test]
+fn the_cli_queues_and_follows_a_launch() {
+    let home = Home::new();
+    call(&home, "core.ping", json!({}));
+    workspace(&home, "deep-work", &[("workspace.toml", DEEP_WORK), ("steps/01-setup.sh", "echo hi\n")]);
+
+    // Without --wait: queued, and a hint to check status (never "run it again").
+    let (code, out, _) = shimmer(&home, &["workspaces", "activate", "deep-work"]);
+    assert_eq!(code, 0);
+    assert!(out.starts_with("queued the launch of deep-work (task "), "{out}");
+    assert!(out.ends_with("check on it with: shimmer workspaces status deep-work\n"), "{out}");
+
+    // With --wait: followed to the end. No launch backend yet, so it fails `unavailable`
+    // after reaching step 1, and the workspace is left as it was.
+    let (code, _, err) = shimmer(&home, &["workspaces", "activate", "deep-work", "--wait"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("step 1/1 setup"), "{err}");
+    assert!(err.contains("shimmer: unavailable: "), "{err}");
+    assert_eq!(call(&home, "workspaces.status", json!({"id": "deep-work"}))["state"], "ready");
+}
+
+#[test]
+fn the_cli_explains_a_dirty_workspace_and_guards_the_overrides() {
+    let home = Home::new();
+    call(&home, "core.ping", json!({}));
+    workspace(
+        &home,
+        "deep-work",
+        &[("workspace.toml", DEEP_WORK), ("steps/01-setup.sh", "echo hi\n"), ("state.toml", DIRTY_STATE)],
+    );
+
+    // The refusal comes back on the task; --wait shows it the readable way.
+    let (code, _, err) = shimmer(&home, &["workspaces", "activate", "deep-work", "--wait"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("workspace_dirty: workspace 'deep-work' failed at step 1/1 setup (exit code 1)"), "{err}");
+    assert!(err.contains("log: logs/deep-work-01.log"), "{err}");
+    assert!(err.contains("shimmer workspaces force-relaunch deep-work"), "{err}");
+    assert!(!err.contains("workspaces cleanup deep-work"), "no cleanup script, so no cleanup suggestion: {err}");
+
+    // Nobody at the keyboard and no --yes: a clear refusal, never a hang.
+    for args in [&["workspaces", "reset", "deep-work"][..], &["workspaces", "force-relaunch", "deep-work"]] {
+        let (code, _, err) = shimmer(&home, args);
+        assert_eq!(code, 1, "{args:?}");
+        assert!(err.contains("without confirmation; pass --yes"), "{args:?}: {err}");
+    }
+    assert_eq!(call(&home, "workspaces.status", json!({"id": "deep-work"}))["state"], "dirty", "nothing changed");
+
+    let (code, out, _) = shimmer(&home, &["workspaces", "reset", "deep-work", "--yes"]);
+    assert_eq!((code, out.trim()), (0, "✓ deep-work reset to ready"));
+    assert_eq!(call(&home, "workspaces.status", json!({"id": "deep-work"}))["state"], "ready");
 }

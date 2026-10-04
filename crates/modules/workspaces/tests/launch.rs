@@ -211,7 +211,14 @@ async fn if_the_first_step_cannot_start_nothing_ran_so_it_is_not_dirty() {
     let e = call(&w, &env, "workspaces.activate").await.unwrap_err();
     assert_eq!(e.code, ErrorCode::Unavailable);
     assert_eq!(state_line(&env), "state = \"ready\"", "put back as it was");
-    assert!(topics(&env).is_empty(), "no dirty event");
+    // Not dirty, but not silent either: the claimed launch is recorded as abandoned.
+    assert_eq!(topics(&env), ["workspaces.session.abandoned"]);
+    let ev = env.backend.events().pop().unwrap();
+    assert_eq!(
+        ev.payload,
+        json!({"workspace": "deep-work", "reason": "step 1 could not start: no launch backend registered",
+               "forced": false, "back_to": "ready"})
+    );
 }
 
 // ---------------------------------------------------------------- activate: refused before anything runs
@@ -312,7 +319,25 @@ async fn cancelled_before_any_step_ran_changes_nothing() {
     assert_eq!(e.code, ErrorCode::ModuleError);
     assert!(received(&env.launcher).is_empty());
     assert_eq!(state_line(&env), "state = \"ready\"");
-    assert!(topics(&env).is_empty());
+    assert_eq!(topics(&env), ["workspaces.session.abandoned"]);
+    assert_eq!(env.backend.events()[0].payload["reason"], "cancelled before any step ran");
+}
+
+#[tokio::test]
+async fn a_forced_relaunch_that_never_ran_leaves_a_trail() {
+    // Review on #57: forced was recorded, then nothing ran and the state went back to dirty.
+    // The log must say why, not just show a forced relaunch followed by silence.
+    let env = env_with_deep_work();
+    put(&env, "deep-work/state.toml", DIRTY_STATE);
+    env.ctx.cancel.cancel();
+    call(&Workspaces::default(), &env, "workspaces.force_relaunch").await.unwrap_err();
+
+    assert_eq!(topics(&env), ["workspaces.session.forced", "workspaces.session.abandoned"]);
+    let abandoned = &env.backend.events()[1].payload;
+    assert_eq!(abandoned["forced"], true);
+    assert_eq!(abandoned["back_to"], "dirty");
+    assert_eq!(state_line(&env), "state = \"dirty\"", "back to dirty, with its original failure");
+    assert!(file(&env, "deep-work/state.toml").unwrap().contains("reason = \"exit code 1\""));
 }
 
 // ---------------------------------------------------------------- force_relaunch
@@ -423,4 +448,25 @@ async fn the_whole_cycle() {
     script(&env.launcher, [ok_supervised(), ok_detached(), ok_detached()]);
     call(&w, &env, "workspaces.activate").await.unwrap();
     assert_eq!(state_line(&env), "state = \"active\"");
+}
+
+#[tokio::test]
+async fn the_final_write_checks_the_state_on_disk_first() {
+    // Review on #56: the last write of a launch used to assume `launching` without looking.
+    // If something rewrote state.toml while a step ran, the launch must not clobber it.
+    let mut env = env_with_deep_work();
+    script(&env.launcher, [ok_supervised(), ok_detached(), ok_detached()]);
+    let store = env.ctx.store.clone();
+    env.ctx.launcher = Launcher::new(Arc::new(Hooked {
+        fake: env.launcher.clone(),
+        before: Box::new(move |step| {
+            if let Step::Launch { index: 3, .. } = step.step {
+                store.write("deep-work/state.toml", "state = \"ready\"\n").unwrap();
+            }
+        }),
+    }));
+    let e = call(&Workspaces::default(), &env, "workspaces.activate").await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::Internal, "{}", e.message);
+    assert_eq!(state_line(&env), "state = \"ready\"", "not overwritten with active");
+    assert!(!topics(&env).contains(&"workspaces.session.launched".to_owned()));
 }

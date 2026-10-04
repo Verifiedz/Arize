@@ -13,14 +13,15 @@ use serde_json::{json, Value};
 use shimmer_core::{Ctx, Error, ErrorCode, LaunchStep, Result, SpawnMode, Step, StepOutcome};
 
 use crate::manifest::{ScriptExt, Workspace};
-use crate::module::{dirty_payload, folder, state_path, Workspaces};
+use crate::module::{dirty_payload, folder, state_name, state_path, Workspaces};
 use crate::persist::{self, LastSession, Outcome, Saved};
 use crate::state::{self, FailedStep, WorkspaceState};
 
 impl Workspaces {
     /// `workspaces.activate`: `ready`/`active → launching →` `active`, or `dirty` if a step fails.
     pub(crate) async fn activate(&self, ctx: &Ctx, id: &str) -> Result<Value> {
-        let start = self.prepare(ctx, id, |saved, has_cleanup| state::activate(&saved.state, id, has_cleanup))?;
+        let start =
+            self.prepare(ctx, id, false, |saved, has_cleanup| state::activate(&saved.state, id, has_cleanup))?;
         self.launch(ctx, id, start, false).await
     }
 
@@ -28,7 +29,7 @@ impl Workspaces {
     /// recorded before anything runs (`workspaces.session.forced`, with the dirty reason it
     /// overrides), then it is an ordinary launch that can fail again.
     pub(crate) async fn force_relaunch(&self, ctx: &Ctx, id: &str) -> Result<Value> {
-        let start = self.prepare(ctx, id, |saved, _| state::force_relaunch(&saved.state))?;
+        let start = self.prepare(ctx, id, true, |saved, _| state::force_relaunch(&saved.state))?;
         self.launch(ctx, id, start, true).await
     }
 
@@ -45,11 +46,8 @@ impl Workspaces {
                     "{id} has no cleanup script; workspaces.reset clears dirty without one"
                 )));
             }
-            let script = format!("cleanup.{}", ScriptExt::this_platform().as_str());
-            if !folder.has(&script) {
-                return Err(Error::invalid_params(format!("{id}: missing {script} for this platform")));
-            }
             let workspace = folder.load(ctx, id)?;
+            workspace.check_cleanup_script(&folder.files, ScriptExt::this_platform())?;
             let timeout =
                 workspace.cleanup_timeout.ok_or_else(|| Error::internal("cleanup script without a timeout"))?;
             (workspace, timeout)
@@ -81,10 +79,13 @@ impl Workspaces {
     /// Check the workspace can launch and claim it: under the lock, read its state, apply the
     /// transition (`activate` or `force_relaunch`), check every step has its script for this
     /// platform, and save `launching`. Nothing runs if any of that fails.
+    /// `forced` says which op this is (`force_relaunch` or not), so the `forced` event and flag
+    /// come from what the user asked for, not from guessing at the prior state.
     fn prepare(
         &self,
         ctx: &Ctx,
         id: &str,
+        forced: bool,
         transition: impl FnOnce(&Saved, bool) -> Result<WorkspaceState>,
     ) -> Result<Start> {
         let _g = self.lock();
@@ -95,9 +96,11 @@ impl Workspaces {
         let next = transition(&prior, has_cleanup)?;
         let workspace = folder.load(ctx, id)?;
         workspace.check_scripts(&folder.files, ScriptExt::this_platform())?;
-        let forced = matches!(prior.state, WorkspaceState::Dirty { .. });
+        // Name step 1 as running from the moment the launch is claimed, so a daemon that dies
+        // before step 1 starts still restarts knowing where it was (never "0/0 unknown").
+        let first = FailedStep { index: 1, count: workspace.steps.len() as u32, name: workspace.steps[0].name.clone() };
         ctx.store.transaction(|tx| {
-            let launching = Saved { state: next, running_step: None, last_session: prior.last_session.clone() };
+            let launching = Saved { state: next, running_step: Some(first), last_session: prior.last_session.clone() };
             tx.put(&state_path(id), persist::encode(&launching))?;
             if forced {
                 tx.emit(
@@ -122,24 +125,15 @@ impl Workspaces {
             let index = i as u32 + 1;
             let current = FailedStep { index, count, name: workspace.steps[i].name.clone() };
             let fail = |reason: String, log: &str, outcome: Outcome, session_id: &Option<String>| {
-                self.finish_dirty(
-                    ctx,
-                    id,
-                    current.clone(),
-                    reason,
-                    log,
-                    outcome,
-                    session_id,
-                    started_at,
-                    forced,
-                    has_cleanup,
-                )
+                let attempt = Attempt { started_at, forced, has_cleanup, session_id: session_id.clone() };
+                let failure = Failure { step: current.clone(), reason, log: log.to_owned(), outcome };
+                self.finish_dirty(ctx, id, &attempt, failure)
             };
 
             if ctx.cancel.is_cancelled() {
                 if i == 0 {
                     // Nothing has run yet: put the workspace back exactly as it was.
-                    self.restore(ctx, id, &prior)?;
+                    self.restore(ctx, id, &prior, "cancelled before any step ran", forced)?;
                     return Err(Error::new(ErrorCode::ModuleError, format!("{id}: cancelled before any step ran")));
                 }
                 return Err(fail(format!("cancelled before step {current}"), "", Outcome::Cancelled, &session_id)?);
@@ -153,7 +147,7 @@ impl Workspaces {
                 Err(e) if i == 0 => {
                     // The first step couldn't even start (e.g. no launch backend yet): nothing
                     // ran, so the workspace is not half-configured. Restore it and pass the error on.
-                    self.restore(ctx, id, &prior)?;
+                    self.restore(ctx, id, &prior, &format!("step 1 could not start: {}", e.message), forced)?;
                     return Err(e);
                 }
                 Err(e) => {
@@ -173,7 +167,9 @@ impl Workspaces {
         }
 
         let _g = self.lock();
-        let active = state::launch_succeeded(&WorkspaceState::Launching)?;
+        // From the state actually on disk, not an assumed `launching`: if anything changed it
+        // while the steps ran, this fails loudly instead of overwriting it (as `cleanup` does).
+        let active = state::launch_succeeded(&current_state(ctx, id)?)?;
         let session = session_id.unwrap_or_default();
         let last = LastSession { id: session.clone(), started_at, forced, outcome: Outcome::Launched };
         ctx.store.transaction(|tx| {
@@ -198,44 +194,66 @@ impl Workspaces {
         ctx.store.write(&state_path(id), persist::encode(&saved))
     }
 
-    /// Put back the state from before the launch was claimed.
-    fn restore(&self, ctx: &Ctx, id: &str, prior: &Saved) -> Result<()> {
+    /// Put back the state from before the launch was claimed, through the state machine, and
+    /// record why: a claimed launch (forced or not) that never ran a step still leaves a trail.
+    fn restore(&self, ctx: &Ctx, id: &str, prior: &Saved, reason: &str, forced: bool) -> Result<()> {
         let _g = self.lock();
-        ctx.store.write(&state_path(id), persist::encode(prior))
+        let back = state::launch_abandoned(&WorkspaceState::Launching, &prior.state)?;
+        ctx.store.transaction(|tx| {
+            tx.put(
+                &state_path(id),
+                persist::encode(&Saved::new(back.clone()).with_last_session(prior.last_session.clone())),
+            )?;
+            tx.emit(
+                "workspaces.session.abandoned",
+                json!({"workspace": id, "reason": reason, "forced": forced, "back_to": state_name(&back)}),
+            )
+        })
     }
 
     /// Save `dirty` with its event, and return the error the task fails with: the same
     /// `workspace_dirty` a later `activate` gets, so the client can offer cleanup or the log.
-    #[allow(clippy::too_many_arguments)]
-    fn finish_dirty(
-        &self,
-        ctx: &Ctx,
-        id: &str,
-        failed_step: FailedStep,
-        reason: String,
-        log: &str,
-        outcome: Outcome,
-        session_id: &Option<String>,
-        started_at: chrono::DateTime<chrono::Utc>,
-        forced: bool,
-        has_cleanup: bool,
-    ) -> Result<Error> {
+    fn finish_dirty(&self, ctx: &Ctx, id: &str, attempt: &Attempt, failure: Failure) -> Result<Error> {
         let _g = self.lock();
-        let dirty = state::step_failed(&WorkspaceState::Launching, reason, failed_step, ctx.clock.now(), log)?;
-        let session = session_id.clone().unwrap_or_default();
-        let last = LastSession { id: session.clone(), started_at, forced, outcome };
+        let Failure { step, reason, log, outcome } = failure;
+        // From the state actually on disk, as in the success path.
+        let dirty = state::step_failed(&current_state(ctx, id)?, reason, step, ctx.clock.now(), &log)?;
+        let session = attempt.session_id.clone().unwrap_or_default();
+        let last = LastSession { id: session.clone(), started_at: attempt.started_at, forced: attempt.forced, outcome };
         ctx.store.transaction(|tx| {
             tx.put(&state_path(id), persist::encode(&Saved::new(dirty.clone()).with_last_session(Some(last))))?;
             let mut payload = dirty_payload(id, &dirty);
             payload["session_id"] = json!(session);
-            payload["forced"] = json!(forced);
-            payload["has_cleanup_script"] = json!(has_cleanup);
+            payload["forced"] = json!(attempt.forced);
+            payload["has_cleanup_script"] = json!(attempt.has_cleanup);
             // CLAUDE.md §10.3 wants the user told at elevated priority. `notify` doesn't exist
             // yet (M6): it will subscribe to this event.
             tx.emit("workspaces.session.dirty", payload)
         })?;
-        Ok(state::dirty_error(&dirty, id, has_cleanup))
+        Ok(state::dirty_error(&dirty, id, attempt.has_cleanup))
     }
+}
+
+/// What's true for the whole launch attempt, whichever step it ends on.
+struct Attempt {
+    started_at: chrono::DateTime<chrono::Utc>,
+    forced: bool,
+    has_cleanup: bool,
+    /// From the first step's `StepOutcome`; `None` if no step ran.
+    session_id: Option<String>,
+}
+
+/// How a launch went wrong, and at which step.
+struct Failure {
+    step: FailedStep,
+    reason: String,
+    log: String,
+    outcome: Outcome,
+}
+
+/// The workspace's state as it is on disk now. Missing `state.toml` reads as `ready`.
+fn current_state(ctx: &Ctx, id: &str) -> Result<WorkspaceState> {
+    Ok(folder(ctx, id)?.saved(ctx, id).unwrap_or_else(|| Ok(Saved::ready()))?.state)
 }
 
 /// What `prepare` hands to `launch`.
