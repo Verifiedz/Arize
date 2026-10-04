@@ -180,15 +180,15 @@ the file it's in.
 
 - Valid TOML, at most 64 KiB. Unknown sections or keys are errors (a typo must not be silently
   ignored, as with `workspace.toml`, ADR 0012).
-- `[pack] id` is required, matches the folder name (for a folder pack), uses the id charset
-  (`shimmer_core::ids::is_valid_id`: `[a-z0-9][a-z0-9_-]*`), is at most 32 characters, and is
-  not `none`.
+- `[pack] id` is required, matches the folder name (for a folder pack), uses the name charset
+  (`shimmer_core::ids::is_valid_name`: `[a-z][a-z0-9_-]*`, so it starts with a letter), is at
+  most 32 characters, and is not `none`.
 - `[pack] label` is required: one line, 1–40 characters, no control characters.
 - `[alias]` has at least one entry and at most 64.
 
 **Each alias:**
 
-- Uses the id charset and is at most 32 characters.
+- Uses the same name charset and is at most 32 characters.
 - Is not one of Shimmer's own command words: `ping`, `manifest`, `shutdown`, `call`, `daemon`,
   `mockd`, `records`, `workspaces`, `packs`, `help`. Also not one of the words held for commands
   we expect (`queue`, `scheduler`, `fetchers`, `notify`, `calendar`, `tui`, `version`), nor

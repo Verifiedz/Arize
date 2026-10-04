@@ -1,12 +1,13 @@
 //! `shimmer-cli`: the command-line client. A thin client (CLAUDE.md §2): it parses a command,
 //! sends requests over the socket, and renders the answers. No business logic lives here.
 //!
-//! Depends on `core` and `proto` only (§3 rule 2). Command packs and aliases (§15.1) land
-//! here later; they rewrite the command word and never reach the wire.
+//! Depends on `core` and `proto` only (§3 rule 2). Command packs (§15.1, ADR 0013) live in
+//! [`packs`]: aliases are rewritten to canonical command words here and never reach the wire.
 
 mod args;
 mod autostart;
 mod client;
+pub mod packs;
 mod records;
 mod render;
 mod workspaces;
