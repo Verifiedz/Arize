@@ -54,7 +54,9 @@ impl Workspaces {
         };
 
         ctx.progress(0.0, "cleanup");
-        let step = launch_step(&workspace, Step::Cleanup, SpawnMode::Supervised { timeout });
+        // A cleanup run is its own attempt, with its own session id (ADR 0010 §9: "not reused
+        // across a later cleanup or force_relaunch").
+        let step = launch_step(&workspace, Step::Cleanup, SpawnMode::Supervised { timeout }, None);
         let out = ctx.launcher.run(&step, &ctx.cancel).await?;
         if ctx.cancel.is_cancelled() {
             return Err(Error::new(ErrorCode::ModuleError, format!("{id}: cleanup was cancelled; still dirty")));
@@ -142,19 +144,20 @@ impl Workspaces {
             ctx.progress(i as f32 / count as f32, &format!("step {current}"));
             self.save_running(ctx, id, &prior, &current)?;
 
-            let out = match ctx.launcher.run(&launch_step(&workspace, step, mode), &ctx.cancel).await {
-                Ok(out) => out,
-                Err(e) if i == 0 => {
-                    // The first step couldn't even start (e.g. no launch backend yet): nothing
-                    // ran, so the workspace is not half-configured. Restore it and pass the error on.
-                    self.restore(ctx, id, &prior, &format!("step 1 could not start: {}", e.message), forced)?;
-                    return Err(e);
-                }
-                Err(e) => {
-                    let reason = format!("could not start: {}", e.message);
-                    return Err(fail(reason, "", Outcome::Dirty, &session_id)?);
-                }
-            };
+            let out =
+                match ctx.launcher.run(&launch_step(&workspace, step, mode, session_id.clone()), &ctx.cancel).await {
+                    Ok(out) => out,
+                    Err(e) if i == 0 => {
+                        // The first step couldn't even start (e.g. no launch backend yet): nothing
+                        // ran, so the workspace is not half-configured. Restore it and pass the error on.
+                        self.restore(ctx, id, &prior, &format!("step 1 could not start: {}", e.message), forced)?;
+                        return Err(e);
+                    }
+                    Err(e) => {
+                        let reason = format!("could not start: {}", e.message);
+                        return Err(fail(reason, "", Outcome::Dirty, &session_id)?);
+                    }
+                };
             session_id.get_or_insert_with(|| out.session_id.clone());
 
             if ctx.cancel.is_cancelled() {
@@ -264,13 +267,17 @@ struct Start {
     started_at: chrono::DateTime<chrono::Utc>,
 }
 
-fn launch_step(workspace: &Workspace, step: Step, mode: SpawnMode) -> LaunchStep {
+/// `session_id` is `None` for the first step of an attempt (the backend mints one) and `Some`
+/// for every later step of that same attempt (the id the first step's `StepOutcome` returned),
+/// so one attempt's steps all share one `SHIMMER_SESSION_ID` (ADR 0010 §9 amendment).
+fn launch_step(workspace: &Workspace, step: Step, mode: SpawnMode, session_id: Option<String>) -> LaunchStep {
     LaunchStep {
         workspace_id: workspace.id.clone(),
         workspace_dir: workspace.id.clone(),
         step,
         mode,
         user_env: workspace.env.clone(),
+        session_id,
     }
 }
 

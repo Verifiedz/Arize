@@ -58,7 +58,12 @@ impl RealLaunchBackend {
 impl LaunchBackend for RealLaunchBackend {
     async fn run(&self, step: &LaunchStep, cancel: &CancellationToken) -> Result<StepOutcome> {
         let script = resolve_script(&self.home, &step.workspace_dir, &step.step)?;
-        let session_id = mint_session_id(&self.clock, self.instance_id, &self.sequence);
+        // Reuse the id the module threaded back from this attempt's first step; mint only when
+        // this is that first step (ADR 0010 §9 amendment — "One id per attempt").
+        let session_id = match &step.session_id {
+            Some(id) => id.clone(),
+            None => mint_session_id(&self.clock, self.instance_id, &self.sequence),
+        };
         match step.mode {
             SpawnMode::Detached => run_detached(&self.home, &self.socket, &script, step, &session_id).await,
             SpawnMode::Supervised { timeout } => {
@@ -68,8 +73,10 @@ impl LaunchBackend for RealLaunchBackend {
     }
 }
 
-/// Minted here, not by the calling module (ADR 0010 §9) — fresh per launch attempt, from
-/// the injected `Clock`, never `SystemTime::now()`.
+/// Minted here, not by the calling module (ADR 0010 §9) — only for the first step of a launch
+/// attempt (`run`'s caller leaves `LaunchStep.session_id` `None`); every later step of that same
+/// attempt reuses the id the module threaded back, so `run` never calls this a second time
+/// within one attempt. From the injected `Clock`, never `SystemTime::now()`.
 ///
 /// **Amendment to ADR 0010 §9's sketch** (`Ulid::from_parts(timestamp_ms, rand::random())`):
 /// using fresh OS randomness for every call makes ids collision-resistant but defeats the
@@ -293,6 +300,7 @@ mod tests {
             step: Step::Launch { index: 1, count: 1, name: name.into() },
             mode: SpawnMode::Detached,
             user_env: vec![],
+            session_id: None,
         }
     }
 
@@ -342,6 +350,8 @@ mod tests {
 
     #[tokio::test]
     async fn distinct_session_ids_across_separate_launch_attempts() {
+        // Each call here leaves `session_id: None`, exactly as the module does for the first
+        // step of a new attempt — so this is two separate attempts, not two steps of one.
         let home = TempDir::new().unwrap();
         write_step_script(home.path(), "deep-work", "setup", "true\n");
         let b = backend(&home);
@@ -350,6 +360,28 @@ mod tests {
         let second = b.run(&step("deep-work", "setup"), &CancellationToken::new()).await.unwrap();
 
         assert_ne!(first.session_id, second.session_id);
+    }
+
+    #[tokio::test]
+    async fn a_later_step_of_the_same_attempt_reuses_the_first_steps_id() {
+        // ADR 0010 §9 amendment ("one id per attempt"): the module threads the first step's
+        // returned id into every later `LaunchStep` of that attempt via `session_id`, and the
+        // backend must echo it back rather than minting again.
+        let home = TempDir::new().unwrap();
+        write_step_script(home.path(), "deep-work", "setup", "true\n");
+        write_step_script(home.path(), "deep-work", "editor", "true\n");
+        let b = backend(&home);
+
+        let first = b.run(&step("deep-work", "setup"), &CancellationToken::new()).await.unwrap();
+        let mut continued = step("deep-work", "editor");
+        continued.session_id = Some(first.session_id.clone());
+        let second = b.run(&continued, &CancellationToken::new()).await.unwrap();
+
+        assert_eq!(first.session_id, second.session_id);
+
+        // A later, separate attempt (session_id: None again) still gets a fresh id.
+        let third = b.run(&step("deep-work", "setup"), &CancellationToken::new()).await.unwrap();
+        assert_ne!(third.session_id, first.session_id);
     }
 
     #[tokio::test]
