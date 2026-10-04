@@ -31,6 +31,8 @@ An alias stands for shimmer plus a whole command. In pack.toml it names one of t
   records.complete  records.remove
   workspaces.list  workspaces.status  workspaces.activate  workspaces.cleanup
   workspaces.force_relaunch  workspaces.reset
+  queue.list  queue.task  queue.cancel  queue.reorder
+  scheduler.list  scheduler.add  scheduler.pause  scheduler.resume  scheduler.remove
 
 Your own packs go in packs/<name>/pack.toml in your Shimmer folder (see docs/packs/README.md).
 The active pack is kept in ~/.config/shimmer/cli.toml; aliases are linked into ~/.local/bin.";

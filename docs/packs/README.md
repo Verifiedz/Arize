@@ -82,6 +82,11 @@ On the right of each alias goes the command it runs, by its op name:
 | `core.ping`, `core.shutdown`, `core.manifest` | `shimmer ping`, `shutdown`, `manifest` |
 | `records.collections`, `.add`, `.list`, `.get`, `.update`, `.complete`, `.remove` | `shimmer records <verb>` |
 | `workspaces.list`, `.status`, `.activate`, `.cleanup`, `.force_relaunch`, `.reset` | `shimmer workspaces <verb>` |
+| `queue.list`, `.task`, `.cancel`, `.reorder` | `shimmer queue list`, `show`, `cancel`, `move` |
+| `scheduler.list`, `.add`, `.pause`, `.resume`, `.remove` | `shimmer scheduler <verb>` |
+
+The queue and scheduler commands are optional: name them if you like. The built-in packs name
+the first 16.
 
 Then check it, and turn it on:
 
