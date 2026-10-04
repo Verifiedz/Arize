@@ -71,8 +71,8 @@ pub const TARGETS: &[Target] = &[
     Target { op: "workspaces.cleanup", words: &["workspaces", "cleanup"] },
     Target { op: "workspaces.force_relaunch", words: &["workspaces", "force-relaunch"] },
     Target { op: "workspaces.reset", words: &["workspaces", "reset"] },
-    // ADR 0015 §5: the queue and scheduler commands. Packs may alias these; the built-in packs
-    // need only cover the 16 above ([`CORE_TARGETS`]).
+    // ADR 0015 §5: the queue and scheduler commands. A user's pack may leave these out; the
+    // built-in packs name all of them.
     Target { op: "queue.list", words: &["queue", "list"] },
     Target { op: "queue.task", words: &["queue", "show"] },
     Target { op: "queue.cancel", words: &["queue", "cancel"] },
@@ -83,10 +83,6 @@ pub const TARGETS: &[Target] = &[
     Target { op: "scheduler.resume", words: &["scheduler", "resume"] },
     Target { op: "scheduler.remove", words: &["scheduler", "remove"] },
 ];
-
-/// How many of [`TARGETS`] (the first ones) every built-in pack must name: ping, shutdown,
-/// manifest, and the records and workspaces commands (ADR 0013 §5, ADR 0015 §5).
-pub const CORE_TARGETS: usize = 16;
 
 /// The command `op` names, if a pack may alias it.
 pub fn target(op: &str) -> Option<&'static Target> {
@@ -355,7 +351,7 @@ label = "My Pack"
 
     #[test]
     fn every_target_is_an_op_with_its_command_words() {
-        assert_eq!((TARGETS.len(), CORE_TARGETS), (25, 16));
+        assert_eq!(TARGETS.len(), 25);
         // Where the CLI's word differs from the op's verb (ADR 0015 §1).
         let renamed = [("queue.task", "show"), ("queue.reorder", "move")];
         for t in TARGETS {
@@ -367,7 +363,6 @@ label = "My Pack"
                 _ => assert_eq!(words, [module, verb]),
             }
         }
-        assert!(TARGETS[..CORE_TARGETS].iter().all(|t| !t.op.starts_with("queue.") && !t.op.starts_with("scheduler.")));
         assert_eq!(target("workspaces.force_relaunch").unwrap().words, ["workspaces", "force-relaunch"]);
         assert_eq!(target("queue.reorder").unwrap().words, ["queue", "move"]);
         for plumbing in ["core.daemon", "core.subscribe", "queue.promote", "scheduler.show", "packs.use"] {

@@ -87,8 +87,9 @@ again, and a removed trigger added again.
 The new ops join the commands a pack may alias (ADR 0013 §6): `queue.list`, `queue.task`,
 `queue.cancel`, `queue.reorder`, `scheduler.list`, `scheduler.add`, `scheduler.remove`,
 `scheduler.pause`, `scheduler.resume` (`scheduler show` has no op of its own, so it can't be
-aliased). They are **optional** for packs: the built-in packs must still name each of the 16
-original commands exactly once, and may add queue and scheduler aliases later. `queue` and
+aliased). They are **optional** for a user's own pack. The four built-in packs name all 25
+commands (the table is in `docs/packs/README.md`), and anime-tropes was reworked so every alias is
+an everyday expression anime watchers know (`yatta`, `sayonara`, `yamete`, …). `queue` and
 `scheduler` were already reserved words (ADR 0013 §7), so no existing pack can break.
 
 ## Not done here

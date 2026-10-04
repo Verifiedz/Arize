@@ -23,7 +23,7 @@ pub fn builtin(id: &str) -> Option<Pack> {
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::super::pack::{CORE_TARGETS, TARGETS};
+    use super::super::pack::TARGETS;
     use super::super::COMMON_TOOLS;
     use super::*;
 
@@ -44,12 +44,12 @@ mod tests {
     }
 
     #[test]
-    fn every_built_in_names_every_core_command_exactly_once() {
-        // The queue and scheduler commands are optional for packs (ADR 0015 §5).
+    fn every_built_in_names_every_command_exactly_once() {
+        // Including the queue and scheduler ones, which a user's pack may leave out (ADR 0015 §5).
         for pack in all() {
             let mut ops: Vec<&str> = pack.aliases.values().map(|t| t.op).collect();
             ops.sort();
-            let mut want: Vec<&str> = TARGETS[..CORE_TARGETS].iter().map(|t| t.op).collect();
+            let mut want: Vec<&str> = TARGETS.iter().map(|t| t.op).collect();
             want.sort();
             assert_eq!(ops, want, "{}", pack.id);
         }

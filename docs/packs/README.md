@@ -10,7 +10,7 @@ $ shimmer packs use anime-tropes
 try it: ohayo
 
 $ ikuzo deep-work            # = shimmer workspaces activate deep-work
-$ climax leetcode/two-sum    # = shimmer records complete leetcode/two-sum
+$ yatta leetcode/two-sum     # = shimmer records complete leetcode/two-sum
 ```
 
 Packs are optional. With no pack on, Shimmer is plain `shimmer …`, and the real names always work
@@ -38,21 +38,30 @@ belongs to this machine, so copying your Shimmer folder elsewhere doesn't bring 
 | Command | `anime-tropes` | `ship-it` | `starship` | `short` |
 |---|---|---|---|---|
 | ping | `ohayo` | `on-call` | `comms` | `up` |
-| shutdown | `hiatus` | `ooo` | `cryo` | `down` |
-| manifest | `power-scaling` | `readme` | `blueprints` | `ops` |
-| records collections | `arcs` | `boards` | `fleets` | `rcol` |
-| records add | `foreshadow` | `ticket` | `waypoint` | `radd` |
-| records list | `episodes` | `triage` | `logbook` | `rlist` |
-| records get | `flashback` | `blame` | `scan` | `rget` |
-| records update | `awakening` | `amend` | `retrofit` | `rset` |
-| records complete | `climax` | `lgtm` | `landed` | `rdone` |
-| records remove | `axed` | `wontfix` | `airlock` | `rrm` |
+| shutdown | `owari` | `ooo` | `cryo` | `down` |
+| manifest | `nakama` | `readme` | `blueprints` | `ops` |
+| records collections | `iroiro` | `boards` | `fleets` | `rcol` |
+| records add | `kohai` | `ticket` | `waypoint` | `radd` |
+| records list | `mite` | `triage` | `logbook` | `rlist` |
+| records get | `naruhodo` | `blame` | `scan` | `rget` |
+| records update | `senpai` | `amend` | `retrofit` | `rset` |
+| records complete | `yatta` | `lgtm` | `landed` | `rdone` |
+| records remove | `sayonara` | `wontfix` | `airlock` | `rrm` |
 | workspaces list | `minna` | `envs` | `sectors` | `wlist` |
 | workspaces status | `nani` | `standup` | `diagnostics` | `wst` |
 | workspaces activate | `ikuzo` | `deploy` | `engage` | `wgo` |
 | workspaces cleanup | `daijoubu` | `postmortem` | `damage-control` | `wclean` |
 | workspaces force-relaunch | `yatte-yaru` | `force-push` | `override` | `wforce` |
 | workspaces reset | `tadaima` | `rollback` | `cold-start` | `wreset` |
+| queue list | `mada-mada` | `pipeline` | `launch-queue` | `qlist` |
+| queue show | `misete` | `job-status` | `telemetry` | `qget` |
+| queue cancel | `yamete` | `cancel-build` | `abort` | `qcancel` |
+| queue move | `hayaku` | `bump` | `clearance` | `qmove` |
+| scheduler list | `jaa-ne` | `cron-jobs` | `flight-schedule` | `slist` |
+| scheduler add | `kimeta` | `schedule-it` | `plot-course` | `sadd` |
+| scheduler pause | `chotto-matte` | `code-freeze` | `hold-position` | `spause` |
+| scheduler resume | `hajime` | `thaw` | `full-ahead` | `sresume` |
+| scheduler remove | `mou-ii` | `deprecate` | `scrub-mission` | `sdel` |
 
 ## Writing your own
 
@@ -85,8 +94,8 @@ On the right of each alias goes the command it runs, by its op name:
 | `queue.list`, `.task`, `.cancel`, `.reorder` | `shimmer queue list`, `show`, `cancel`, `move` |
 | `scheduler.list`, `.add`, `.pause`, `.resume`, `.remove` | `shimmer scheduler <verb>` |
 
-The queue and scheduler commands are optional: name them if you like. The built-in packs name
-the first 16.
+The queue and scheduler commands are optional for your own packs: name them if you like. The
+built-in packs name all 25.
 
 Then check it, and turn it on:
 
