@@ -25,6 +25,8 @@ impl Home {
             .args(args)
             .env("SHIMMER_HOME", self.dir.path().join("home"))
             .env("SHIMMER_SOCKET", self.socket())
+            // The CLI's own settings (the active command pack, ADR 0013): never the developer's.
+            .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
             .output()
             .unwrap()
     }
