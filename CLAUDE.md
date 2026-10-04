@@ -451,7 +451,7 @@ $SHIMMER_HOME/
   data/records/collections/*.toml  Record collection definitions (§8, ADR 0008).
   data/records/items/<collection>/<id>.toml  One file per record.
   events/YYYY-MM-DD.jsonl  Append-only event log. One JSON Event per line.
-  data/workspaces/<name>/  workspace.toml + steps/ + cleanup script + state (ADRs 0010, 0012).
+  data/workspaces/<name>/  workspace.toml + steps/ + cleanup script + state.toml (ADRs 0010, 0012).
   notifications/failed.jsonl  Deliveries that exhausted every sink (§11.3).
   packs/<name>/            Command packs: aliases + animations (§15.1). Client-read only.
   .staging/<txid>/         In-flight store transactions (§7.1). Never edit by hand.
