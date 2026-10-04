@@ -27,6 +27,25 @@ pub use workspaces::WorkspacesCmd;
 /// Run `shimmer <args>`: `args` are what follows the binary name. Exit codes: 0 success,
 /// 1 the daemon (or reaching it) failed, 2 bad usage.
 pub async fn run(args: Vec<String>) -> ExitCode {
+    run_line(None, args).await
+}
+
+/// The alias this binary was started as, when a link made by `shimmer packs use` ran it
+/// (`ikuzo deep-work`), or `None` when it should run as plain `shimmer` (ADR 0013 §10). The app
+/// asks this before anything else, so `ikuzo daemon` activates a workspace called `daemon`.
+pub fn invoked_alias(argv0: &str) -> Option<String> {
+    let name = std::path::Path::new(argv0).file_stem()?.to_str()?;
+    let home = shimmer_proto::paths::shimmer_home();
+    (name != "shimmer" && packs::active::is_known_alias(name, packs::settings::path().as_deref(), &home))
+        .then(|| name.to_string())
+}
+
+/// Run `<alias> <args>`, as if it were `shimmer <alias> <args>`.
+pub async fn run_as_alias(alias: String, args: Vec<String>) -> ExitCode {
+    run_line(Some(alias), args).await
+}
+
+async fn run_line(alias: Option<String>, args: Vec<String>) -> ExitCode {
     // Command packs (ADR 0013): find the active pack, then turn an alias into the command it
     // stands for before anything else sees the line. A pack problem is only ever a warning.
     let front = match packs::active::take_front_flags(args) {
@@ -44,7 +63,22 @@ pub async fn run(args: Vec<String>) -> ExitCode {
         (Some(pack), false) => format!("{USAGE}\n\n{}", packs::active::help_section(pack)),
         _ => USAGE.to_string(),
     };
-    let args = packs::active::rewrite(front.args, active.pack.as_ref());
+    let mut line = front.args;
+    if let Some(alias) = alias {
+        // Started through a link: the alias must still be in the active pack.
+        match &active.pack {
+            Some(pack) if pack.aliases.contains_key(&alias) => line.insert(0, alias),
+            Some(pack) => {
+                eprintln!("{alias}: isn't an alias in your active pack ({}). Run 'shimmer packs link'.", pack.id);
+                return ExitCode::from(2);
+            }
+            None => {
+                eprintln!("{alias}: no command pack is active. Run 'shimmer packs use NAME', or 'shimmer packs unlink' to remove this command.");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let args = packs::active::rewrite(line, active.pack.as_ref());
 
     let usage = usage_for(&args);
     let args = match Args::parse(args) {
@@ -81,6 +115,7 @@ fn usage_for(args: &[String]) -> &'static str {
             w if w.starts_with('-') => {}
             "records" => return records::USAGE,
             "workspaces" => return workspaces::USAGE,
+            "packs" => return packs::cmd::USAGE,
             _ => return USAGE,
         }
     }
@@ -93,6 +128,8 @@ async fn execute(args: &Args, help: String) -> Result<Option<String>> {
         Command::Help => return Ok(Some(help)),
         Command::Records(RecordsCmd::Help) => return Ok(Some(records::USAGE.into())),
         Command::Workspaces(WorkspacesCmd::Help) => return Ok(Some(workspaces::USAGE.into())),
+        // Packs live entirely in the client: no daemon needed.
+        Command::Packs(cmd) => return packs::cmd::run(cmd, &packs::cmd::Env::from_process()).map(Some),
         _ => {}
     }
     let Some(mut client) = connect(args).await? else { return Ok(None) };
@@ -108,7 +145,9 @@ async fn execute(args: &Args, help: String) -> Result<Option<String>> {
         Command::Manifest => (ops::CORE_MANIFEST, json!({})),
         Command::Shutdown => (ops::CORE_SHUTDOWN, json!({})),
         Command::Call { op, params } => (op.as_str(), params.clone()),
-        Command::Help | Command::Records(_) | Command::Workspaces(_) => unreachable!("handled above"),
+        Command::Help | Command::Records(_) | Command::Workspaces(_) | Command::Packs(_) => {
+            unreachable!("handled above")
+        }
     };
     let data = client.call(op, params).await?;
     Ok(Some(output(args, &data)))
@@ -140,13 +179,18 @@ fn output(args: &Args, data: &Value) -> String {
         Command::Ping => render::ping(data),
         Command::Manifest => render::manifest(data),
         Command::Shutdown => render::shutdown(),
-        Command::Call { .. } | Command::Help | Command::Records(_) | Command::Workspaces(_) => render::json(data),
+        Command::Call { .. } | Command::Help | Command::Records(_) | Command::Workspaces(_) | Command::Packs(_) => {
+            render::json(data)
+        }
     }
 }
 
-/// The daemon is this same binary, run as `shimmer daemon`.
+/// The daemon is this same binary, run as `shimmer daemon`. Symlinks are resolved: started as
+/// `ikuzo` through a pack link, the binary must not start the daemon as `ikuzo daemon`, which
+/// would run the alias (ADR 0013 §10).
 fn daemon_exe() -> Result<PathBuf> {
     std::env::current_exe()
+        .and_then(|p| p.canonicalize())
         .map_err(|e| Error::unavailable(format!("cannot find the shimmer binary to start the daemon: {e}")))
 }
 

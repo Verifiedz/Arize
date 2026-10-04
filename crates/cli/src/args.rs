@@ -1,10 +1,12 @@
 //! `shimmer <command>` arguments. Hand-rolled like `shimmer mockd`'s: a handful of commands does not
-//! need a parser crate, and command packs (§15.1) will rewrite the command word before this runs.
+//! need a parser crate. Command packs (§15.1) have already rewritten any alias by the time this
+//! runs (`crate::packs::active`).
 
 use std::path::PathBuf;
 
 use serde_json::Value;
 
+use crate::packs::cmd::{self as packs, PacksCmd};
 use crate::records::{self, RecordsCmd};
 use crate::workspaces::{self, WorkspacesCmd};
 
@@ -15,6 +17,7 @@ commands:
   manifest              list registered modules, their ops and lanes
   records …             add, list and complete records (shimmer records --help)
   workspaces …          list, inspect and reset workspaces (shimmer workspaces --help)
+  packs …               command packs: themed aliases for these commands (shimmer packs --help)
   call OP [PARAMS]      send any op; PARAMS is a JSON object (default {})
   shutdown              stop the daemon
   daemon                run the daemon in the foreground (Ctrl-C to stop)
@@ -38,6 +41,7 @@ pub enum Command {
     Call { op: String, params: Value },
     Records(RecordsCmd),
     Workspaces(WorkspacesCmd),
+    Packs(PacksCmd),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -77,6 +81,7 @@ impl Args {
         let command = match (help, words.first().map(String::as_str)) {
             (true, Some("records")) => Command::Records(RecordsCmd::Help),
             (true, Some("workspaces")) => Command::Workspaces(WorkspacesCmd::Help),
+            (true, Some("packs")) => Command::Packs(PacksCmd::Help),
             (true, _) => Command::Help,
             (false, _) => command(words)?,
         };
@@ -93,6 +98,9 @@ fn command(words: Vec<String>) -> Result<Command, String> {
     }
     if word == "workspaces" {
         return workspaces::parse(rest).map(Command::Workspaces);
+    }
+    if word == "packs" {
+        return packs::parse(rest).map(Command::Packs);
     }
     if let Some(opt) = rest.iter().find(|w| w.starts_with('-') && w.len() > 1) {
         return Err(format!("unknown option '{}'", opt.split('=').next().unwrap_or(opt)));

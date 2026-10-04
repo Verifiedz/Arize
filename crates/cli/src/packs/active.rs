@@ -205,6 +205,26 @@ pub fn help_section(pack: &Pack) -> String {
     out
 }
 
+/// Whether `name` could be an alias this binary was started as (ADR 0013 §10): one Shimmer
+/// linked (`cli.toml` `linked`), or one in any built-in or folder pack. Anything else, such as a
+/// renamed binary, runs as plain `shimmer`.
+pub fn is_known_alias(name: &str, cli_toml: Option<&Path>, home: &Path) -> bool {
+    if name_problem(name).is_some() {
+        return false;
+    }
+    let linked = cli_toml.and_then(|p| settings::load(p).ok()).is_some_and(|s| s.linked.iter().any(|l| l == name));
+    let in_builtin =
+        super::builtin::BUILTIN.iter().filter_map(|(id, _)| builtin(id)).any(|p| p.aliases.contains_key(name));
+    let in_folder = || {
+        std::fs::read_dir(home.join("packs"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|e| check_folder(&e.path()).is_ok_and(|p| p.aliases.contains_key(name)))
+    };
+    linked || in_builtin || in_folder()
+}
+
 fn more(n: usize) -> String {
     if n > 1 {
         format!(" (and {} more)", n - 1)
@@ -362,6 +382,19 @@ mod tests {
         let (pack, w) = active(&d, None);
         assert_eq!(pack.as_deref(), Some("short"));
         assert!(w[0].ends_with("unknown key 'colour' ignored"), "{w:?}");
+    }
+
+    #[test]
+    fn known_aliases_are_linked_built_in_or_in_a_folder_pack() {
+        let d = dirs();
+        folder_pack(&d, "mine", "hello");
+        std::fs::write(&d.cli_toml, "linked = [\"old-one\"]\n").unwrap();
+        for name in ["ikuzo", "wgo", "hello", "old-one"] {
+            assert!(is_known_alias(name, Some(&d.cli_toml), &d.home), "{name}");
+        }
+        for name in ["shimmer-dev", "nope", "Bad Name", ""] {
+            assert!(!is_known_alias(name, Some(&d.cli_toml), &d.home), "{name}");
+        }
     }
 
     #[test]

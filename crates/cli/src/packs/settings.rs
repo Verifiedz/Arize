@@ -7,7 +7,8 @@
 //! a newer Shimmer still loads in an older one.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use toml::{Table, Value};
 
@@ -45,6 +46,58 @@ fn path_from(xdg_config_home: Option<OsString>, home: Option<OsString>) -> Optio
         None => PathBuf::from(home.filter(|p| !p.is_empty())?).join(".config"),
     };
     Some(base.join("shimmer/cli.toml"))
+}
+
+/// Where bare commands go when `cli.toml` doesn't say: `~/.local/bin`.
+pub fn default_link_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").filter(|h| !h.is_empty())?;
+    Some(PathBuf::from(home).join(".local/bin"))
+}
+
+/// The settings in `path`: the defaults if there is no file yet, or every problem with it.
+pub fn load(path: &Path) -> Result<Settings, Vec<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => parse(&path.display().to_string(), &text).map(|l| l.settings),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
+        Err(e) => Err(vec![format!("{}: can't be read: {e}", path.display())]),
+    }
+}
+
+/// Save `settings` to `path`, all or nothing (CLAUDE.md §7.1): a temp file in the same folder,
+/// `fsync`, then `rename`, so a crash leaves the old file or the new one. Keys this version
+/// doesn't know are kept, so saving never loses a newer Shimmer's settings.
+pub fn save(path: &Path, settings: &Settings) -> std::io::Result<()> {
+    let mut table: Table =
+        std::fs::read_to_string(path).ok().and_then(|text| toml::from_str(&text).ok()).unwrap_or_default();
+    let _ = match &settings.pack {
+        Some(id) => table.insert("pack".into(), Value::String(id.clone())),
+        None => table.remove("pack"),
+    };
+    let _ = match &settings.link_dir {
+        Some(dir) => table.insert("link_dir".into(), Value::String(dir.display().to_string())),
+        None => table.remove("link_dir"),
+    };
+    let _ = if settings.linked.is_empty() {
+        table.remove("linked")
+    } else {
+        table.insert("linked".into(), Value::Array(settings.linked.iter().cloned().map(Value::String).collect()))
+    };
+    let text = toml::to_string(&table).map_err(std::io::Error::other)?;
+
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!(".cli.toml.{}.tmp", std::process::id()));
+    let written = std::fs::File::create(&tmp).and_then(|mut f| {
+        f.write_all(text.as_bytes())?;
+        f.sync_all()
+    });
+    match written.and_then(|()| std::fs::rename(&tmp, path)) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
 }
 
 /// Check `cli.toml`'s text. `file` names it in every problem and warning.
@@ -155,6 +208,38 @@ mod tests {
             let p = problems(&format!("linked = [{bad}]"));
             assert!(p[0].contains("isn't a valid alias name"), "{bad}: {p:?}");
         }
+    }
+
+    #[test]
+    fn save_then_load_round_trips_and_keeps_unknown_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("shimmer/cli.toml");
+        assert_eq!(load(&path).unwrap(), Settings::default(), "no file yet");
+
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "theme = \"dark\"\npack = \"old\"\n").unwrap();
+        let s = Settings {
+            pack: Some("short".into()),
+            link_dir: Some("/opt/bin".into()),
+            linked: vec!["up".into(), "down".into()],
+        };
+        save(&path, &s).unwrap();
+        assert_eq!(load(&path).unwrap(), s);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("theme = \"dark\""), "unknown key kept");
+
+        save(&path, &Settings::default()).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), "theme = \"dark\"", "cleared keys are removed");
+        let leftovers: Vec<_> =
+            std::fs::read_dir(path.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(leftovers, ["cli.toml"], "no temp file left behind");
+    }
+
+    #[test]
+    fn a_broken_file_is_reported_by_load() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("cli.toml");
+        std::fs::write(&path, "pack = 3").unwrap();
+        assert!(load(&path).unwrap_err()[0].ends_with("pack must be a string"));
     }
 
     #[test]

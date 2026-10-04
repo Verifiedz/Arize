@@ -7,9 +7,13 @@
 //! - [`builtin`]: the five built-in packs (§5).
 //! - [`active`]: which pack is active, and the alias rewrite (§3, §4, §8, §9).
 //! - [`settings`]: the CLI's own `cli.toml`, which records the active pack (§3).
+//! - [`link`]: the links that let an alias run on its own, `ikuzo deep-work` (§10).
+//! - [`cmd`]: `shimmer packs list|show|use|link|unlink|check` (§11).
 
 pub mod active;
 pub mod builtin;
+pub mod cmd;
+pub mod link;
 pub mod pack;
 pub mod settings;
 

@@ -20,6 +20,12 @@ const LOG_RETAIN_FILES: usize = 8;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Started through a command-pack link (`ikuzo deep-work`, ADR 0013 §10): the whole line is
+    // the alias's, even `ikuzo daemon`. Started as `shimmer`, or anything else, nothing changes.
+    if let Some(alias) = std::env::args().next().as_deref().and_then(shimmer_cli::invoked_alias) {
+        init_stderr_logging();
+        return shimmer_cli::run_as_alias(alias, std::env::args().skip(1).collect()).await;
+    }
     match std::env::args().nth(1).as_deref() {
         Some("daemon") => {
             // Autostart (crates/cli/src/autostart.rs) nulls the child's stderr, so this is the
