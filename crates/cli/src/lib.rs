@@ -26,16 +26,10 @@ pub use workspaces::WorkspacesCmd;
 /// Run `shimmer <args>`: `args` are what follows the binary name. Exit codes: 0 success,
 /// 1 the daemon (or reaching it) failed, 2 bad usage.
 pub async fn run(args: Vec<String>) -> ExitCode {
+    let usage = usage_for(&args);
     let args = match Args::parse(args) {
         Ok(a) => a,
         Err(e) => {
-            let usage = if e.contains("records") {
-                records::USAGE
-            } else if e.contains("workspaces") {
-                workspaces::USAGE
-            } else {
-                USAGE
-            };
             eprintln!("shimmer: {e}\n\n{usage}");
             return ExitCode::from(2);
         }
@@ -51,6 +45,26 @@ pub async fn run(args: Vec<String>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The help to show after a usage error: chosen by the command word the user typed, not by
+/// searching the error message, so `shimmer workspaces activate x --bogus` gets the workspaces
+/// help even though its error ("unknown option '--bogus'") never says "workspaces".
+fn usage_for(args: &[String]) -> &'static str {
+    let mut words = args.iter().map(String::as_str);
+    while let Some(word) = words.next() {
+        match word {
+            // `--socket PATH` takes the next word; skip it too.
+            "--socket" => {
+                words.next();
+            }
+            w if w.starts_with('-') => {}
+            "records" => return records::USAGE,
+            "workspaces" => return workspaces::USAGE,
+            _ => return USAGE,
+        }
+    }
+    USAGE
 }
 
 async fn execute(args: &Args) -> Result<Option<String>> {
@@ -113,4 +127,23 @@ fn output(args: &Args, data: &Value) -> String {
 fn daemon_exe() -> Result<PathBuf> {
     std::env::current_exe()
         .map_err(|e| Error::unavailable(format!("cannot find the shimmer binary to start the daemon: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn usage(args: &[&str]) -> &'static str {
+        usage_for(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn usage_follows_the_command_word() {
+        assert_eq!(usage(&["workspaces", "activate", "x", "--bogus"]), workspaces::USAGE);
+        assert_eq!(usage(&["--json", "--socket", "/tmp/s", "workspaces", "status"]), workspaces::USAGE);
+        assert_eq!(usage(&["records", "list", "--limit", "x"]), records::USAGE);
+        assert_eq!(usage(&["call"]), USAGE);
+        assert_eq!(usage(&["--bogus"]), USAGE);
+        assert_eq!(usage(&[]), USAGE);
+    }
 }

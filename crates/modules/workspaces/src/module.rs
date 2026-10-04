@@ -44,6 +44,7 @@ impl Module for Workspaces {
                 "workspaces.session.dirty",
                 "workspaces.session.forced",
                 "workspaces.session.cleaned",
+                "workspaces.session.abandoned",
                 "workspaces.workspace.reset",
             ]
             .map(String::from)
@@ -125,23 +126,13 @@ impl Workspaces {
         for (id, folder) in folders(ctx)? {
             let mut entry = Map::new();
             entry.insert("id".into(), json!(id));
-            match folder.load(ctx, &id) {
-                Ok(w) => {
-                    entry.insert("label".into(), json!(w.label));
-                }
-                Err(e) => {
-                    entry.insert("error".into(), json!(e.message));
-                }
+            let (workspace, saved, errors) = folder.read(ctx, &id);
+            if let Some(w) = &workspace {
+                entry.insert("label".into(), json!(w.label));
             }
-            match folder.saved(ctx, &id) {
-                Some(Err(e)) => {
-                    entry.entry("error").or_insert(json!(e.message));
-                }
-                Some(Ok(saved)) => add_state(&mut entry, &saved.state),
-                None => add_state(&mut entry, &WorkspaceState::Ready),
-            }
-            if entry.contains_key("error") {
-                entry.insert("state".into(), json!("invalid"));
+            match saved {
+                Some(saved) if errors.is_empty() => add_state(&mut entry, &saved.state),
+                _ => add_invalid(&mut entry, &errors),
             }
             out.push(Value::Object(entry));
         }
@@ -154,14 +145,20 @@ impl Workspaces {
         let mut out = Map::new();
         out.insert("id".into(), json!(id));
         out.insert("has_cleanup_script".into(), json!(folder.has_cleanup_script()));
-        match folder.load(ctx, id) {
-            Ok(w) => describe(&mut out, &w),
-            Err(e) => {
-                out.insert("error".into(), json!(e.message));
-            }
+        let (workspace, saved, errors) = folder.read(ctx, id);
+        if let Some(w) = &workspace {
+            describe(&mut out, w);
         }
-        match folder.saved(ctx, id).unwrap_or_else(|| Ok(Saved::ready())) {
-            Ok(saved) => {
+        // `null` until the first launch, as in crates/mockd/fixtures/workspace-dirty.json.
+        let last = saved.as_ref().and_then(|s| s.last_session.as_ref()).map(|last| {
+            json!({"id": last.id, "started_at": rfc3339(&last.started_at),
+                   "forced": last.forced, "outcome": last.outcome.as_str()})
+        });
+        out.insert("last_session".into(), json!(last));
+        match saved {
+            // Dirty or running details only for a workspace that can be read: an invalid one shows
+            // what's wrong, not a stale reason from before it broke.
+            Some(saved) if errors.is_empty() => {
                 add_state(&mut out, &saved.state);
                 if let WorkspaceState::Dirty { reason, failed_step, failed_at, log } = &saved.state {
                     out.insert("log".into(), json!(log));
@@ -174,19 +171,8 @@ impl Workspaces {
                 if let (WorkspaceState::Launching, Some(step)) = (&saved.state, &saved.running_step) {
                     out.insert("running_step".into(), json!(step.to_string()));
                 }
-                // `null` until the first launch, as in crates/mockd/fixtures/workspace-dirty.json.
-                let last = saved.last_session.as_ref().map(|last| {
-                    json!({"id": last.id, "started_at": rfc3339(&last.started_at),
-                           "forced": last.forced, "outcome": last.outcome.as_str()})
-                });
-                out.insert("last_session".into(), json!(last));
             }
-            Err(e) => {
-                out.entry("error").or_insert(json!(e.message));
-            }
-        }
-        if out.contains_key("error") {
-            out.insert("state".into(), json!("invalid"));
+            _ => add_invalid(&mut out, &errors),
         }
         Ok(Value::Object(out))
     }
@@ -239,6 +225,23 @@ impl Folder {
         manifest::parse(id, &text, &self.files)
     }
 
+    /// Both files at once, with every problem found: `workspace.toml` and `state.toml` can each
+    /// be broken, and the user should see both rather than fix one only to meet the other.
+    /// `saved` is `Ready` when there's no `state.toml` yet, and `None` only if it can't be read.
+    pub(crate) fn read(&self, ctx: &Ctx, id: &str) -> (Option<Workspace>, Option<Saved>, Vec<String>) {
+        let mut errors = Vec::new();
+        let workspace = self.load(ctx, id).map_err(|e| errors.push(e.message)).ok();
+        let saved = match self.saved(ctx, id) {
+            None => Some(Saved::ready()),
+            Some(Ok(saved)) => Some(saved),
+            Some(Err(e)) => {
+                errors.push(e.message);
+                None
+            }
+        };
+        (workspace, saved, errors)
+    }
+
     /// `None` when there is no `state.toml` yet.
     pub(crate) fn saved(&self, ctx: &Ctx, id: &str) -> Option<Result<Saved>> {
         if !self.has(STATE_FILE) {
@@ -259,10 +262,21 @@ fn folders(ctx: &Ctx) -> Result<BTreeMap<String, Folder>> {
     Ok(out)
 }
 
-/// The folder for `id`, found by listing, never by building a path from the request: an id
-/// that isn't an existing folder is `not_found` whatever it contains.
+/// The folder for `id`, listing only that folder. The id is checked against the workspace-id
+/// charset first, so a request can never name a path outside it: anything else (`../records`,
+/// `deep-work/steps`, empty) is simply `not_found`, as is an id with no folder.
 pub(crate) fn folder(ctx: &Ctx, id: &str) -> Result<Folder> {
-    folders(ctx)?.remove(id).ok_or_else(|| Error::not_found(format!("no workspace '{id}'")))
+    let missing = || Error::not_found(format!("no workspace '{id}'"));
+    if !manifest::valid_name(id) {
+        return Err(missing());
+    }
+    let prefix = format!("{id}/");
+    let files: Vec<String> =
+        ctx.store.list(id)?.into_iter().filter_map(|p| p.strip_prefix(&prefix).map(str::to_owned)).collect();
+    if files.is_empty() {
+        return Err(missing());
+    }
+    Ok(Folder { files })
 }
 
 pub(crate) fn state_path(id: &str) -> String {
@@ -271,17 +285,27 @@ pub(crate) fn state_path(id: &str) -> String {
 
 // ---------------------------------------------------------------- output
 
+/// `state: "invalid"` and every reason why, one per line.
+fn add_invalid(out: &mut Map<String, Value>, errors: &[String]) {
+    out.insert("state".into(), json!("invalid"));
+    out.insert("error".into(), json!(errors.join("\n")));
+}
+
 fn add_state(out: &mut Map<String, Value>, state: &WorkspaceState) {
-    let name = match state {
+    if let WorkspaceState::Dirty { reason, failed_step, .. } = state {
+        out.insert("dirty_reason".into(), json!(format!("step {failed_step}: {reason}")));
+    }
+    out.insert("state".into(), json!(state_name(state)));
+}
+
+/// The state's name on the wire (docs/protocol.md, "Workspace ops").
+pub(crate) fn state_name(state: &WorkspaceState) -> &'static str {
+    match state {
         WorkspaceState::Ready => "ready",
         WorkspaceState::Launching => "launching",
         WorkspaceState::Active => "active",
-        WorkspaceState::Dirty { reason, failed_step, .. } => {
-            out.insert("dirty_reason".into(), json!(format!("step {failed_step}: {reason}")));
-            "dirty"
-        }
-    };
-    out.insert("state".into(), json!(name));
+        WorkspaceState::Dirty { .. } => "dirty",
+    }
 }
 
 fn describe(out: &mut Map<String, Value>, w: &Workspace) {

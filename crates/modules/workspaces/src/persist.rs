@@ -27,7 +27,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use shimmer_core::{Error, Result};
 
-use crate::state::{FailedStep, WorkspaceState};
+use crate::state::{self, FailedStep, WorkspaceState};
 
 /// The state file's name inside each workspace folder.
 pub const STATE_FILE: &str = "state.toml";
@@ -174,7 +174,8 @@ pub fn recover_after_restart(saved: &Saved, now: DateTime<Utc>) -> Option<Worksp
             (FailedStep { index: 0, count: 0, name: "unknown".into() }, "the daemon stopped during a launch".to_owned())
         }
     };
-    Some(WorkspaceState::Dirty { reason, failed_step, failed_at: now, log: String::new() })
+    // Through the state machine, so this can never drift from an ordinary failed step.
+    state::step_failed(&WorkspaceState::Launching, reason, failed_step, now, "").ok()
 }
 
 // ---------------------------------------------------------------- the file

@@ -329,7 +329,8 @@ pub fn list(data: &Value) -> String {
     let rows: Vec<Vec<String>> = items
         .iter()
         .map(|w| {
-            let note = w.get("dirty_reason").or(w.get("error")).map(first_line).unwrap_or_default();
+            // The error first: for an invalid workspace, that is what needs fixing.
+            let note = w.get("error").or(w.get("dirty_reason")).map(first_line).unwrap_or_default();
             vec![cell(&w["id"]), cell(&w["state"]), cell(&w["label"]), note]
         })
         .collect();

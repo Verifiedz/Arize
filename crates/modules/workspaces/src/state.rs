@@ -107,6 +107,21 @@ pub fn step_failed(
     }
 }
 
+/// `launching -> <the state before>`: the launch was claimed but no step ran (cancelled before
+/// the first step, or the first step couldn't be started). Nothing changed on the machine, so the
+/// workspace goes back to exactly where it was, and the module records it
+/// (`workspaces.session.abandoned`), so a forced relaunch that never ran still leaves a trail
+/// (§10.3).
+pub fn launch_abandoned(state: &WorkspaceState, before: &WorkspaceState) -> Result<WorkspaceState> {
+    match (state, before) {
+        (WorkspaceState::Launching, WorkspaceState::Launching) => {
+            Err(Error::internal("launch_abandoned: the state before a launch can't be launching"))
+        }
+        (WorkspaceState::Launching, before) => Ok(before.clone()),
+        (other, _) => Err(Error::internal(format!("launch_abandoned called in state {other:?}"))),
+    }
+}
+
 /// Check before running `cleanup.sh`: only a dirty workspace has anything to clean up.
 pub fn start_cleanup(state: &WorkspaceState) -> Result<()> {
     match state {
@@ -218,6 +233,19 @@ mod tests {
         assert_eq!(d.unwrap(), dirty());
         for s in [WorkspaceState::Ready, WorkspaceState::Active, dirty()] {
             let e = step_failed(&s, "r", setup_step(), at(), "l").unwrap_err();
+            assert_eq!(e.code, ErrorCode::Internal);
+        }
+    }
+
+    #[test]
+    fn an_abandoned_launch_goes_back_to_where_it_was() {
+        for before in [WorkspaceState::Ready, WorkspaceState::Active, dirty()] {
+            assert_eq!(launch_abandoned(&WorkspaceState::Launching, &before).unwrap(), before);
+        }
+        let e = launch_abandoned(&WorkspaceState::Launching, &WorkspaceState::Launching).unwrap_err();
+        assert_eq!(e.code, ErrorCode::Internal);
+        for not_launching in [WorkspaceState::Ready, WorkspaceState::Active, dirty()] {
+            let e = launch_abandoned(&not_launching, &WorkspaceState::Ready).unwrap_err();
             assert_eq!(e.code, ErrorCode::Internal);
         }
     }

@@ -85,10 +85,20 @@ impl Workspace {
                 return Err(self.error(&format!("step {} (\"{}\"): missing {path}", i + 1, step.name)));
             }
         }
-        if self.cleanup_timeout.is_some() && !have.contains(format!("cleanup.{}", ext.as_str()).as_str()) {
-            return Err(self.error(&format!("missing cleanup.{} for this platform", ext.as_str())));
+        if self.cleanup_timeout.is_some() {
+            self.check_cleanup_script(files, ext)?;
         }
         Ok(())
+    }
+
+    /// The cleanup script for this platform exists. Used by `check_scripts` and by the
+    /// `cleanup` op, so the rule lives in one place.
+    pub fn check_cleanup_script(&self, files: &[String], ext: ScriptExt) -> Result<()> {
+        let script = format!("cleanup.{}", ext.as_str());
+        match files.contains(&script) {
+            true => Ok(()),
+            false => Err(self.error(&format!("missing {script} for this platform"))),
+        }
     }
 
     fn error(&self, msg: &str) -> Error {
@@ -219,7 +229,7 @@ struct RawCleanup {
 
 /// `[a-z0-9][a-z0-9_-]*`, at most 64 characters: workspace ids and step names. The charset is
 /// the one record ids use (ADR 0008); ADR 0010 §2a requires it before a name is used in a path.
-fn valid_name(s: &str) -> bool {
+pub(crate) fn valid_name(s: &str) -> bool {
     let mut chars = s.chars();
     s.len() <= MAX_NAME_LEN
         && chars.next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())

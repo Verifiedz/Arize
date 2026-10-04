@@ -358,8 +358,10 @@ emails.
 | `workspaces.reset` | inline | `{"id"}` | `{"id","state":"ready"}`. Clears `dirty` without running cleanup. Last resort; also clears an unreadable `state.toml`. |
 
 `state` is one of `ready`, `launching`, `active`, `dirty`, or `invalid` when the workspace's
-`workspace.toml` or `state.toml` can't be read; `error` then says why (ADR 0012 §6). One
-invalid workspace never hides the others in `list`. **`active` means the launch succeeded
+`workspace.toml` or `state.toml` can't be read; `error` then says why, one problem per line
+when both files are broken (ADR 0012 §6). An invalid workspace carries no `dirty_reason`,
+`dirty`, `log` or `running_step`, so a stale reason from before it broke can't hide the real
+error. One invalid workspace never hides the others in `list`. **`active` means the launch succeeded
 and nothing more** — there is no liveness check, so a client must not present it as
 "currently running". `last_session` is `null` until the first launch, then
 `{"id","started_at","forced","outcome"}` with `outcome` one of `launched`, `dirty`, `cancelled`.
@@ -370,13 +372,16 @@ returns a task handle; the refusal or failure comes as the task's failure
 That is the same error whether the workspace was already dirty or a step has just failed.
 Every other refusal (`invalid_params` for a bad `workspace.toml` or a missing script,
 `conflict` while already launching, `not_found`) also arrives on the task. Nothing has run
-when the task fails that way.
+when the task fails that way, and the same holds for a launch cancelled before its first step
+(`module_error`, "cancelled before any step ran").
 
 **Steps run one at a time** and the first failure stops the launch (ADR 0012 §5): a
 supervised step fails on a non-zero exit, a timeout or a signal; a detached step succeeds
 once started. The workspace is then `dirty`. If the very first step can't be started at all
-(e.g. no launch backend), nothing ran, so the workspace is left as it was and the task fails
-with that error (`unavailable`). Cancelling a launch after a step has run leaves it `dirty`.
+(e.g. no launch backend), or the launch is cancelled before its first step, nothing ran, so
+the workspace goes back to the state it had and `workspaces.session.abandoned` records why; the
+task fails with that error (`unavailable`, or `module_error` when cancelled). Cancelling a launch
+after a step has run leaves it `dirty`.
 
 ## Records ops
 
@@ -429,6 +434,7 @@ tolerate unknown topics.
 | `workspaces.session.dirty` | A launch step failed, a launch was cancelled part-way, or the daemon restarted mid-launch. Payload `{workspace, reason, failed_step, failed_at, log}` (+ `session_id`, `forced`, `has_cleanup_script` when a launch was running). |
 | `workspaces.session.forced` | Force relaunch of a dirty workspace, before any step runs. Payload `{workspace, prior}`, `prior` being the dirty state it overrides. |
 | `workspaces.session.cleaned` | Cleanup script succeeded; state back to `ready`. Payload `{workspace, log}`. |
+| `workspaces.session.abandoned` | A launch (forced or not) was claimed but no step ran: cancelled first, or step 1 couldn't start. The workspace is back to the state it had. Payload `{workspace, reason, forced, back_to}`. |
 | `workspaces.workspace.reset` | `workspaces.reset` cleared `dirty` without cleanup. Payload `{workspace, prior}`. |
 | `records.item.created` / `.updated` / `.completed` / `.removed` | Record mutations. |
 | `records.collection.created` | The built-in collection was seeded on first start. |
