@@ -45,6 +45,7 @@ mod tests {
 
     #[test]
     fn every_built_in_names_every_command_exactly_once() {
+        // Including the queue and scheduler ones, which a user's pack may leave out (ADR 0015 §5).
         for pack in all() {
             let mut ops: Vec<&str> = pack.aliases.values().map(|t| t.op).collect();
             ops.sort();

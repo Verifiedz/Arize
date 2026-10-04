@@ -77,7 +77,7 @@ file, outside `$SHIMMER_HOME`:
 # ~/.config/shimmer/cli.toml (written by `shimmer packs use`, `link` and `unlink`)
 pack = "anime-tropes"                  # the active pack; absent = none
 link_dir = "/home/me/.local/bin"       # optional; where bare commands go (§10)
-linked = ["ohayo", "hiatus", "ikuzo"]  # the links Shimmer made; the only ones it ever removes
+linked = ["ohayo", "owari", "ikuzo"]   # the links Shimmer made; the only ones it ever removes
 ```
 
 - **`shimmer packs use <name>`** checks the pack (§7), refuses with every problem listed if it
@@ -131,15 +131,15 @@ in the binary.
 | Command | `anime-tropes` | `ship-it` | `starship` | `short` |
 |---|---|---|---|---|
 | ping | `ohayo` | `on-call` | `comms` | `up` |
-| shutdown | `hiatus` | `ooo` | `cryo` | `down` |
-| manifest | `power-scaling` | `readme` | `blueprints` | `ops` |
-| records collections | `arcs` | `boards` | `fleets` | `rcol` |
-| records add | `foreshadow` | `ticket` | `waypoint` | `radd` |
-| records list | `episodes` | `triage` | `logbook` | `rlist` |
-| records get | `flashback` | `blame` | `scan` | `rget` |
-| records update | `awakening` | `amend` | `retrofit` | `rset` |
-| records complete | `climax` | `lgtm` | `landed` | `rdone` |
-| records remove | `axed` | `wontfix` | `airlock` | `rrm` |
+| shutdown | `owari` | `ooo` | `cryo` | `down` |
+| manifest | `nakama` | `readme` | `blueprints` | `ops` |
+| records collections | `iroiro` | `boards` | `fleets` | `rcol` |
+| records add | `kohai` | `ticket` | `waypoint` | `radd` |
+| records list | `mite` | `triage` | `logbook` | `rlist` |
+| records get | `naruhodo` | `blame` | `scan` | `rget` |
+| records update | `senpai` | `amend` | `retrofit` | `rset` |
+| records complete | `yatta` | `lgtm` | `landed` | `rdone` |
+| records remove | `sayonara` | `wontfix` | `airlock` | `rrm` |
 | workspaces list | `minna` | `envs` | `sectors` | `wlist` |
 | workspaces status | `nani` | `standup` | `diagnostics` | `wst` |
 | workspaces activate | `ikuzo` | `deploy` | `engage` | `wgo` |

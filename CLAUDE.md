@@ -830,7 +830,7 @@ Commands have a **canonical name** and, when a command pack is active, an **alia
 work.
 
 - Canonical names are used everywhere internal: IPC ops, `commands()`, logs, docs, tests,
-  error messages. Boring on purpose — `records.list`, not `episodes`.
+  error messages. Boring on purpose — `records.list`, not `mite`.
 - Aliases are a **client presentation concern only**, supplied by a **command pack**.
   Nothing in the daemon, the protocol, or any module knows they exist.
 
@@ -856,7 +856,7 @@ label = "Anime Tropes"
 [alias]
 "ikuzo"  = "workspaces.activate"
 "nani"   = "workspaces.status"
-"climax" = "records.complete"
+"yatta"  = "records.complete"
 
 [anim]
 "workspaces.activate" = "anim/ikuzo.txt"
@@ -893,7 +893,7 @@ Rules:
 
 | Built-in pack | Sample aliases |
 |---|---|
-| `anime-tropes` | `ohayo` (ping), `ikuzo` (workspaces activate), `climax` (records complete) |
+| `anime-tropes` | `ohayo` (ping), `ikuzo` (workspaces activate), `yatta` (records complete) |
 | `ship-it` | `on-call` (ping), `deploy` (workspaces activate), `lgtm` (records complete) |
 | `starship` | `comms` (ping), `engage` (workspaces activate), `landed` (records complete) |
 | `short` | `up` (ping), `wgo` (workspaces activate), `rdone` (records complete) |
