@@ -10,7 +10,7 @@ use serde_json::{json, Map, Value};
 use shimmer_core::{Error, Result};
 
 use crate::client::Client;
-use crate::render;
+use crate::render::{self, cell, table};
 
 pub const USAGE: &str = "usage: shimmer records <command>
 
@@ -378,49 +378,6 @@ fn columns(item: &Value, schema: &Value) -> Vec<String> {
     keys
 }
 
-const MAX_CELL: usize = 40;
-
-/// One value as table text: strings bare, `null` as `-`, long values cut with `…`.
-fn cell(v: &Value) -> String {
-    let s = match v {
-        Value::Null => "-".to_owned(),
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
-    };
-    if s.chars().count() > MAX_CELL {
-        s.chars().take(MAX_CELL - 1).chain(['…']).collect()
-    } else {
-        s
-    }
-}
-
-fn table(header: &[String], rows: &[Vec<String>]) -> String {
-    let mut widths: Vec<usize> = header.iter().map(|h| h.chars().count()).collect();
-    for row in rows {
-        for (w, c) in widths.iter_mut().zip(row) {
-            *w = (*w).max(c.chars().count());
-        }
-    }
-    let line = |cells: &[String]| {
-        let mut s = String::new();
-        for (i, (c, w)) in cells.iter().zip(&widths).enumerate() {
-            if i + 1 == cells.len() {
-                s.push_str(c);
-            } else {
-                let pad = w - c.chars().count();
-                let _ = write!(s, "{c}{}  ", " ".repeat(pad));
-            }
-        }
-        s
-    };
-    let mut out = line(header);
-    for row in rows {
-        out.push('\n');
-        out.push_str(&line(row));
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -613,7 +570,7 @@ lru-cache  todo    LRU Cache  medium      -    -            2         true
     fn long_values_are_cut() {
         let long = "x".repeat(60);
         let c = cell(&json!(long));
-        assert_eq!(c.chars().count(), MAX_CELL);
+        assert_eq!(c.chars().count(), crate::render::MAX_CELL);
         assert!(c.ends_with('…'));
     }
 }
