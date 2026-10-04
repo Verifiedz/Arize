@@ -170,6 +170,19 @@ fn pack_problems_are_one_warning_and_commands_still_run() {
     assert_eq!(o.status.code(), Some(1));
     assert!(stderr(&o).contains("alias 'ping' is a shimmer command word"), "{}", stderr(&o));
     assert!(ok(shimmer(&home, &["packs", "list"])).contains("No pack is active"));
+
+    // Made active by hand, it warns on every command except `shimmer packs …`, which says what's
+    // wrong itself rather than pointing at itself.
+    let config = home.dir.path().join("config/shimmer");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("cli.toml"), "pack = \"broken\"\n").unwrap();
+    assert!(stderr(&shimmer(&home, &["ping"])).contains("pack 'broken' not loaded"));
+    for args in [&["packs", "list"][..], &["--json", "packs", "show", "short"]] {
+        let o = shimmer(&home, args);
+        assert!(o.status.success() && stderr(&o).is_empty(), "{args:?}: {}", stderr(&o));
+    }
+    let o = shimmer(&home, &["packs", "check", "broken"]);
+    assert_eq!(stderr(&o).lines().count(), 2, "only the check's own answer: {}", stderr(&o));
 }
 
 #[test]

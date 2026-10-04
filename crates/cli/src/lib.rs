@@ -56,8 +56,12 @@ async fn run_line(alias: Option<String>, args: Vec<String>) -> ExitCode {
         }
     };
     let active = packs::active::load(front.pack.as_deref());
-    for warning in &active.warnings {
-        eprintln!("shimmer: {warning}");
+    // `shimmer packs …` reports pack problems itself, and needs no aliases: no warning there.
+    let packs_command = packs::active::command_word(&front.args).is_some_and(|i| front.args[i] == "packs");
+    if !packs_command {
+        for warning in &active.warnings {
+            eprintln!("shimmer: {warning}");
+        }
     }
     let help = match (&active.pack, front.canonical) {
         (Some(pack), false) => format!("{USAGE}\n\n{}", packs::active::help_section(pack)),

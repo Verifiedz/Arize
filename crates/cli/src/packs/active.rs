@@ -78,7 +78,7 @@ pub fn rewrite(mut args: Vec<String>, pack: Option<&Pack>) -> Vec<String> {
 
 /// Where the command word is, after the global flags. `None` if there isn't one, or if an
 /// unknown flag comes first (the normal parser reports that).
-fn command_word(args: &[String]) -> Option<usize> {
+pub fn command_word(args: &[String]) -> Option<usize> {
     let mut i = 0;
     while let Some(arg) = args.get(i) {
         let (flag, inline) = split_flag(arg);
