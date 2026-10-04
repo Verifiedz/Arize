@@ -255,16 +255,17 @@ fn sync_links(env: &Env, saved: &Settings, want: &[String]) -> Result<Report> {
     Ok(Linker { dir: &dir, exe, path_dirs: &env.path_dirs }.sync(want, &saved.linked))
 }
 
-/// Save the new `linked` list. If that fails, undo the links just added, so `cli.toml` never
-/// forgets a link it made (it could never be removed later) and never claims one it didn't.
+/// Save the new `linked` list. If that fails, put the link folder back as it was (remove the
+/// links just added, re-create the ones just removed), so a switch that can't be recorded changes
+/// nothing: `cli.toml` never forgets a link it made, never claims one it didn't, and the previous
+/// pack's commands still work (#70 review).
 fn save(path: &Path, saved: &mut Settings, env: &Env, report: &Report) -> Result<()> {
-    saved.linked = report.linked.clone();
+    let before = std::mem::replace(&mut saved.linked, report.linked.clone());
     settings::save(path, saved).map_err(|e| {
-        if let Ok(dir) = link_dir(saved, env) {
-            for name in &report.added {
-                let _ = std::fs::remove_file(dir.join(name));
-            }
+        if let (Ok(dir), Ok(exe)) = (link_dir(saved, env), env.exe.as_deref()) {
+            Linker { dir: &dir, exe, path_dirs: &env.path_dirs }.undo(report);
         }
+        saved.linked = before;
         Error::unavailable(format!("couldn't save {}: {e}", path.display()))
     })
 }
@@ -472,6 +473,23 @@ mod tests {
         let e = run(&PacksCmd::Use { name: "mine".into(), link: true }, &t.env).unwrap_err();
         assert!(e.message.contains("has 1 problem") && e.message.contains("is a shimmer command word"), "{e}");
         assert_eq!((saved(&t).pack.as_deref(), links(&t).len()), (Some("short"), 16), "nothing changed");
+    }
+
+    #[test]
+    fn a_switch_that_cant_be_saved_changes_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = t();
+        run_ok(&t, PacksCmd::Use { name: "short".into(), link: true });
+        let before = links(&t);
+        // cli.toml can still be read, but its folder can't be written: the save fails.
+        let config = t.env.cli_toml.as_ref().unwrap().parent().unwrap().to_path_buf();
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let e = run(&PacksCmd::Use { name: "starship".into(), link: true }, &t.env).unwrap_err();
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(e.message.starts_with("couldn't save"), "{e}");
+        assert_eq!(links(&t), before, "the old pack's links are back, the new pack's are gone");
+        assert_eq!(saved(&t).pack.as_deref(), Some("short"));
+        assert_eq!(saved(&t).linked.len(), 16);
     }
 
     #[test]

@@ -94,6 +94,19 @@ impl Linker<'_> {
         r
     }
 
+    /// Put the folder back the way it was before [`Linker::sync`] made `r`: remove the links it
+    /// added and re-create the ones it removed. For when the switch can't be recorded in
+    /// `cli.toml`, so that a failed switch changes nothing (#70 review). Best effort: a step that
+    /// fails here leaves that name as `sync` left it, which the next `packs use` or `link` tidies.
+    pub fn undo(&self, r: &Report) {
+        for name in &r.added {
+            let _ = remove_own_link(&self.dir.join(name));
+        }
+        for name in &r.removed {
+            let _ = make_link(self.exe, &self.dir.join(name));
+        }
+    }
+
     /// A program called `name` in another `PATH` folder, which a link would hide or be hidden by.
     fn elsewhere_on_path(&self, name: &str) -> Option<PathBuf> {
         self.path_dirs
@@ -224,6 +237,21 @@ mod tests {
         let r = sync(&s, &["up", "down"], &["up", "down"]);
         assert_eq!((r.added, r.linked), (names(&["up"]), names(&["down", "up"])));
         assert_eq!(link_target(&s, "up"), s.exe);
+    }
+
+    #[test]
+    fn undo_puts_the_folder_back_exactly() {
+        let s = setup();
+        sync(&s, &["a", "b"], &[]);
+        let r = sync(&s, &["b", "c"], &["a", "b"]);
+        assert_eq!((r.removed.clone(), r.added.clone()), (names(&["a"]), names(&["c"])));
+        let path_dirs = [s.dir.clone(), s.other.clone()];
+        Linker { dir: &s.dir, exe: &s.exe, path_dirs: &path_dirs }.undo(&r);
+        let mut now: Vec<String> =
+            std::fs::read_dir(&s.dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        now.sort();
+        assert_eq!(now, names(&["a", "b"]), "a is back, c is gone, b untouched");
+        assert_eq!(link_target(&s, "a"), s.exe);
     }
 
     #[test]
