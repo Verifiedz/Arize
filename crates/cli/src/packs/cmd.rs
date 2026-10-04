@@ -430,9 +430,9 @@ mod tests {
         assert_eq!(links(&t).len(), 16);
         assert!(links(&t).contains(&"wgo".to_string()));
 
-        let out = run_ok(&t, PacksCmd::Use { name: "gen-z".into(), link: true });
+        let out = run_ok(&t, PacksCmd::Use { name: "ship-it".into(), link: true });
         assert!(out.contains("linked 16") && out.contains("removed 16"), "{out}");
-        assert!(links(&t).contains(&"lock-in".to_string()) && !links(&t).contains(&"wgo".to_string()));
+        assert!(links(&t).contains(&"deploy".to_string()) && !links(&t).contains(&"wgo".to_string()));
         assert_eq!(saved(&t).linked.len(), 16);
 
         let out = run_ok(&t, PacksCmd::Use { name: "none".into(), link: true });
@@ -517,7 +517,7 @@ mod tests {
         assert!(out.contains("ikuzo          shimmer workspaces activate"), "{out}");
 
         assert_eq!(run_ok(&t, PacksCmd::Check { target: "mine".into() }), "✓ mine: 1 alias, no problems");
-        assert!(run_ok(&t, PacksCmd::Check { target: "gen-z".into() }).contains("built in"));
+        assert!(run_ok(&t, PacksCmd::Check { target: "starship".into() }).contains("built in"));
         let e = run(&PacksCmd::Check { target: "broken".into() }, &t.env).unwrap_err();
         assert!(e.message.contains("has 1 problem") && e.message.contains("pack.toml: doesn't exist"), "{e}");
         let e = run(&PacksCmd::Check { target: "./nowhere".into() }, &t.env).unwrap_err();

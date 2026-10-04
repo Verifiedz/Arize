@@ -35,24 +35,24 @@ belongs to this machine, so copying your Shimmer folder elsewhere doesn't bring 
 
 ## The built-in packs
 
-| Command | `anime-tropes` | `ship-it` | `gen-z` | `starship` | `short` |
-|---|---|---|---|---|---|
-| ping | `ohayo` | `on-call` | `yo` | `comms` | `up` |
-| shutdown | `hiatus` | `ooo` | `ghost` | `cryo` | `down` |
-| manifest | `power-scaling` | `readme` | `lore` | `blueprints` | `ops` |
-| records collections | `arcs` | `boards` | `vibes` | `fleets` | `rcol` |
-| records add | `foreshadow` | `ticket` | `cop` | `waypoint` | `radd` |
-| records list | `episodes` | `triage` | `receipts` | `logbook` | `rlist` |
-| records get | `flashback` | `blame` | `the-scoop` | `scan` | `rget` |
-| records update | `awakening` | `amend` | `switch-up` | `retrofit` | `rset` |
-| records complete | `climax` | `lgtm` | `dub` | `landed` | `rdone` |
-| records remove | `axed` | `wontfix` | `drop` | `airlock` | `rrm` |
-| workspaces list | `minna` | `envs` | `go-tos` | `sectors` | `wlist` |
-| workspaces status | `nani` | `standup` | `wsg` | `diagnostics` | `wst` |
-| workspaces activate | `ikuzo` | `deploy` | `lock-in` | `engage` | `wgo` |
-| workspaces cleanup | `daijoubu` | `postmortem` | `we-good` | `damage-control` | `wclean` |
-| workspaces force-relaunch | `yatte-yaru` | `force-push` | `yolo` | `override` | `wforce` |
-| workspaces reset | `tadaima` | `rollback` | `idc` | `cold-start` | `wreset` |
+| Command | `anime-tropes` | `ship-it` | `starship` | `short` |
+|---|---|---|---|---|
+| ping | `ohayo` | `on-call` | `comms` | `up` |
+| shutdown | `hiatus` | `ooo` | `cryo` | `down` |
+| manifest | `power-scaling` | `readme` | `blueprints` | `ops` |
+| records collections | `arcs` | `boards` | `fleets` | `rcol` |
+| records add | `foreshadow` | `ticket` | `waypoint` | `radd` |
+| records list | `episodes` | `triage` | `logbook` | `rlist` |
+| records get | `flashback` | `blame` | `scan` | `rget` |
+| records update | `awakening` | `amend` | `retrofit` | `rset` |
+| records complete | `climax` | `lgtm` | `landed` | `rdone` |
+| records remove | `axed` | `wontfix` | `airlock` | `rrm` |
+| workspaces list | `minna` | `envs` | `sectors` | `wlist` |
+| workspaces status | `nani` | `standup` | `diagnostics` | `wst` |
+| workspaces activate | `ikuzo` | `deploy` | `engage` | `wgo` |
+| workspaces cleanup | `daijoubu` | `postmortem` | `damage-control` | `wclean` |
+| workspaces force-relaunch | `yatte-yaru` | `force-push` | `override` | `wforce` |
+| workspaces reset | `tadaima` | `rollback` | `cold-start` | `wreset` |
 
 ## Writing your own
 

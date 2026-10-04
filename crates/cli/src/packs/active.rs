@@ -288,8 +288,8 @@ mod tests {
         assert_eq!(f, Front { args: args(&["--json", "up"]), pack: Some("short".into()), canonical: false });
         let f = take_front_flags(args(&["--pack=none", "--help", "--canonical"])).unwrap();
         assert_eq!(f, Front { args: args(&["--help"]), pack: Some("none".into()), canonical: true });
-        let f = take_front_flags(args(&["--socket", "/s", "--pack", "gen-z", "yo"])).unwrap();
-        assert_eq!((f.args, f.pack.as_deref()), (args(&["--socket", "/s", "yo"]), Some("gen-z")));
+        let f = take_front_flags(args(&["--socket", "/s", "--pack", "starship", "comms"])).unwrap();
+        assert_eq!((f.args, f.pack.as_deref()), (args(&["--socket", "/s", "comms"]), Some("starship")));
         // After the command word they belong to the command.
         let f = take_front_flags(args(&["records", "add", "c", "x", "--pack", "red"])).unwrap();
         assert_eq!((f.args.len(), f.pack), (6, None));
@@ -334,7 +334,7 @@ mod tests {
         let d = dirs();
         std::fs::write(&d.cli_toml, "pack = \"short\"\n").unwrap();
         assert_eq!(active(&d, None), (Some("short".into()), vec![]));
-        assert_eq!(active(&d, Some("gen-z")), (Some("gen-z".into()), vec![]));
+        assert_eq!(active(&d, Some("starship")), (Some("starship".into()), vec![]));
         assert_eq!(active(&d, Some("none")), (None, vec![]));
     }
 

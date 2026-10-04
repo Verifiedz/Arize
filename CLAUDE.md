@@ -870,7 +870,7 @@ Rules:
   `~/.config/shimmer/cli.toml` (§7), never in `config.toml`. `--pack <name>` uses one for a
   single command.
 - **Built-in packs ship embedded in the binary and are unbranded**: `anime-tropes`, `ship-it`,
-  `gen-z`, `starship`, `short`. No built-in pack uses a name from another company's game, show,
+  `starship`, `short`. No built-in pack uses a name from another company's game, show,
   film or brand. Users add their own as folders in `packs/`; a folder replaces a built-in of the
   same id.
 - **Packs are checked at load time.** An alias that is also a canonical command word, points at
@@ -893,7 +893,6 @@ Rules:
 |---|---|
 | `anime-tropes` | `ohayo` (ping), `ikuzo` (workspaces activate), `climax` (records complete) |
 | `ship-it` | `on-call` (ping), `deploy` (workspaces activate), `lgtm` (records complete) |
-| `gen-z` | `yo` (ping), `lock-in` (workspaces activate), `dub` (records complete) |
 | `starship` | `comms` (ping), `engage` (workspaces activate), `landed` (records complete) |
 | `short` | `up` (ping), `wgo` (workspaces activate), `rdone` (records complete) |
 

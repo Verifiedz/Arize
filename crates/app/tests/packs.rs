@@ -61,7 +61,7 @@ fn folder_pack(home: &Home, id: &str, toml: &str) {
 fn no_pack_by_default_and_packs_need_no_daemon() {
     let home = Home::new();
     let list = ok(shimmer(&home, &["packs", "list"]));
-    for id in ["anime-tropes", "ship-it", "gen-z", "starship", "short"] {
+    for id in ["anime-tropes", "ship-it", "starship", "short"] {
         assert!(list.contains(id), "{list}");
     }
     assert!(list.contains("No pack is active"), "{list}");
@@ -105,9 +105,9 @@ fn switching_swaps_the_links_and_none_removes_them() {
     ok(shimmer(&home, &["packs", "use", "anime-tropes"]));
     assert!(links(&home).contains(&"ikuzo".to_string()));
 
-    let out = ok(shimmer(&home, &["packs", "use", "gen-z"]));
+    let out = ok(shimmer(&home, &["packs", "use", "ship-it"]));
     assert!(out.contains("linked 16") && out.contains("removed 16"), "{out}");
-    assert!(links(&home).contains(&"lock-in".to_string()) && !links(&home).contains(&"ikuzo".to_string()));
+    assert!(links(&home).contains(&"deploy".to_string()) && !links(&home).contains(&"ikuzo".to_string()));
 
     ok(shimmer(&home, &["packs", "use", "starship", "--no-link"]));
     assert_eq!(links(&home), Vec::<String>::new());
@@ -136,16 +136,16 @@ fn nothing_of_the_users_is_ever_overwritten_or_removed() {
 #[test]
 fn a_link_from_another_pack_explains_itself_and_never_starts_the_daemon() {
     let home = Home::new();
-    ok(shimmer(&home, &["packs", "use", "gen-z"]));
+    ok(shimmer(&home, &["packs", "use", "starship"]));
     // A leftover link from a pack that's no longer on (made by hand here).
     std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_shimmer"), bin(&home).join("wgo")).unwrap();
     let o = bare(&home, "wgo", &["deep-work"]);
     assert_eq!(o.status.code(), Some(2));
-    assert_eq!(stderr(&o).trim(), "wgo: isn't an alias in your active pack (gen-z). Run 'shimmer packs link'.");
+    assert_eq!(stderr(&o).trim(), "wgo: isn't an alias in your active pack (starship). Run 'shimmer packs link'.");
 
-    // An alias's arguments are its own, even "daemon": lock-in daemon activates a workspace called
+    // An alias's arguments are its own, even "daemon": engage daemon activates a workspace called
     // daemon, it doesn't start the daemon in the foreground.
-    let o = bare(&home, "lock-in", &["daemon", "--wait"]);
+    let o = bare(&home, "engage", &["daemon", "--wait"]);
     assert!(!o.status.success());
     assert!(stderr(&o).contains("no workspace 'daemon'"), "{}", stderr(&o));
 }

@@ -4,7 +4,7 @@
 //! and the daemon never sees one (§12 rule 16).
 //!
 //! - [`pack`]: a pack's `pack.toml`, and every check a pack must pass (ADR 0013 §1, §6, §7).
-//! - [`builtin`]: the five built-in packs (§5).
+//! - [`builtin`]: the four built-in packs (§5).
 //! - [`active`]: which pack is active, and the alias rewrite (§3, §4, §8, §9).
 //! - [`settings`]: the CLI's own `cli.toml`, which records the active pack (§3).
 //! - [`link`]: the links that let an alias run on its own, `ikuzo deep-work` (§10).

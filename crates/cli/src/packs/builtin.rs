@@ -8,7 +8,6 @@ use super::pack::{parse, Pack};
 pub const BUILTIN: &[(&str, &str)] = &[
     ("anime-tropes", include_str!("../../packs/anime-tropes.toml")),
     ("ship-it", include_str!("../../packs/ship-it.toml")),
-    ("gen-z", include_str!("../../packs/gen-z.toml")),
     ("starship", include_str!("../../packs/starship.toml")),
     ("short", include_str!("../../packs/short.toml")),
 ];

@@ -123,29 +123,29 @@ built-in of that name. A folder with a built-in's name **replaces** that built-i
 
 ### 5. The built-in packs
 
-Five, all **unbranded**: no names from games, shows, films, teams or companies. A built-in pack
+Four, all **unbranded**: no names from games, shows, films, teams or companies. A built-in pack
 ships in the binary of a public project, so it must never use someone else's trademark. Packs
 for a franchise are welcome as user packs or in a separate community collection; they don't go
 in the binary.
 
-| Command | `anime-tropes` | `ship-it` | `gen-z` | `starship` | `short` |
-|---|---|---|---|---|---|
-| ping | `ohayo` | `on-call` | `yo` | `comms` | `up` |
-| shutdown | `hiatus` | `ooo` | `ghost` | `cryo` | `down` |
-| manifest | `power-scaling` | `readme` | `lore` | `blueprints` | `ops` |
-| records collections | `arcs` | `boards` | `vibes` | `fleets` | `rcol` |
-| records add | `foreshadow` | `ticket` | `cop` | `waypoint` | `radd` |
-| records list | `episodes` | `triage` | `receipts` | `logbook` | `rlist` |
-| records get | `flashback` | `blame` | `the-scoop` | `scan` | `rget` |
-| records update | `awakening` | `amend` | `switch-up` | `retrofit` | `rset` |
-| records complete | `climax` | `lgtm` | `dub` | `landed` | `rdone` |
-| records remove | `axed` | `wontfix` | `drop` | `airlock` | `rrm` |
-| workspaces list | `minna` | `envs` | `go-tos` | `sectors` | `wlist` |
-| workspaces status | `nani` | `standup` | `wsg` | `diagnostics` | `wst` |
-| workspaces activate | `ikuzo` | `deploy` | `lock-in` | `engage` | `wgo` |
-| workspaces cleanup | `daijoubu` | `postmortem` | `we-good` | `damage-control` | `wclean` |
-| workspaces force-relaunch | `yatte-yaru` | `force-push` | `yolo` | `override` | `wforce` |
-| workspaces reset | `tadaima` | `rollback` | `idc` | `cold-start` | `wreset` |
+| Command | `anime-tropes` | `ship-it` | `starship` | `short` |
+|---|---|---|---|---|
+| ping | `ohayo` | `on-call` | `comms` | `up` |
+| shutdown | `hiatus` | `ooo` | `cryo` | `down` |
+| manifest | `power-scaling` | `readme` | `blueprints` | `ops` |
+| records collections | `arcs` | `boards` | `fleets` | `rcol` |
+| records add | `foreshadow` | `ticket` | `waypoint` | `radd` |
+| records list | `episodes` | `triage` | `logbook` | `rlist` |
+| records get | `flashback` | `blame` | `scan` | `rget` |
+| records update | `awakening` | `amend` | `retrofit` | `rset` |
+| records complete | `climax` | `lgtm` | `landed` | `rdone` |
+| records remove | `axed` | `wontfix` | `airlock` | `rrm` |
+| workspaces list | `minna` | `envs` | `sectors` | `wlist` |
+| workspaces status | `nani` | `standup` | `diagnostics` | `wst` |
+| workspaces activate | `ikuzo` | `deploy` | `engage` | `wgo` |
+| workspaces cleanup | `daijoubu` | `postmortem` | `damage-control` | `wclean` |
+| workspaces force-relaunch | `yatte-yaru` | `force-push` | `override` | `wforce` |
+| workspaces reset | `tadaima` | `rollback` | `cold-start` | `wreset` |
 
 Each built-in passes every check in §7, and none of their aliases is a common developer tool
 (§10). A test enforces both, so a later built-in can't slip through.
@@ -260,7 +260,7 @@ and in scripts, with no shell setup.
 - **Switching packs** with `packs use` swaps the links in one step: the old pack's go, the new
   pack's arrive.
 - **A stale link** (an alias from a pack that's no longer active) exits 2 with:
-  `'ikuzo' isn't an alias in your active pack (gen-z). Run 'shimmer packs link'.`
+  `'ikuzo' isn't an alias in your active pack (starship). Run 'shimmer packs link'.`
 - **`crates/app` change (Dev A).** `main` currently picks `daemon` / `mockd` / CLI from the first
   argument. It will first ask the CLI whether the program's own name (`argv[0]`, minus any
   extension) is an alias in any known pack. If it is, everything goes to the CLI as that alias;
@@ -293,7 +293,7 @@ animations.
 
 - §15: commands have a canonical name and, when a pack is active, an alias.
 - §15.1: the example pack and the rules are rewritten to match this ADR: no default pack, the
-  five unbranded built-ins, the active pack in `cli.toml` set by `shimmer packs use`, which also
+  four unbranded built-ins, the active pack in `cli.toml` set by `shimmer packs use`, which also
   links bare commands, and the checks and fallback. The `arise` / `bankai` table is
   replaced by the built-in packs.
 - §7: one line saying client settings live outside `$SHIMMER_HOME`, in `cli.toml`.
