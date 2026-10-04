@@ -1,0 +1,27 @@
+# Built-in command pack (ADR 0013 §5).
+# Anime and manga tropes: the records side is a story (arcs, episodes,
+# flashbacks), the workspace side is the lines characters shout.
+# Built into the shimmer binary; unbranded by rule. Each alias runs shimmer plus the whole
+# command, e.g. the activate alias with an id runs 'shimmer workspaces activate <id>'.
+
+[pack]
+id = "anime-tropes"
+label = "Anime Tropes"
+
+[alias]
+"ohayo"         = "core.ping"
+"hiatus"        = "core.shutdown"
+"power-scaling" = "core.manifest"
+"arcs"          = "records.collections"
+"foreshadow"    = "records.add"
+"episodes"      = "records.list"
+"flashback"     = "records.get"
+"awakening"     = "records.update"
+"climax"        = "records.complete"
+"axed"          = "records.remove"
+"minna"         = "workspaces.list"
+"nani"          = "workspaces.status"
+"ikuzo"         = "workspaces.activate"
+"daijoubu"      = "workspaces.cleanup"
+"yatte-yaru"    = "workspaces.force_relaunch"
+"tadaima"       = "workspaces.reset"

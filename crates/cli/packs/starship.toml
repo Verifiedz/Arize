@@ -1,0 +1,26 @@
+# Built-in command pack (ADR 0013 §5).
+# Generic sci-fi starship, from no particular franchise.
+# Built into the shimmer binary; unbranded by rule. Each alias runs shimmer plus the whole
+# command, e.g. the activate alias with an id runs 'shimmer workspaces activate <id>'.
+
+[pack]
+id = "starship"
+label = "Starship"
+
+[alias]
+"comms"          = "core.ping"
+"cryo"           = "core.shutdown"
+"blueprints"     = "core.manifest"
+"fleets"         = "records.collections"
+"waypoint"       = "records.add"
+"logbook"        = "records.list"
+"scan"           = "records.get"
+"retrofit"       = "records.update"
+"landed"         = "records.complete"
+"airlock"        = "records.remove"
+"sectors"        = "workspaces.list"
+"diagnostics"    = "workspaces.status"
+"engage"         = "workspaces.activate"
+"damage-control" = "workspaces.cleanup"
+"override"       = "workspaces.force_relaunch"
+"cold-start"     = "workspaces.reset"

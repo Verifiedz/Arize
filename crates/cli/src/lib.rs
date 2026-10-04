@@ -27,6 +27,25 @@ pub use workspaces::WorkspacesCmd;
 /// Run `shimmer <args>`: `args` are what follows the binary name. Exit codes: 0 success,
 /// 1 the daemon (or reaching it) failed, 2 bad usage.
 pub async fn run(args: Vec<String>) -> ExitCode {
+    // Command packs (ADR 0013): find the active pack, then turn an alias into the command it
+    // stands for before anything else sees the line. A pack problem is only ever a warning.
+    let front = match packs::active::take_front_flags(args) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("shimmer: {e}\n\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    let active = packs::active::load(front.pack.as_deref());
+    for warning in &active.warnings {
+        eprintln!("shimmer: {warning}");
+    }
+    let help = match (&active.pack, front.canonical) {
+        (Some(pack), false) => format!("{USAGE}\n\n{}", packs::active::help_section(pack)),
+        _ => USAGE.to_string(),
+    };
+    let args = packs::active::rewrite(front.args, active.pack.as_ref());
+
     let usage = usage_for(&args);
     let args = match Args::parse(args) {
         Ok(a) => a,
@@ -35,7 +54,7 @@ pub async fn run(args: Vec<String>) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match execute(&args).await {
+    match execute(&args, help).await {
         Ok(Some(text)) => {
             println!("{text}");
             ExitCode::SUCCESS
@@ -68,9 +87,10 @@ fn usage_for(args: &[String]) -> &'static str {
     USAGE
 }
 
-async fn execute(args: &Args) -> Result<Option<String>> {
+/// `help` is the top-level help: [`USAGE`], plus the active pack's aliases unless `--canonical`.
+async fn execute(args: &Args, help: String) -> Result<Option<String>> {
     match &args.command {
-        Command::Help => return Ok(Some(USAGE.into())),
+        Command::Help => return Ok(Some(help)),
         Command::Records(RecordsCmd::Help) => return Ok(Some(records::USAGE.into())),
         Command::Workspaces(WorkspacesCmd::Help) => return Ok(Some(workspaces::USAGE.into())),
         _ => {}

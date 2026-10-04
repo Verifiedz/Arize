@@ -1,0 +1,27 @@
+# Built-in command pack (ADR 0013 §5).
+# Fewest keystrokes: plain words for core commands, r... for records, w... for
+# workspaces.
+# Built into the shimmer binary; unbranded by rule. Each alias runs shimmer plus the whole
+# command, e.g. the activate alias with an id runs 'shimmer workspaces activate <id>'.
+
+[pack]
+id = "short"
+label = "Short"
+
+[alias]
+"up"     = "core.ping"
+"down"   = "core.shutdown"
+"ops"    = "core.manifest"
+"rcol"   = "records.collections"
+"radd"   = "records.add"
+"rlist"  = "records.list"
+"rget"   = "records.get"
+"rset"   = "records.update"
+"rdone"  = "records.complete"
+"rrm"    = "records.remove"
+"wlist"  = "workspaces.list"
+"wst"    = "workspaces.status"
+"wgo"    = "workspaces.activate"
+"wclean" = "workspaces.cleanup"
+"wforce" = "workspaces.force_relaunch"
+"wreset" = "workspaces.reset"

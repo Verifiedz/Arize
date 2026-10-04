@@ -1,0 +1,26 @@
+# Built-in command pack (ADR 0013 §5).
+# Gen Z slang.
+# Built into the shimmer binary; unbranded by rule. Each alias runs shimmer plus the whole
+# command, e.g. the activate alias with an id runs 'shimmer workspaces activate <id>'.
+
+[pack]
+id = "gen-z"
+label = "Gen Z"
+
+[alias]
+"yo"        = "core.ping"
+"ghost"     = "core.shutdown"
+"lore"      = "core.manifest"
+"vibes"     = "records.collections"
+"cop"       = "records.add"
+"receipts"  = "records.list"
+"the-scoop" = "records.get"
+"switch-up" = "records.update"
+"dub"       = "records.complete"
+"drop"      = "records.remove"
+"go-tos"    = "workspaces.list"
+"wsg"       = "workspaces.status"
+"lock-in"   = "workspaces.activate"
+"we-good"   = "workspaces.cleanup"
+"yolo"      = "workspaces.force_relaunch"
+"idc"       = "workspaces.reset"

@@ -23,7 +23,9 @@ commands:
 options:
   --socket PATH         talk to this socket instead of the default; never auto-starts
   --json                print the daemon's raw JSON instead of formatted output
-  -h, --help            show this help
+  --pack NAME           use this command pack for one command ('none' for plain names);
+                        goes before the command
+  -h, --help            show this help; with --canonical, without the active pack's aliases
 
 The daemon is started automatically when it is not running.";
 
