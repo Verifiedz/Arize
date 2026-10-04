@@ -136,6 +136,24 @@ async fn activate_runs_every_step_in_order_and_goes_active() {
 }
 
 #[tokio::test]
+async fn every_step_of_one_attempt_is_asked_to_share_the_first_steps_session_id() {
+    // ADR 0010 §9 amendment: the backend mints an id only for an attempt's first `LaunchStep`
+    // (`session_id: None`); the module must carry that id forward on every later step of the
+    // same attempt so they all get the same `SHIMMER_SESSION_ID`. `received` is what the module
+    // sent, independent of whatever the (fake) backend happens to hand back.
+    let env = env_with_deep_work();
+    script(&env.launcher, [ok_supervised(), ok_detached(), ok_detached()]);
+    let w = Workspaces::default();
+
+    call(&w, &env, "workspaces.activate").await.unwrap();
+
+    let steps = received(&env.launcher);
+    assert_eq!(steps[0].session_id, None, "the first step mints its own");
+    assert_eq!(steps[1].session_id, Some("01SESSION".into()), "later steps carry it forward");
+    assert_eq!(steps[2].session_id, Some("01SESSION".into()));
+}
+
+#[tokio::test]
 async fn an_active_workspace_can_be_activated_again() {
     let env = env_with_deep_work();
     script(&env.launcher, [ok_supervised(), ok_detached(), ok_detached()]);

@@ -37,7 +37,7 @@ impl Workspaces {
     /// `dirty → ready`; failure leaves it dirty and fails the task with the log.
     pub(crate) async fn cleanup(&self, ctx: &Ctx, id: &str) -> Result<Value> {
         let (workspace, timeout) = {
-            let _g = self.lock();
+            let _g = self.write.lock();
             let folder = folder(ctx, id)?;
             let saved = folder.saved(ctx, id).unwrap_or_else(|| Ok(Saved::ready()))?;
             state::start_cleanup(&saved.state)?;
@@ -54,7 +54,9 @@ impl Workspaces {
         };
 
         ctx.progress(0.0, "cleanup");
-        let step = launch_step(&workspace, Step::Cleanup, SpawnMode::Supervised { timeout });
+        // A cleanup run is its own attempt, with its own session id (ADR 0010 §9: "not reused
+        // across a later cleanup or force_relaunch").
+        let step = launch_step(&workspace, Step::Cleanup, SpawnMode::Supervised { timeout }, None);
         let out = ctx.launcher.run(&step, &ctx.cancel).await?;
         if ctx.cancel.is_cancelled() {
             return Err(Error::new(ErrorCode::ModuleError, format!("{id}: cleanup was cancelled; still dirty")));
@@ -64,7 +66,7 @@ impl Workspaces {
                 .with_detail(json!({"workspace": id, "reason": reason, "log": out.log_path})));
         }
 
-        let _g = self.lock();
+        let _g = self.write.lock();
         // Re-read: a `reset` may have run while the script did.
         let saved = folder(ctx, id)?.saved(ctx, id).unwrap_or_else(|| Ok(Saved::ready()))?;
         let next = state::cleanup_succeeded(&saved.state)?;
@@ -88,7 +90,7 @@ impl Workspaces {
         forced: bool,
         transition: impl FnOnce(&Saved, bool) -> Result<WorkspaceState>,
     ) -> Result<Start> {
-        let _g = self.lock();
+        let _g = self.write.lock();
         let folder = folder(ctx, id)?;
         let prior = folder.saved(ctx, id).unwrap_or_else(|| Ok(Saved::ready()))?;
         let has_cleanup = folder.has_cleanup_script();
@@ -142,19 +144,20 @@ impl Workspaces {
             ctx.progress(i as f32 / count as f32, &format!("step {current}"));
             self.save_running(ctx, id, &prior, &current)?;
 
-            let out = match ctx.launcher.run(&launch_step(&workspace, step, mode), &ctx.cancel).await {
-                Ok(out) => out,
-                Err(e) if i == 0 => {
-                    // The first step couldn't even start (e.g. no launch backend yet): nothing
-                    // ran, so the workspace is not half-configured. Restore it and pass the error on.
-                    self.restore(ctx, id, &prior, &format!("step 1 could not start: {}", e.message), forced)?;
-                    return Err(e);
-                }
-                Err(e) => {
-                    let reason = format!("could not start: {}", e.message);
-                    return Err(fail(reason, "", Outcome::Dirty, &session_id)?);
-                }
-            };
+            let out =
+                match ctx.launcher.run(&launch_step(&workspace, step, mode, session_id.clone()), &ctx.cancel).await {
+                    Ok(out) => out,
+                    Err(e) if i == 0 => {
+                        // The first step couldn't even start (e.g. no launch backend yet): nothing
+                        // ran, so the workspace is not half-configured. Restore it and pass the error on.
+                        self.restore(ctx, id, &prior, &format!("step 1 could not start: {}", e.message), forced)?;
+                        return Err(e);
+                    }
+                    Err(e) => {
+                        let reason = format!("could not start: {}", e.message);
+                        return Err(fail(reason, "", Outcome::Dirty, &session_id)?);
+                    }
+                };
             session_id.get_or_insert_with(|| out.session_id.clone());
 
             if ctx.cancel.is_cancelled() {
@@ -166,7 +169,7 @@ impl Workspaces {
             }
         }
 
-        let _g = self.lock();
+        let _g = self.write.lock();
         // From the state actually on disk, not an assumed `launching`: if anything changed it
         // while the steps ran, this fails loudly instead of overwriting it (as `cleanup` does).
         let active = state::launch_succeeded(&current_state(ctx, id)?)?;
@@ -185,7 +188,7 @@ impl Workspaces {
 
     /// Save which step is about to run, so a daemon that dies now restarts knowing it.
     fn save_running(&self, ctx: &Ctx, id: &str, prior: &Saved, step: &FailedStep) -> Result<()> {
-        let _g = self.lock();
+        let _g = self.write.lock();
         let saved = Saved {
             state: WorkspaceState::Launching,
             running_step: Some(step.clone()),
@@ -197,7 +200,7 @@ impl Workspaces {
     /// Put back the state from before the launch was claimed, through the state machine, and
     /// record why: a claimed launch (forced or not) that never ran a step still leaves a trail.
     fn restore(&self, ctx: &Ctx, id: &str, prior: &Saved, reason: &str, forced: bool) -> Result<()> {
-        let _g = self.lock();
+        let _g = self.write.lock();
         let back = state::launch_abandoned(&WorkspaceState::Launching, &prior.state)?;
         ctx.store.transaction(|tx| {
             tx.put(
@@ -214,7 +217,7 @@ impl Workspaces {
     /// Save `dirty` with its event, and return the error the task fails with: the same
     /// `workspace_dirty` a later `activate` gets, so the client can offer cleanup or the log.
     fn finish_dirty(&self, ctx: &Ctx, id: &str, attempt: &Attempt, failure: Failure) -> Result<Error> {
-        let _g = self.lock();
+        let _g = self.write.lock();
         let Failure { step, reason, log, outcome } = failure;
         // From the state actually on disk, as in the success path.
         let dirty = state::step_failed(&current_state(ctx, id)?, reason, step, ctx.clock.now(), &log)?;
@@ -264,13 +267,17 @@ struct Start {
     started_at: chrono::DateTime<chrono::Utc>,
 }
 
-fn launch_step(workspace: &Workspace, step: Step, mode: SpawnMode) -> LaunchStep {
+/// `session_id` is `None` for the first step of an attempt (the backend mints one) and `Some`
+/// for every later step of that same attempt (the id the first step's `StepOutcome` returned),
+/// so one attempt's steps all share one `SHIMMER_SESSION_ID` (ADR 0010 §9 amendment).
+fn launch_step(workspace: &Workspace, step: Step, mode: SpawnMode, session_id: Option<String>) -> LaunchStep {
     LaunchStep {
         workspace_id: workspace.id.clone(),
         workspace_dir: workspace.id.clone(),
         step,
         mode,
         user_env: workspace.env.clone(),
+        session_id,
     }
 }
 

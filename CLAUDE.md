@@ -623,8 +623,10 @@ re-set it.
 
 Every launch step declares one. Confusing them is how we get orphaned processes.
 
-- **`detached`** — editors, browsers, terminals. Must outlive the daemon. `setsid` on
-  Unix, `DETACHED_PROCESS` on Windows. No handle retained.
+- **`detached`** — editors, browsers, terminals. Must outlive the daemon. Spawned into its
+  own process group on Unix (`DETACHED_PROCESS` on Windows), not a new *session* — `setsid`
+  needs a `pre_exec` closure between `fork` and `exec`, which is `unsafe`, and §12 rule 8
+  bans `unsafe` outright (ADR 0010 §3 amendment, #69). No handle retained.
 - **`supervised`** — setup scripts whose exit code matters. Handle retained, timeout
   enforced, **kill the whole process group** on timeout, stdout/stderr captured to `logs/`.
 

@@ -1,8 +1,7 @@
-//! The workspaces module in the real daemon, through the real binary (issue #32). No launch
-//! backend is wired in yet (ADR 0010, Dev A), so this covers what works today: the module is
-//! registered with its lane, `list`/`status` read real folders, and `activate` fails cleanly
-//! with `unavailable` without leaving the workspace half-configured. The last tests drive the
-//! same through `shimmer workspaces …`, the CLI commands (issue #33).
+//! The workspaces module in the real daemon, through the real binary (issue #32), with the
+//! real `LaunchBackend` wired in (ADR 0010, Dev A): the module is registered with its lane,
+//! `list`/`status` read real folders, and `activate` actually runs a workspace's scripts. The
+//! last tests drive the same through `shimmer workspaces …`, the CLI commands (issue #33).
 
 mod common;
 
@@ -84,7 +83,7 @@ fn list_and_status_read_real_folders_and_a_broken_one_hides_nothing() {
 }
 
 #[test]
-fn activate_without_a_launch_backend_fails_cleanly_and_survives_a_restart() {
+fn activate_runs_the_real_script_and_the_result_survives_a_restart() {
     let home = Home::new();
     call(&home, "core.ping", json!({}));
     workspace(&home, "deep-work", &[("workspace.toml", DEEP_WORK), ("steps/01-setup.sh", "echo hi\n")]);
@@ -93,15 +92,14 @@ fn activate_without_a_launch_backend_fails_cleanly_and_survives_a_restart() {
     let handle = call(&home, "workspaces.activate", json!({"id": "deep-work"}));
     assert_eq!(handle["lane"], "workspaces");
     let task = finished_task(&home, handle["task_id"].as_str().unwrap());
-    assert_eq!(task["status"], "failed", "{task}");
-    assert!(task["error"].as_str().unwrap().starts_with("unavailable: "), "{task}");
+    assert_eq!(task["status"], "succeeded", "{task}");
 
-    // Nothing ran, so it is not dirty: still ready, before and after a restart.
+    // The script really ran: active, and that survives a restart.
     let state = |home: &Home| call(home, "workspaces.status", json!({"id": "deep-work"}))["state"].clone();
-    assert_eq!(state(&home), "ready");
+    assert_eq!(state(&home), "active");
     assert!(home.shimmer(&["shutdown"]).status.success());
     wait_gone(&home.socket());
-    assert_eq!(state(&home), "ready");
+    assert_eq!(state(&home), "active");
 }
 
 // ---------------------------------------------------------------- shimmer workspaces … (#33)
@@ -156,13 +154,12 @@ fn the_cli_queues_and_follows_a_launch() {
     assert!(out.starts_with("queued the launch of deep-work (task "), "{out}");
     assert!(out.ends_with("check on it with: shimmer workspaces status deep-work\n"), "{out}");
 
-    // With --wait: followed to the end. No launch backend yet, so it fails `unavailable`
-    // after reaching step 1, and the workspace is left as it was.
-    let (code, _, err) = shimmer(&home, &["workspaces", "activate", "deep-work", "--wait"]);
-    assert_eq!(code, 1);
+    // With --wait: followed to the end. The real backend runs the script, which succeeds.
+    let (code, out, err) = shimmer(&home, &["workspaces", "activate", "deep-work", "--wait"]);
+    assert_eq!(code, 0, "{err}");
     assert!(err.contains("step 1/1 setup"), "{err}");
-    assert!(err.contains("shimmer: unavailable: "), "{err}");
-    assert_eq!(call(&home, "workspaces.status", json!({"id": "deep-work"}))["state"], "ready");
+    assert_eq!(out.trim_end(), "✓ deep-work is active");
+    assert_eq!(call(&home, "workspaces.status", json!({"id": "deep-work"}))["state"], "active");
 }
 
 #[test]
