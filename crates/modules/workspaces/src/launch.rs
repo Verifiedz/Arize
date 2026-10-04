@@ -125,18 +125,9 @@ impl Workspaces {
             let index = i as u32 + 1;
             let current = FailedStep { index, count, name: workspace.steps[i].name.clone() };
             let fail = |reason: String, log: &str, outcome: Outcome, session_id: &Option<String>| {
-                self.finish_dirty(
-                    ctx,
-                    id,
-                    current.clone(),
-                    reason,
-                    log,
-                    outcome,
-                    session_id,
-                    started_at,
-                    forced,
-                    has_cleanup,
-                )
+                let attempt = Attempt { started_at, forced, has_cleanup, session_id: session_id.clone() };
+                let failure = Failure { step: current.clone(), reason, log: log.to_owned(), outcome };
+                self.finish_dirty(ctx, id, &attempt, failure)
             };
 
             if ctx.cancel.is_cancelled() {
@@ -176,7 +167,9 @@ impl Workspaces {
         }
 
         let _g = self.lock();
-        let active = state::launch_succeeded(&WorkspaceState::Launching)?;
+        // From the state actually on disk, not an assumed `launching`: if anything changed it
+        // while the steps ran, this fails loudly instead of overwriting it (as `cleanup` does).
+        let active = state::launch_succeeded(&current_state(ctx, id)?)?;
         let session = session_id.unwrap_or_default();
         let last = LastSession { id: session.clone(), started_at, forced, outcome: Outcome::Launched };
         ctx.store.transaction(|tx| {
@@ -220,36 +213,47 @@ impl Workspaces {
 
     /// Save `dirty` with its event, and return the error the task fails with: the same
     /// `workspace_dirty` a later `activate` gets, so the client can offer cleanup or the log.
-    #[allow(clippy::too_many_arguments)]
-    fn finish_dirty(
-        &self,
-        ctx: &Ctx,
-        id: &str,
-        failed_step: FailedStep,
-        reason: String,
-        log: &str,
-        outcome: Outcome,
-        session_id: &Option<String>,
-        started_at: chrono::DateTime<chrono::Utc>,
-        forced: bool,
-        has_cleanup: bool,
-    ) -> Result<Error> {
+    fn finish_dirty(&self, ctx: &Ctx, id: &str, attempt: &Attempt, failure: Failure) -> Result<Error> {
         let _g = self.lock();
-        let dirty = state::step_failed(&WorkspaceState::Launching, reason, failed_step, ctx.clock.now(), log)?;
-        let session = session_id.clone().unwrap_or_default();
-        let last = LastSession { id: session.clone(), started_at, forced, outcome };
+        let Failure { step, reason, log, outcome } = failure;
+        // From the state actually on disk, as in the success path.
+        let dirty = state::step_failed(&current_state(ctx, id)?, reason, step, ctx.clock.now(), &log)?;
+        let session = attempt.session_id.clone().unwrap_or_default();
+        let last = LastSession { id: session.clone(), started_at: attempt.started_at, forced: attempt.forced, outcome };
         ctx.store.transaction(|tx| {
             tx.put(&state_path(id), persist::encode(&Saved::new(dirty.clone()).with_last_session(Some(last))))?;
             let mut payload = dirty_payload(id, &dirty);
             payload["session_id"] = json!(session);
-            payload["forced"] = json!(forced);
-            payload["has_cleanup_script"] = json!(has_cleanup);
+            payload["forced"] = json!(attempt.forced);
+            payload["has_cleanup_script"] = json!(attempt.has_cleanup);
             // CLAUDE.md §10.3 wants the user told at elevated priority. `notify` doesn't exist
             // yet (M6): it will subscribe to this event.
             tx.emit("workspaces.session.dirty", payload)
         })?;
-        Ok(state::dirty_error(&dirty, id, has_cleanup))
+        Ok(state::dirty_error(&dirty, id, attempt.has_cleanup))
     }
+}
+
+/// What's true for the whole launch attempt, whichever step it ends on.
+struct Attempt {
+    started_at: chrono::DateTime<chrono::Utc>,
+    forced: bool,
+    has_cleanup: bool,
+    /// From the first step's `StepOutcome`; `None` if no step ran.
+    session_id: Option<String>,
+}
+
+/// How a launch went wrong, and at which step.
+struct Failure {
+    step: FailedStep,
+    reason: String,
+    log: String,
+    outcome: Outcome,
+}
+
+/// The workspace's state as it is on disk now. Missing `state.toml` reads as `ready`.
+fn current_state(ctx: &Ctx, id: &str) -> Result<WorkspaceState> {
+    Ok(folder(ctx, id)?.saved(ctx, id).unwrap_or_else(|| Ok(Saved::ready()))?.state)
 }
 
 /// What `prepare` hands to `launch`.

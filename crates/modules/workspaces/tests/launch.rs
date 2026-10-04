@@ -449,3 +449,24 @@ async fn the_whole_cycle() {
     call(&w, &env, "workspaces.activate").await.unwrap();
     assert_eq!(state_line(&env), "state = \"active\"");
 }
+
+#[tokio::test]
+async fn the_final_write_checks_the_state_on_disk_first() {
+    // Review on #56: the last write of a launch used to assume `launching` without looking.
+    // If something rewrote state.toml while a step ran, the launch must not clobber it.
+    let mut env = env_with_deep_work();
+    script(&env.launcher, [ok_supervised(), ok_detached(), ok_detached()]);
+    let store = env.ctx.store.clone();
+    env.ctx.launcher = Launcher::new(Arc::new(Hooked {
+        fake: env.launcher.clone(),
+        before: Box::new(move |step| {
+            if let Step::Launch { index: 3, .. } = step.step {
+                store.write("deep-work/state.toml", "state = \"ready\"\n").unwrap();
+            }
+        }),
+    }));
+    let e = call(&Workspaces::default(), &env, "workspaces.activate").await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::Internal, "{}", e.message);
+    assert_eq!(state_line(&env), "state = \"ready\"", "not overwritten with active");
+    assert!(!topics(&env).contains(&"workspaces.session.launched".to_owned()));
+}
