@@ -59,18 +59,28 @@ pub fn activate(state: &WorkspaceState, workspace: &str, has_cleanup_script: boo
     match state {
         WorkspaceState::Ready | WorkspaceState::Active => Ok(WorkspaceState::Launching),
         WorkspaceState::Launching => Err(Error::conflict(format!("workspace '{workspace}' is already launching"))),
-        WorkspaceState::Dirty { reason, failed_step, failed_at, log } => Err(Error::new(
-            ErrorCode::WorkspaceDirty,
-            format!("workspace '{workspace}' failed at step {failed_step} ({reason}) and was not cleaned up"),
-        )
-        .with_detail(json!({
-            "workspace": workspace,
-            "failed_step": failed_step.to_string(),
-            "failed_at": failed_at.to_rfc3339_opts(SecondsFormat::Secs, true),
-            "log": log,
-            "has_cleanup_script": has_cleanup_script,
-        }))),
+        WorkspaceState::Dirty { .. } => Err(dirty_error(state, workspace, has_cleanup_script)),
     }
+}
+
+/// The `workspace_dirty` error, with docs/protocol.md's `detail`. Returned by [`activate`] on a
+/// dirty workspace, and by a launch whose step just failed, so both look the same to a client.
+/// Called with any other state it is `internal`: only a dirty workspace has this error.
+pub fn dirty_error(state: &WorkspaceState, workspace: &str, has_cleanup_script: bool) -> Error {
+    let WorkspaceState::Dirty { reason, failed_step, failed_at, log } = state else {
+        return Error::internal(format!("dirty_error called in state {state:?}"));
+    };
+    Error::new(
+        ErrorCode::WorkspaceDirty,
+        format!("workspace '{workspace}' failed at step {failed_step} ({reason}) and was not cleaned up"),
+    )
+    .with_detail(json!({
+        "workspace": workspace,
+        "failed_step": failed_step.to_string(),
+        "failed_at": failed_at.to_rfc3339_opts(SecondsFormat::Secs, true),
+        "log": log,
+        "has_cleanup_script": has_cleanup_script,
+    }))
 }
 
 /// `launching -> active`: every step succeeded (§10.3).
@@ -94,6 +104,21 @@ pub fn step_failed(
             Ok(WorkspaceState::Dirty { reason: reason.into(), failed_step, failed_at, log: log.into() })
         }
         other => Err(Error::internal(format!("step_failed called in state {other:?}"))),
+    }
+}
+
+/// `launching -> <the state before>`: the launch was claimed but no step ran (cancelled before
+/// the first step, or the first step couldn't be started). Nothing changed on the machine, so the
+/// workspace goes back to exactly where it was, and the module records it
+/// (`workspaces.session.abandoned`), so a forced relaunch that never ran still leaves a trail
+/// (§10.3).
+pub fn launch_abandoned(state: &WorkspaceState, before: &WorkspaceState) -> Result<WorkspaceState> {
+    match (state, before) {
+        (WorkspaceState::Launching, WorkspaceState::Launching) => {
+            Err(Error::internal("launch_abandoned: the state before a launch can't be launching"))
+        }
+        (WorkspaceState::Launching, before) => Ok(before.clone()),
+        (other, _) => Err(Error::internal(format!("launch_abandoned called in state {other:?}"))),
     }
 }
 
@@ -208,6 +233,19 @@ mod tests {
         assert_eq!(d.unwrap(), dirty());
         for s in [WorkspaceState::Ready, WorkspaceState::Active, dirty()] {
             let e = step_failed(&s, "r", setup_step(), at(), "l").unwrap_err();
+            assert_eq!(e.code, ErrorCode::Internal);
+        }
+    }
+
+    #[test]
+    fn an_abandoned_launch_goes_back_to_where_it_was() {
+        for before in [WorkspaceState::Ready, WorkspaceState::Active, dirty()] {
+            assert_eq!(launch_abandoned(&WorkspaceState::Launching, &before).unwrap(), before);
+        }
+        let e = launch_abandoned(&WorkspaceState::Launching, &WorkspaceState::Launching).unwrap_err();
+        assert_eq!(e.code, ErrorCode::Internal);
+        for not_launching in [WorkspaceState::Ready, WorkspaceState::Active, dirty()] {
+            let e = launch_abandoned(&not_launching, &WorkspaceState::Ready).unwrap_err();
             assert_eq!(e.code, ErrorCode::Internal);
         }
     }

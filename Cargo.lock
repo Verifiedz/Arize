@@ -709,6 +709,7 @@ dependencies = [
  "shimmer-proto",
  "shimmer-records",
  "shimmer-store",
+ "shimmer-workspaces",
  "tempfile",
  "tokio",
  "tracing",
@@ -817,10 +818,13 @@ dependencies = [
 name = "shimmer-workspaces"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "serde",
  "serde_json",
  "shimmer-core",
+ "tokio",
+ "tokio-util",
  "toml",
 ]
 
