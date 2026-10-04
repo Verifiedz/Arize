@@ -8,6 +8,10 @@ implementation (`m3-launch-backend`): §9's `session_id` random field is no long
 after #56/#57 review (session-id question raised there): §9's "fresh per launch attempt" was
 implemented as fresh per `run()` *call*, which is fresh per step, not per attempt, whenever a
 launch has more than one step — see §9 "Amendment: one id per attempt, not per `run` call".
+· Amended after #69 (launcher follow-ups from the #63/#66 reviews): §3's `Detached` uses its
+own process group, not `setsid` — see §3 "Amendment: process group, not `setsid`" — and a
+log's name now includes its launch attempt's `session_id` — see §3 "Amendment: session id in
+the log path".
 
 > **Renamed since:** `swe`, `swe-*` and `SWE_*` in this ADR are now `shimmer`, `shimmer-*` and
 > `SHIMMER_*` (ADR 0011). The text below is kept as written.
@@ -165,11 +169,30 @@ same as the rest of `workspace.toml` (§"Dev B's side" below) — this ADR only 
 
 ### 3. Behaviour
 
-**Detached** (`setsid` on Unix, `DETACHED_PROCESS` on Windows, per §10.2): stdin/stdout/
-stderr to null (same as `crates/cli/src/autostart.rs`'s existing daemon-autostart spawn —
-reuse that pattern, don't reinvent it), own process group so the launcher's own signals
-never reach it, and `run` returns as soon as the process is spawned — it does not wait for
-an exit code, matching "no handle retained" (§10.2).
+**Detached** (`setsid` on Unix, `DETACHED_PROCESS` on Windows, per §10.2 — **amendment
+below: `setsid` is not what the implementation uses**): stdin/stdout/stderr to null (same as
+`crates/cli/src/autostart.rs`'s existing daemon-autostart spawn — reuse that pattern, don't
+reinvent it), own process group so the launcher's own signals never reach it, and `run`
+returns as soon as the process is spawned — it does not wait for an exit code, matching "no
+handle retained" (§10.2).
+
+**Amendment (#69): process group, not `setsid`.** This section's original sketch called for
+`setsid` — a new *session*, not just a new *process group* — on Unix. The real
+implementation uses only `std::os::unix::process::CommandExt::process_group(0)`, the same
+mechanism `Supervised` uses below, and never calls `setsid`. The reason is §12 rule 8, not
+an oversight: `setsid()` has to run in the child after `fork` but before `exec`, which on
+Unix means a `std::process::Command::pre_exec` closure — an `unsafe fn` by signature, since
+almost nothing is safe to do in a forked child before `exec` (allocating, taking a lock, or
+calling anything not async-signal-safe can deadlock it). §12 rule 8 bans `unsafe` with no
+carve-out, so this backend does not call `pre_exec` at all.
+
+In practice this has not been a problem: a `Detached` step's own process group already
+stops the launcher's signals (and `Supervised`'s timeout/cancel kill) from reaching it by
+accident, which is the property both spawn modes actually depend on; the session-level
+distinction `setsid` adds on top of that (survives a terminal's `SIGHUP`, is not a session
+leader) has not been needed by anything this ADR specifies. If a future requirement needs a
+real `setsid`, it needs either a safe wrapper (checked against §12 rule 8 again when
+proposed) or an ADR amendment accepting the `unsafe`, not a silent `pre_exec` call.
 
 **Reaping while the daemon keeps running** — the complete answer for normal operation; §9
 covers the separate questions of what happens at shutdown and after a crash. The moment a
@@ -212,6 +235,16 @@ clarity in code, and a module surfacing it on the wire (in a `workspace_dirty` d
 `workspaces-state-machine` branch's `Dirty` variant also calls its field `log_path` — that
 branch is untouched by this ADR, per "Dev B's side" below, but the same rename-at-the-wire
 point applies whenever it is wired to a real `workspace_dirty` response.)
+
+**Amendment (#69): the launch attempt's `session_id` is part of the log's name.** An early
+cut of the real backend named a `Supervised` step's log `logs/<workspace_dir>-<step>.log` —
+workspace and step only, as the example above already showed by including an id, which the
+first implementation missed. Without the id, a relaunch (or a force relaunch of a `dirty`
+workspace, §10.3) reuses the exact same path, overwriting the very log a `dirty` state's
+`log_path` still points at — the failure evidence disappears the moment someone retries.
+Since every launch attempt already mints its own `session_id` (§9), folding it into the
+name — `logs/<workspace_dir>-<session_id>-<step>.log` — costs nothing new and gives every
+attempt a log distinct from every other attempt's, past or future.
 
 **Scripts run through their interpreter** — `sh launch.sh` (or the platform's `/bin/sh`
 equivalent), `powershell -File launch.ps1` — never via the executable bit. An atomic write
