@@ -1,15 +1,11 @@
 //! The real `LaunchBackend` (ADR 0010). Lands incrementally, one `SpawnMode`/concern per
-//! sub-branch of the `m3-launch-backend` umbrella; this slice adds explicit charset
-//! validation for a launch step's `name` (closes #14), on top of the previous slices' spawn
-//! mechanics, env injection, and session-id minting.
+//! sub-branch of the `m3-launch-backend` umbrella — spawn mechanics, env injection,
+//! session-id minting, and step-name validation (closes #14) in the previous slices; this
+//! one is wired into `Ctx` for any module whose manifest declares the `"process"`
+//! capability (`crates/daemon/src/core.rs`'s `Core::new`, ADR 0010 §4).
 //!
 //! Linux/macOS (`cfg(unix)`) only, same scoping as ADR 0010 §7 — Windows is sketched there,
-//! not implemented. Not yet wired into any `Ctx` (that is the capability-scoped-wiring
-//! sub-branch); this module is exercised only by its own tests until then.
-
-// Unwired until the capability-scoped-wiring sub-branch has `Core::new` construct this
-// behind the module's `"process"` capability — remove once it does.
-#![allow(dead_code)]
+//! not implemented.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -239,9 +235,10 @@ fn kill_process_group(pid: Option<u32>) {
 /// cannot redirect a script's daemon connection." Checked by membership, not by call order,
 /// since `Command::env` is last-write-wins for a repeated key.
 fn inject_env(cmd: &mut Command, home: &Path, socket: &Path, step: &LaunchStep, session_id: &str) {
+    let workspace_dir = home.join("data/workspaces").join(&step.workspace_dir);
     let injected = [
         (env_names::WORKSPACE_ID, step.workspace_id.clone()),
-        (env_names::WORKSPACE_DIR, step.workspace_dir.clone()),
+        (env_names::WORKSPACE_DIR, workspace_dir.display().to_string()),
         (env_names::HOME, home.display().to_string()),
         (env_names::SOCKET, socket.display().to_string()),
         (env_names::SESSION_ID, session_id.to_string()),
@@ -345,13 +342,36 @@ mod tests {
         assert!(!outcome.session_id.is_empty());
         let seen = std::fs::read_to_string(&out).unwrap();
         let expected = format!(
-            "deep-work|deep-work|{}|{}|{}|{}",
+            "deep-work|{}|{}|{}|{}|{}",
+            home.path().join("data/workspaces/deep-work").display(),
             home.path().display(),
             home.path().join("d.sock").display(),
             outcome.session_id,
             platform()
         );
         assert_eq!(seen.trim(), expected);
+    }
+
+    #[tokio::test]
+    async fn workspace_dir_is_the_absolute_directory_a_script_can_cd_into() {
+        // CLAUDE.md §10.1: "SHIMMER_WORKSPACE_DIR — that workspace's own directory." ADR 0012
+        // drops a `cwd` setting because "the script can cd" — which only works if the var is an
+        // absolute path to the directory, not the bare workspace id (the launcher's own home
+        // directory differs from the script's cwd, so a relative id would fail to resolve).
+        let home = TempDir::new().unwrap();
+        let out = home.path().join("out");
+        write_step_script(
+            home.path(),
+            "deep-work",
+            "setup",
+            &format!("cd \"$SHIMMER_WORKSPACE_DIR\" && pwd > {}\n", out.display()),
+        );
+
+        backend(&home).run(&step("deep-work", "setup"), &CancellationToken::new()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let seen = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(seen.trim(), home.path().join("data/workspaces/deep-work").display().to_string());
     }
 
     #[tokio::test]
