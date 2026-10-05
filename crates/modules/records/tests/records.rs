@@ -1032,7 +1032,8 @@ async fn every_template_is_listed_and_creates_a_valid_collection() {
             "interview-questions",
             "interviews",
             "job-applications",
-            "leetcode"
+            "leetcode",
+            "stories"
         ]
     );
 
@@ -1067,7 +1068,7 @@ async fn create_collection_never_overwrites_and_says_what_exists() {
         (
             json!({"id": "jobs", "template": "jobs"}),
             ErrorCode::NotFound,
-            "there are: addresses, charity, education, employment, interview-questions, interviews, job-applications, leetcode",
+            "there are: addresses, charity, education, employment, interview-questions, interviews, job-applications, leetcode, stories",
         ),
         (json!({"id": "Jobs!", "template": "job-applications"}), ErrorCode::InvalidParams, "not a valid collection id"),
         (json!({"id": "jobs", "template": "job-applications", "label": " "}), ErrorCode::InvalidParams, "label"),
@@ -1240,4 +1241,47 @@ async fn a_planned_gift_is_given_once() {
     .await
     .unwrap();
     assert_eq!(general["id"], "food-bank-general");
+}
+
+#[tokio::test]
+async fn a_question_points_at_the_story_that_answers_it() {
+    let (r, env) = setup().await;
+    for (id, template) in [("stories", "stories"), ("questions", "interview-questions")] {
+        call(&r, &env, "records.create_collection", json!({"id": id, "template": template})).await.unwrap();
+    }
+    let story = call(
+        &r,
+        &env,
+        "records.add",
+        json!({"collection": "stories", "fields": {
+        "name": "Billing migration crunch", "primary_theme": "ownership", "told_to": "Amazon"}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(story["id"], "billing-migration-crunch");
+    for q in ["Tell me about a time you owned something", "Tell me about a tight deadline"] {
+        call(
+            &r,
+            &env,
+            "records.add",
+            json!({"collection": "questions", "fields": {
+            "question": q, "kind": "behavioral", "story": "billing-migration-crunch"}}),
+        )
+        .await
+        .unwrap();
+    }
+    let answered = call(
+        &r,
+        &env,
+        "records.list",
+        json!({"collection": "questions", "filter": {"story": "billing-migration-crunch"}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(answered["total"], 2, "one story answers many questions");
+    let told =
+        call(&r, &env, "records.list", json!({"collection": "stories", "filter": {"told_to": {"contains": "amazon"}}}))
+            .await
+            .unwrap();
+    assert_eq!(told["total"], 1);
 }

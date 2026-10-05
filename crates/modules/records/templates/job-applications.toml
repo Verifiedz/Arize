@@ -18,7 +18,7 @@ title = "{company}: {position}"
 stamp_on_complete = "applied_on"
 # Applying happens once: completing again is refused (reopen it first if you must).
 repeat_complete = "refuse"
-related = ["interviews", "interview-questions"]
+related = ["interviews", "interview-questions", "stories"]
 
 # ---- the posting -------------------------------------------------------------------------
 

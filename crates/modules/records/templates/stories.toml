@@ -1,0 +1,103 @@
+# Stories: the experiences you tell in behavioural interviews, one record per story (STAR).
+# Created from Shimmer's stories template. It's your file now: edit it freely.
+#
+# One good story answers many questions: in an interview-questions collection, set a question's
+# story field to this story's id.
+#
+# How it works:
+#   shimmer records add <collection> --name "Billing migration crunch" --primary-theme ownership \
+#       --themes "deadline, teamwork" --context "Acme internship" --impact "shipped 2 days before launch"
+#   shimmer records list <collection> --filter "primary_theme=conflict"     a conflict story for tomorrow
+#   shimmer records list <collection> --filter "told_to~Amazon"            what you've already told Amazon
+#   shimmer records complete <collection>/<id> --confidence solid           practised it today; every practice counts
+
+[collection]
+id = "stories"
+label = "Stories"
+description = "Your STAR stories for behavioural interviews: what happened, what you did, the result"
+title = "{name}"
+# Completing a story means "practised telling it today": it stamps last_practiced.
+stamp_on_complete = "last_practiced"
+# Practising again is another practice.
+repeat_complete = "restamp"
+related = ["interview-questions", "interviews", "employment"]
+
+[[field]]
+name = "name"            # a short handle, e.g. "Billing migration crunch"
+type = "string"
+required = true
+
+[[field]]
+name = "primary_theme"   # the main thing it shows: --filter primary_theme=conflict
+type = "enum"
+values = ["leadership", "ownership", "conflict", "failure", "teamwork", "ambiguity", "deadline", "initiative", "mentoring", "disagreement", "communication", "prioritization", "technical-challenge", "feedback", "customer-focus", "learning", "other"]
+
+[[field]]
+name = "themes"          # everything else it shows, e.g. "teamwork, prioritization"
+type = "string"
+
+[[field]]
+name = "context"         # where it happened: "Acme internship", "capstone project", or an employment id
+type = "string"
+
+[[field]]
+name = "your_role"       # your role then, e.g. "SWE intern", "team lead"
+type = "string"
+
+[[field]]
+name = "period"          # when, e.g. "Summer 2025"
+type = "string"
+
+[[field]]
+name = "situation"       # S: the setting
+type = "string"
+
+[[field]]
+name = "task"            # T: what you had to do
+type = "string"
+
+[[field]]
+name = "action"          # A: what you did; the part interviewers care about most
+type = "string"
+
+[[field]]
+name = "result"          # R: what happened
+type = "string"
+
+[[field]]
+name = "impact"          # the number that makes it land, e.g. "cut checkout errors 40%"
+type = "string"
+
+[[field]]
+name = "learned"         # what you took from it; failure questions always ask
+type = "string"
+
+[[field]]
+name = "short_version"   # the 30-second version
+type = "string"
+
+[[field]]
+name = "told_to"         # companies or rounds you've told it in, so you don't repeat it
+type = "string"
+
+[[field]]
+name = "confidence"      # how smoothly you can tell it
+type = "enum"
+values = ["shaky", "okay", "solid"]
+
+[[field]]
+name = "next_review"     # when to practise it again; the calendar can remind you
+type = "date"
+role = "deadline"
+
+[[field]]
+name = "last_practiced"  # stamped by records complete
+type = "date"
+
+[[field]]
+name = "notes"
+type = "string"
+
+[[view]]
+kind = "heatmap"         # the days you practised
+source = "last_practiced"
