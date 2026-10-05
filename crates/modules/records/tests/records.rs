@@ -1756,3 +1756,40 @@ async fn import_checks_every_row_and_writes_all_or_nothing() {
     let too_many = json!({"collection": "postings", "rows": vec![json!({"company": "x"}); 5001]});
     assert_eq!(call(&r, &env, "records.import", too_many).await.unwrap_err().code, ErrorCode::InvalidParams);
 }
+
+#[tokio::test]
+async fn purge_deletes_trashed_records_only_after_confirmation() {
+    // ADR 0024 §5.
+    let (r, env) = setup().await;
+    for id in ["a", "b", "c"] {
+        call(&r, &env, "records.add", json!({"collection": "leetcode", "id": id, "fields": {"title": id}}))
+            .await
+            .unwrap();
+        call(&r, &env, "records.remove", json!({"collection": "leetcode", "id": id})).await.unwrap();
+    }
+    let one = json!({"collection": "leetcode", "id": "a"});
+    let e = call(&r, &env, "records.purge", one.clone()).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::ConfirmationRequired);
+    assert_eq!(e.detail, Some(json!({"records": 1})));
+    assert!(file(&env, "trash/leetcode/a.toml").is_some(), "nothing deleted yet");
+
+    let mut confirmed = one.clone();
+    confirmed["confirm"] = json!({"records": 1});
+    assert_eq!(call(&r, &env, "records.purge", confirmed).await.unwrap(), json!({"purged": 1}));
+    assert!(file(&env, "trash/leetcode/a.toml").is_none());
+    let ev = env.backend.events().pop().unwrap();
+    assert_eq!(
+        (ev.topic.as_str(), ev.payload),
+        ("records.trash.purged", json!({"collection": "leetcode", "records": 1, "id": "a"}))
+    );
+    assert_eq!(call(&r, &env, "records.purge", one).await.unwrap_err().code, ErrorCode::NotFound);
+
+    // The whole trash: a stale count is asked again, never guessed.
+    let all = json!({"collection": "leetcode", "confirm": {"records": 3}});
+    assert_eq!(call(&r, &env, "records.purge", all).await.unwrap_err().code, ErrorCode::ConfirmationRequired);
+    let all = json!({"collection": "leetcode", "confirm": {"records": 2}});
+    assert_eq!(call(&r, &env, "records.purge", all).await.unwrap(), json!({"purged": 2}));
+    let trash = call(&r, &env, "records.trash", json!({"collection": "leetcode"})).await.unwrap();
+    assert_eq!(trash["items"], json!([]));
+    assert_eq!(call(&r, &env, "records.purge", json!({"collection": "leetcode"})).await.unwrap(), json!({"purged": 0}));
+}

@@ -45,6 +45,7 @@ commands:
                                        if other records refer to it
   restore COLLECTION/ID                bring a removed record back
   trash COLLECTION                     list removed records you can restore
+  purge COLLECTION[/ID] [--yes]        permanently delete removed records (asks first)
 
 moving data:
   import COLLECTION FILE               add records from a .csv (a header row of field names;
@@ -151,6 +152,12 @@ pub enum RecordsCmd {
     RestoreCollection {
         id: String,
     },
+    /// `id`: one trashed record; `None`: the whole trash (ADR 0024 §5).
+    Purge {
+        collection: String,
+        id: Option<String>,
+        yes: bool,
+    },
     /// ADR 0024 §4: the CLI reads `file`; the daemon checks and writes.
     Import {
         collection: String,
@@ -233,7 +240,7 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
     if force {
         rest.retain(|w| w != "--force");
     }
-    let yes = (sub == "remove-collection" || sub == "import") && rest.iter().any(|w| w == "--yes");
+    let yes = matches!(sub.as_str(), "remove-collection" | "import" | "purge") && rest.iter().any(|w| w == "--yes");
     if yes {
         rest.retain(|w| w != "--yes");
     }
@@ -273,6 +280,16 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
             };
             let (collection, id) = target(&sub, target_words).map_err(|_| usage.to_owned())?;
             Ok(RecordsCmd::Rename { collection, id, new_id })
+        }
+        "purge" => {
+            no_flags()?;
+            let (collection, id) = match positional.as_slice() {
+                [one] if !one.contains('/') => (one.clone(), None),
+                _ => target(&sub, positional)
+                    .map(|(c, id)| (c, Some(id)))
+                    .map_err(|_| "usage: shimmer records purge COLLECTION[/ID] [--yes]".to_owned())?,
+            };
+            Ok(RecordsCmd::Purge { collection, id, yes })
         }
         "import" => {
             no_flags()?;
@@ -453,6 +470,7 @@ impl RecordsCmd {
             | Self::Check { collection }
             | Self::RenameField { collection, .. }
             | Self::Import { collection, .. }
+            | Self::Purge { collection, .. }
             | Self::Export { collection, .. } => Some(collection),
             Self::RenameCollection { .. } | Self::RemoveCollection { .. } | Self::RestoreCollection { .. } => None,
         }
@@ -487,6 +505,13 @@ pub fn request(cmd: &RecordsCmd, schema: &Value) -> Result<(&'static str, Value)
     Ok(match cmd {
         RecordsCmd::Help => return Err(Error::internal("help is not a request")),
         RecordsCmd::Import { .. } => return Err(Error::internal("import reads its file in run")),
+        RecordsCmd::Purge { collection, id, .. } => {
+            let mut params = json!({"collection": collection});
+            if let Some(id) = id {
+                params["id"] = json!(id);
+            }
+            ("records.purge", params)
+        }
         // One page of `records.list`; `run` pages through them all.
         RecordsCmd::Export { collection, filter, refine, .. } => {
             let list = RecordsCmd::List {
@@ -750,10 +775,19 @@ pub async fn run(client: &mut Client, cmd: &RecordsCmd, json: bool, prompt: &mut
     let data = match client.call(op, params.clone()).await {
         // ADR 0021 §5: the daemon says how many records go; ask, then send that count back.
         Err(e) if e.code == ErrorCode::ConfirmationRequired => {
-            let RecordsCmd::RemoveCollection { id, yes } = cmd else { return Err(e) };
             let detail = e.detail.clone().unwrap_or_default();
-            if !confirm_removal(prompt, *yes, id, &detail)? {
-                return Ok(format!("kept {id}"));
+            match cmd {
+                RecordsCmd::RemoveCollection { id, yes } => {
+                    if !confirm_removal(prompt, *yes, id, &detail)? {
+                        return Ok(format!("kept {id}"));
+                    }
+                }
+                RecordsCmd::Purge { collection, yes, .. } => {
+                    if !confirm_purge(prompt, *yes, collection, &e.message)? {
+                        return Ok("nothing purged".into());
+                    }
+                }
+                _ => return Err(e),
             }
             params["confirm"] = detail;
             client.call(op, params).await?
@@ -917,6 +951,21 @@ fn export(items: &[Value], schema: &Value, format: Format) -> String {
     out.trim_end_matches('\n').to_owned()
 }
 
+/// Whether to go ahead with purging, given the daemon's message saying what goes. There is no
+/// undo, so without a person there it needs --yes.
+fn confirm_purge(prompt: &mut dyn Prompt, yes: bool, collection: &str, message: &str) -> Result<bool> {
+    if yes {
+        return Ok(true);
+    }
+    if !prompt.interactive() {
+        return Err(Error::invalid_params(format!(
+            "refusing to purge '{collection}'s trash without confirmation; pass --yes to do it anyway"
+        )));
+    }
+    eprintln!("{}. This can't be undone.", message.split(';').next().unwrap_or(message));
+    Ok(prompt.confirm("Purge?"))
+}
+
 /// Whether to go ahead with removing a collection, given the daemon's
 /// `{"records": N}`. Never waits for an answer nobody can see (CLAUDE.md §15.1).
 fn confirm_removal(prompt: &mut dyn Prompt, yes: bool, id: &str, detail: &Value) -> Result<bool> {
@@ -996,6 +1045,10 @@ pub fn show(cmd: &RecordsCmd, data: &Value, schema: &Value) -> String {
         RecordsCmd::Get { collection, id } => item(collection, id, data, schema),
         RecordsCmd::List { .. } => list(data, schema),
         RecordsCmd::Import { collection, .. } => import_summary(collection, data, true),
+        RecordsCmd::Purge { collection, .. } => match data["purged"].as_u64() {
+            Some(0) => format!("nothing in {collection}'s trash"),
+            n => format!("✓ purged {} record(s) from {collection}'s trash", n.unwrap_or(0)),
+        },
         RecordsCmd::Export { .. } => render::json(data),
     }
 }
@@ -1782,6 +1835,31 @@ lru-cache  todo    LRU Cache  medium      -            2         true
         // A one-field title is already a column.
         let out = show(&cmd, &data, &json!({"title": "{company}", "fields": schema["fields"]}));
         assert!(!out.contains("TITLE"), "{out}");
+    }
+
+    #[test]
+    fn purge_takes_one_record_or_the_whole_trash() {
+        let one = parse_words(&["purge", "jobs/acme"]).unwrap();
+        assert_eq!(one, RecordsCmd::Purge { collection: "jobs".into(), id: Some("acme".into()), yes: false });
+        assert_eq!(
+            request(&one, &Value::Null).unwrap(),
+            ("records.purge", json!({"collection": "jobs", "id": "acme"}))
+        );
+        let all = parse_words(&["purge", "jobs", "--yes"]).unwrap();
+        assert_eq!(all, RecordsCmd::Purge { collection: "jobs".into(), id: None, yes: true });
+        assert_eq!(show(&all, &json!({"purged": 2}), &Value::Null), "✓ purged 2 record(s) from jobs's trash");
+
+        struct Script;
+        impl Prompt for Script {
+            fn interactive(&self) -> bool {
+                false
+            }
+            fn confirm(&mut self, _: &str) -> bool {
+                unreachable!("never asked without a terminal")
+            }
+        }
+        assert!(confirm_purge(&mut Script, false, "jobs", "x").unwrap_err().message.contains("--yes"));
+        assert!(confirm_purge(&mut Script, true, "jobs", "x").unwrap());
     }
 
     #[test]

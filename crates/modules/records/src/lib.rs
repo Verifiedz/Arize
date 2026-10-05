@@ -75,6 +75,7 @@ impl Module for Records {
                 "records.collection.restored",
                 "records.item.removed",
                 "records.collection.created",
+                "records.trash.purged",
             ]
             .map(String::from)
             .to_vec(),
@@ -181,6 +182,12 @@ impl Module for Records {
                     "dry_run": {"type": "boolean"}, "skip_invalid": {"type": "boolean"}}}),
             ),
             (
+                "records.purge",
+                "Permanently delete removed records (one, or a collection's whole trash); needs confirmation",
+                json!({"type": "object", "required": ["collection"], "properties": {
+                    "collection": {"type": "string"}, "id": {"type": "string"}, "confirm": {"type": "object"}}}),
+            ),
+            (
                 "records.restore_collection",
                 "Bring a removed collection back with its records",
                 json!({"type": "object", "required": ["id"], "properties": {"id": {"type": "string"}}}),
@@ -221,6 +228,7 @@ impl Module for Records {
             "records.remove_collection" => self.remove_collection(ctx, decode(params)?),
             "records.restore_collection" => self.restore_collection(ctx, decode(params)?),
             "records.import" => self.import(ctx, decode(params)?),
+            "records.purge" => self.purge(ctx, decode(params)?),
             _ => Err(Error::unknown_op(format!("records has no op '{op}'"))),
         }
     }
@@ -239,6 +247,16 @@ struct Remove {
     id: String,
     #[serde(default)]
     force: bool,
+}
+
+/// `records.purge` (ADR 0024 §5).
+#[derive(Deserialize)]
+struct Purge {
+    collection: String,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    confirm: Option<Value>,
 }
 
 /// `records.import` (ADR 0024 §4).
@@ -853,6 +871,52 @@ impl Records {
             })?;
         }
         Ok(out)
+    }
+
+    /// Permanently delete trashed records, after the caller confirms how many it was shown, as
+    /// removing a collection asks (ADR 0024 §5, ADR 0021 §5). This is the one op that can't be
+    /// undone, so it never runs on a guess.
+    fn purge(&self, ctx: &Ctx, p: Purge) -> Result<Value> {
+        let c = load_collection(ctx, &p.collection)?;
+        let _g = self.write.lock();
+        let paths = match &p.id {
+            Some(id) => {
+                item::check_id(id)?;
+                let path = trash_path(&c.id, id);
+                if ctx.store.read_string(&path)?.is_none() {
+                    return Err(Error::not_found(format!("no removed record '{id}' in '{}'", c.id)));
+                }
+                vec![path]
+            }
+            None => ctx.store.list(&format!("trash/{}", c.id))?,
+        };
+        let records = paths.len();
+        if records == 0 {
+            return Ok(json!({"purged": 0}));
+        }
+        let expected = json!({"records": records});
+        if p.confirm.as_ref() != Some(&expected) {
+            let what = match &p.id {
+                Some(id) => format!("'{id}' from '{}'s trash", c.id),
+                None => format!("all {records} record(s) in '{}'s trash", c.id),
+            };
+            return Err(Error::new(
+                ErrorCode::ConfirmationRequired,
+                format!("purging permanently deletes {what}; confirm with {{\"records\": {records}}}"),
+            )
+            .with_detail(expected));
+        }
+        let mut event = json!({"collection": c.id, "records": records});
+        if let Some(id) = &p.id {
+            event["id"] = json!(id);
+        }
+        ctx.store.transaction(|tx| {
+            for path in &paths {
+                tx.delete(path)?;
+            }
+            tx.emit("records.trash.purged", event)
+        })?;
+        Ok(json!({"purged": records}))
     }
 
     /// Write `item` and emit `topic` with its payload, in one transaction (§7.1).
