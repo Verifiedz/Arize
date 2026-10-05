@@ -356,6 +356,9 @@ emails.
 | `workspaces.cleanup` | queued (`workspaces`) | `{"id"}` | Task handle. Runs `cleanup.{sh,ps1}` supervised; on success `dirty → ready`. |
 | `workspaces.force_relaunch` | queued (`workspaces`) | `{"id"}` | Task handle. Launches a `dirty` workspace anyway; emits `workspaces.session.forced` before any step runs. |
 | `workspaces.reset` | inline | `{"id"}` | `{"id","state":"ready"}`. Clears `dirty` without running cleanup. Last resort; also clears an unreadable `state.toml`. |
+| `workspaces.stop` | queued (`workspaces`) | `{"id"}` | Task handle. Runs `cleanup.{sh,ps1}` supervised on an `active` workspace; success → `ready` and `workspaces.session.stopped`. No cleanup script: `ready` at once, nothing run. Failure leaves it `active`; the task fails with the log in `detail`. `invalid_params` when ready or dirty, `conflict` while launching. Windows are never closed: the script stops processes. ADR 0026. |
+| `workspaces.remove` | inline | `{"id"}` | `{"removed":true}`. Moves the folder to `data/workspaces/.removed/<id>/` (the latest removal of an id replaces an older one); emits `workspaces.workspace.removed`. `conflict` when active, launching or dirty ("stop it first" / "clean it up or reset it first"). Folders starting with `.` are never listed as workspaces. ADR 0026. |
+| `workspaces.restore` | inline | `{"id"}` | The workspace, as `workspaces.status` shows it, back exactly as removed; emits `workspaces.workspace.restored`. `not_found` with nothing to restore; `conflict` if that id exists again. ADR 0026. |
 | `workspaces.templates` | inline | `{}` | `{"templates":[{"id","label","description","questions":[{"name","prompt","kind","required","default"?,"choices"?,"help"?}]}]}`, by id. `kind` is `text`, `command`, `folder`, `file`, `url`, `urls` or `choice`. ADR 0025. |
 | `workspaces.create` | inline | `{"id","template","values"?,"label"?}` | The new workspace, as `workspaces.status` shows it (state `ready`). `values` maps question names to strings; left out means the default, or empty. Every answer is written to the workspace's `[env]`. A missing required answer, an unknown question, or an answer that doesn't fit its kind (`folder`/`file` must be absolute, `url`s must start with `http://` or `https://`) is `invalid_params` naming the question; an unknown template is `not_found` naming the ones there are; anything already at `data/workspaces/<id>/` is `conflict`, never overwritten. One transaction writes the folder and emits `workspaces.workspace.created`. ADR 0025. |
 
@@ -439,6 +442,8 @@ tolerate unknown topics.
 | `workspaces.session.cleaned` | Cleanup script succeeded; state back to `ready`. Payload `{workspace, log}`. |
 | `workspaces.session.abandoned` | A launch (forced or not) was claimed but no step ran: cancelled first, or step 1 couldn't start. The workspace is back to the state it had. Payload `{workspace, reason, forced, back_to}`. |
 | `workspaces.workspace.reset` | `workspaces.reset` cleared `dirty` without cleanup. Payload `{workspace, prior}`. |
+| `workspaces.session.stopped` | `workspaces.stop` finished. Payload `{workspace, ran_cleanup, log}` (`log` empty when there was no cleanup script). ADR 0026. |
+| `workspaces.workspace.removed` / `.restored` | `{workspace}`. ADR 0026. |
 | `workspaces.workspace.created` | `workspaces.create` made a workspace from a template. Payload `{workspace, template}`. ADR 0025. |
 | `records.item.created` / `.updated` / `.completed` / `.removed` | Record mutations. |
 | `records.collection.created` | The built-in collection was seeded on first start. |

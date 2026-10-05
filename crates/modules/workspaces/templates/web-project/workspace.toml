@@ -2,7 +2,8 @@
 # Created from Shimmer's web-project template. It's your folder now: edit it freely.
 #
 #   shimmer workspaces activate <id>      open it all
-#   shimmer workspaces cleanup <id>       after a failed launch: stops the dev server
+#   shimmer workspaces stop <id>          stop the dev server and services (windows stay open)
+#   shimmer workspaces cleanup <id>       after a failed launch: the same, and back to ready
 #
 # Your answers are the [env] table at the bottom: change them there. "auto" is worked out each
 # time it opens, from the project itself (package.json, the lockfile, the git remote). A step

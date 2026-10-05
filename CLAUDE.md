@@ -633,7 +633,7 @@ Every launch step declares one. Confusing them is how we get orphaned processes.
 ### 10.3 State machine
 
 ```
-ready ──activate──> launching ──all steps ok──> active
+ready ──activate──> launching ──all steps ok──> active ──stop (cleanup script)──> ready
                         │
                         └──step fails──> dirty
                                           │
@@ -659,7 +659,9 @@ ready ──activate──> launching ──all steps ok──> active
   before walking away from the machine.
 - **Recovery is by cleanup script.** `cleanup.sh` runs `supervised`, same env vars. Success
   moves `dirty → ready`. If there is no cleanup script, `dirty` clears only via explicit
-  force relaunch or `workspaces.reset`.
+  force relaunch or `workspaces.reset`. The same script is what `workspaces.stop` runs on an
+  `active` workspace (`active → ready`): it stops the processes the workspace started, never
+  the person's own windows (ADR 0026).
 - **Force relaunch is loud.** A distinct op, not a casual flag. Emits
   `workspaces.session.forced` with the prior dirty reason attached, so if it breaks
   something worse there is a trail.

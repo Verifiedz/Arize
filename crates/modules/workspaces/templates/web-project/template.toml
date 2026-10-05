@@ -43,6 +43,12 @@ kind = "command"
 help = "e.g. docker compose up -d. Leave empty for none."
 
 [[question]]
+name = "SERVICES_STOP_COMMAND"
+prompt = "Command to stop those services"
+kind = "command"
+help = "Run by workspaces stop, e.g. docker compose down. Leave empty for none."
+
+[[question]]
 name = "DEV_COMMAND"
 prompt = "Dev server command"
 kind = "command"

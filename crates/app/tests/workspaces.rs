@@ -56,7 +56,10 @@ fn workspaces_are_registered_with_their_lane() {
             "workspaces.activate",
             "workspaces.cleanup",
             "workspaces.force_relaunch",
+            "workspaces.stop",
             "workspaces.reset",
+            "workspaces.remove",
+            "workspaces.restore",
             "workspaces.templates",
             "workspaces.create"
         ]

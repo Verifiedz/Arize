@@ -159,6 +159,28 @@
                 "execution": "inline"
               },
               {
+                "op": "workspaces.stop",
+                "summary": "Stop an active workspace by running its cleanup script",
+                "params_schema": {},
+                "execution": {
+                  "queued": {
+                    "lane": "workspaces"
+                  }
+                }
+              },
+              {
+                "op": "workspaces.remove",
+                "summary": "Remove a workspace that isn't running (restore brings it back)",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "workspaces.restore",
+                "summary": "Bring a removed workspace back",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
                 "op": "workspaces.templates",
                 "summary": "List the built-in workspace templates and their questions",
                 "params_schema": {},
@@ -176,7 +198,10 @@
               "workspaces.session.dirty",
               "workspaces.session.forced",
               "workspaces.session.cleaned",
-              "workspaces.workspace.created"
+              "workspaces.workspace.created",
+              "workspaces.session.stopped",
+              "workspaces.workspace.removed",
+              "workspaces.workspace.restored"
             ]
           }
         ]

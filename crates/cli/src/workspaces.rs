@@ -29,6 +29,10 @@ commands:
   cleanup NAME [--wait]                 run a dirty workspace's cleanup script
   force-relaunch NAME [--yes] [--wait]  launch a dirty workspace anyway (asks first)
   reset NAME [--yes]                    clear dirty without running cleanup (asks first)
+  stop NAME [--wait]                    stop what an active workspace started (its dev server,
+                                        services); windows stay open
+  remove NAME                           remove a workspace that isn't running
+  restore NAME                          bring a removed workspace back
 
   templates                             list ready-made workspaces to start from
   new NAME --from TEMPLATE              create a workspace from a template; asks its questions,
@@ -67,6 +71,16 @@ pub enum WorkspacesCmd {
         id: String,
         yes: bool,
     },
+    Stop {
+        id: String,
+        wait: bool,
+    },
+    Remove {
+        id: String,
+    },
+    Restore {
+        id: String,
+    },
     Templates,
     /// `set`: `--set NAME=VALUE` answers, in order (ADR 0025 §8).
     New {
@@ -101,7 +115,7 @@ pub fn parse(words: Vec<String>) -> std::result::Result<WorkspacesCmd, String> {
     // Which command takes which flag; anything else is a mistake worth naming.
     let (takes_yes, takes_wait) = match sub.as_str() {
         "force-relaunch" => (true, true),
-        "activate" | "cleanup" => (false, true),
+        "activate" | "cleanup" | "stop" => (false, true),
         "reset" => (true, false),
         _ => (false, false),
     };
@@ -127,6 +141,9 @@ pub fn parse(words: Vec<String>) -> std::result::Result<WorkspacesCmd, String> {
         "cleanup" => Ok(WorkspacesCmd::Cleanup { id: name(positional)?, wait }),
         "force-relaunch" => Ok(WorkspacesCmd::ForceRelaunch { id: name(positional)?, yes, wait }),
         "reset" => Ok(WorkspacesCmd::Reset { id: name(positional)?, yes }),
+        "stop" => Ok(WorkspacesCmd::Stop { id: name(positional)?, wait }),
+        "remove" => Ok(WorkspacesCmd::Remove { id: name(positional)? }),
+        "restore" => Ok(WorkspacesCmd::Restore { id: name(positional)? }),
         "templates" => match positional.is_empty() {
             true => Ok(WorkspacesCmd::Templates),
             false => Err("'workspaces templates' takes no arguments".into()),
@@ -250,6 +267,15 @@ pub async fn run(client: &mut Client, cmd: &WorkspacesCmd, json: bool, prompt: &
         }
         WorkspacesCmd::Activate { id, wait } => queued(client, Queued::Activate, id, *wait, json).await,
         WorkspacesCmd::Cleanup { id, wait } => queued(client, Queued::Cleanup, id, *wait, json).await,
+        WorkspacesCmd::Stop { id, wait } => queued(client, Queued::Stop, id, *wait, json).await,
+        WorkspacesCmd::Remove { id } => {
+            let data = client.call("workspaces.remove", id_params(id)).await?;
+            Ok(out(&data, format!("removed {id} (undo: shimmer workspaces restore {id})")))
+        }
+        WorkspacesCmd::Restore { id } => {
+            let data = client.call("workspaces.restore", id_params(id)).await?;
+            Ok(out(&data, format!("✓ {id} restored")))
+        }
         WorkspacesCmd::ForceRelaunch { id, yes, wait } => {
             if !*yes {
                 let current = client.call("workspaces.status", id_params(id)).await?;
@@ -298,6 +324,7 @@ pub async fn run(client: &mut Client, cmd: &WorkspacesCmd, json: bool, prompt: &
 enum Queued {
     Activate,
     Cleanup,
+    Stop,
     ForceRelaunch,
 }
 
@@ -306,6 +333,7 @@ impl Queued {
         match self {
             Self::Activate => "workspaces.activate",
             Self::Cleanup => "workspaces.cleanup",
+            Self::Stop => "workspaces.stop",
             Self::ForceRelaunch => "workspaces.force_relaunch",
         }
     }
@@ -314,6 +342,7 @@ impl Queued {
         match self {
             Self::Activate => "launch",
             Self::Cleanup => "cleanup",
+            Self::Stop => "stop",
             Self::ForceRelaunch => "forced relaunch",
         }
     }
@@ -322,6 +351,7 @@ impl Queued {
         match self {
             Self::Activate | Self::ForceRelaunch => format!("✓ {id} is active"),
             Self::Cleanup => format!("✓ {id} is cleaned up and ready"),
+            Self::Stop => format!("✓ {id} is stopped (ready)"),
         }
     }
 }
@@ -692,6 +722,13 @@ mod tests {
         for yes in [&["reset", "--yes", "deep-work"][..], &["reset", "deep-work", "-y"]] {
             assert_eq!(parse_words(yes).unwrap(), WorkspacesCmd::Reset { id: "deep-work".into(), yes: true });
         }
+        assert_eq!(
+            parse_words(&["stop", "site", "--wait"]).unwrap(),
+            WorkspacesCmd::Stop { id: "site".into(), wait: true }
+        );
+        assert_eq!(parse_words(&["remove", "site"]).unwrap(), WorkspacesCmd::Remove { id: "site".into() });
+        assert_eq!(parse_words(&["restore", "site"]).unwrap(), WorkspacesCmd::Restore { id: "site".into() });
+        assert!(parse_words(&["remove", "site", "--wait"]).unwrap_err().contains("takes no --wait"));
     }
 
     #[test]
