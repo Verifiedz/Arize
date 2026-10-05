@@ -112,6 +112,13 @@ impl Item {
     }
 }
 
+/// The fields whose value differs between `before` and `after`, sorted: set, unset, or changed
+/// (ADR 0017 §8).
+pub fn changed(before: &BTreeMap<String, Value>, after: &BTreeMap<String, Value>) -> Vec<String> {
+    let keys: std::collections::BTreeSet<&String> = before.keys().chain(after.keys()).collect();
+    keys.into_iter().filter(|k| before.get(*k) != after.get(*k)).cloned().collect()
+}
+
 /// Exact equality on every key of `filter`, against the wire shape; `null` matches unset.
 pub fn matches(wire: &Value, filter: &Map<String, Value>) -> bool {
     filter.iter().all(|(k, want)| wire.get(k).unwrap_or(&Value::Null) == want)
@@ -203,6 +210,14 @@ mod tests {
             json!({"id": "lru-cache", "status": "todo", "title": "LRU Cache", "difficulty": "medium",
                    "url": null, "last_solved": null})
         );
+    }
+
+    #[test]
+    fn changed_lists_only_real_changes() {
+        let before: BTreeMap<String, Value> = obj(json!({"a": 1, "b": "x", "c": true})).into_iter().collect();
+        let after: BTreeMap<String, Value> = obj(json!({"a": 1, "b": "y", "d": 2})).into_iter().collect();
+        assert_eq!(changed(&before, &after), ["b", "c", "d"], "changed, unset and set; 'a' is the same");
+        assert!(changed(&before, &before).is_empty());
     }
 
     #[test]

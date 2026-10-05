@@ -65,7 +65,10 @@ async fn add_writes_one_file_and_one_event() {
 
     let ev = env.backend.events().pop().unwrap();
     assert_eq!(ev.topic, "records.item.created");
-    assert_eq!(ev.payload, json!({"collection": "leetcode", "id": "two-sum", "item": item}));
+    assert_eq!(
+        ev.payload,
+        json!({"collection": "leetcode", "id": "two-sum", "title": "Two Sum", "deadlines": {}, "item": item})
+    );
 }
 
 #[tokio::test]
@@ -370,7 +373,10 @@ async fn reopen_writes_todo_and_its_own_event() {
     assert!(file(&env, "items/leetcode/two-sum.toml").unwrap().contains("status = \"todo\""));
     let ev = env.backend.events().pop().unwrap();
     assert_eq!(ev.topic, "records.item.reopened");
-    assert_eq!(ev.payload, json!({"collection": "leetcode", "id": "two-sum", "item": item}));
+    assert_eq!(
+        ev.payload,
+        json!({"collection": "leetcode", "id": "two-sum", "title": "Two Sum", "deadlines": {}, "item": item})
+    );
 
     // Reopening again: not done, so conflict, and nothing written.
     let before = topics(&env).len();
@@ -463,4 +469,178 @@ async fn collections_always_say_what_a_repeat_completion_does() {
     };
     assert_eq!(repeat("leetcode"), "restamp", "the default is filled in");
     assert_eq!(repeat("jobs"), "refuse");
+}
+
+// ---------------------------------------------------------------- ADR 0017: integration metadata
+
+/// What a job-applications template will look like: a title, a unique URL, deadlines.
+fn add_postings_collection(env: &TestEnv) {
+    env.ctx
+        .store
+        .write(
+            "collections/postings.toml",
+            r#"
+            [collection]
+            id = "postings"
+            label = "Postings"
+            title = "{company}: {position}"
+            stamp_on_complete = "applied_on"
+
+            [[field]]
+            name = "company"
+            type = "string"
+            required = true
+
+            [[field]]
+            name = "position"
+            type = "string"
+
+            [[field]]
+            name = "url"
+            type = "string"
+            role = "url"
+            unique = true
+
+            [[field]]
+            name = "stage"
+            type = "enum"
+            values = ["oa", "interview"]
+
+            [[field]]
+            name = "oa_deadline"
+            type = "date"
+            role = "deadline"
+
+            [[field]]
+            name = "applied_on"
+            type = "date"
+
+            [extra.calendar]
+            lead_days = [3, 1]
+            "#,
+        )
+        .unwrap();
+}
+
+async fn add_posting(r: &Records, env: &TestEnv, id: &str, fields: Value) -> Result<Value> {
+    call(r, env, "records.add", json!({"collection": "postings", "id": id, "fields": fields})).await
+}
+
+#[tokio::test]
+async fn events_carry_the_title_and_the_deadlines() {
+    let (r, env) = setup().await;
+    add_postings_collection(&env);
+    add_posting(
+        &r,
+        &env,
+        "amazon",
+        json!({"company": "Amazon", "position": "SDE Intern", "oa_deadline": "2026-10-20", "applied_on": "2026-10-04"}),
+    )
+    .await
+    .unwrap();
+    let ev = env.backend.events().pop().unwrap();
+    assert_eq!(ev.payload["title"], "Amazon: SDE Intern");
+    assert_eq!(ev.payload["deadlines"], json!({"oa_deadline": "2026-10-20"}), "applied_on has no role: history");
+
+    // Every item event says so, not just created.
+    for (op, extra) in [("records.update", json!({"fields": {"stage": "oa"}})), ("records.complete", json!({}))] {
+        let mut params = json!({"collection": "postings", "id": "amazon"});
+        params.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        call(&r, &env, op, params).await.unwrap();
+        let ev = env.backend.events().pop().unwrap();
+        assert_eq!(
+            (ev.payload["title"].clone(), ev.payload["deadlines"]["oa_deadline"].clone()),
+            (json!("Amazon: SDE Intern"), json!("2026-10-20")),
+            "{op}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_unique_value_can_be_taken_only_once() {
+    let (r, env) = setup().await;
+    add_postings_collection(&env);
+    let url = "https://amazon.jobs/123";
+    add_posting(&r, &env, "amazon", json!({"company": "Amazon", "url": url})).await.unwrap();
+    let before = topics(&env).len();
+
+    let want = format!("url '{url}' is already used by 'amazon' in 'postings'");
+    let e = add_posting(&r, &env, "dup", json!({"company": "Amazon", "url": url})).await.unwrap_err();
+    assert_eq!((e.code, e.message.as_str()), (ErrorCode::Conflict, want.as_str()));
+    assert!(file(&env, "items/postings/dup.toml").is_none());
+
+    add_posting(&r, &env, "other", json!({"company": "Other"})).await.unwrap();
+    let e = call(&r, &env, "records.update", json!({"collection": "postings", "id": "other", "fields": {"url": url}}))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::Conflict, "update");
+    let e =
+        call(&r, &env, "records.complete", json!({"collection": "postings", "id": "other", "fields": {"url": url}}))
+            .await
+            .unwrap_err();
+    assert_eq!(e.code, ErrorCode::Conflict, "complete with fields");
+    assert_eq!(topics(&env).len(), before + 1, "only 'other' was added; the refused writes emitted nothing");
+
+    // A record keeps its own value: updating it with the same URL is fine.
+    call(&r, &env, "records.update", json!({"collection": "postings", "id": "amazon", "fields": {"url": url}}))
+        .await
+        .unwrap();
+    // Unset and "" never count: many records may have no URL.
+    add_posting(&r, &env, "no-url-1", json!({"company": "A", "url": ""})).await.unwrap();
+    add_posting(&r, &env, "no-url-2", json!({"company": "B", "url": ""})).await.unwrap();
+}
+
+#[tokio::test]
+async fn hand_edited_duplicates_stay_readable_and_editable() {
+    let (r, env) = setup().await;
+    add_postings_collection(&env);
+    for id in ["a", "b"] {
+        env.ctx.store.write(&format!("items/postings/{id}.toml"), "company = \"X\"\nurl = \"https://same\"\n").unwrap();
+    }
+    let list = call(&r, &env, "records.list", json!({"collection": "postings"})).await.unwrap();
+    assert_eq!(list["total"], 2);
+    // Changing another field of a duplicate still works; only taking a used value fails.
+    call(&r, &env, "records.update", json!({"collection": "postings", "id": "a", "fields": {"stage": "oa"}}))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn changed_lists_only_fields_whose_value_changed() {
+    let (r, env) = setup().await;
+    add_postings_collection(&env);
+    add_posting(&r, &env, "amazon", json!({"company": "Amazon", "stage": "oa"})).await.unwrap();
+    let changed = |env: &TestEnv| env.backend.events().pop().unwrap().payload["changed"].clone();
+
+    call(
+        &r,
+        &env,
+        "records.update",
+        json!({"collection": "postings", "id": "amazon", "fields": {"stage": "interview", "company": "Amazon"}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(changed(&env), json!(["stage"]), "company was sent but didn't change");
+
+    call(&r, &env, "records.update", json!({"collection": "postings", "id": "amazon", "fields": {"stage": null}}))
+        .await
+        .unwrap();
+    assert_eq!(changed(&env), json!(["stage"]), "unsetting is a change");
+
+    call(&r, &env, "records.update", json!({"collection": "postings", "id": "amazon", "fields": {"stage": null}}))
+        .await
+        .unwrap();
+    assert_eq!(changed(&env), json!([]), "nothing changed, but the request is still answered with an event");
+}
+
+#[tokio::test]
+async fn collections_return_the_integration_keys() {
+    let (r, env) = setup().await;
+    add_postings_collection(&env);
+    let data = call(&r, &env, "records.collections", json!({})).await.unwrap();
+    let c = data["collections"].as_array().unwrap().iter().find(|c| c["id"] == "postings").unwrap().clone();
+    assert_eq!(c["title"], "{company}: {position}");
+    assert_eq!(c["extra"], json!({"calendar": {"lead_days": [3, 1]}}));
+    let url = c["fields"].as_array().unwrap().iter().find(|f| f["name"] == "url").unwrap().clone();
+    assert_eq!((url["role"].clone(), url["unique"].clone()), (json!("url"), json!(true)));
 }

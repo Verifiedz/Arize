@@ -338,21 +338,29 @@ fn collections(data: &Value) -> String {
     out
 }
 
-/// `difficulty (easy|medium|hard)`, `title*` for required, `last_solved (date)`.
+/// `difficulty (easy|medium|hard)`, `title*` for required, `last_solved (date)`, and a field's
+/// role and uniqueness (ADR 0017): `url (url, unique)`, `oa_deadline (date, deadline)`.
 fn describe_field(f: &Value) -> String {
     let mut s = cell(&f["name"]);
     if f["required"] == true {
         s.push('*');
     }
+    let mut notes = Vec::new();
     match f["type"].as_str() {
         Some("enum") => {
-            let values: Vec<String> = f["values"].as_array().into_iter().flatten().map(cell).collect();
-            let _ = write!(s, " ({})", values.join("|"));
+            notes.push(f["values"].as_array().into_iter().flatten().map(cell).collect::<Vec<_>>().join("|"))
         }
         Some("string") | None => {}
-        Some(other) => {
-            let _ = write!(s, " ({other})");
-        }
+        Some(other) => notes.push(other.to_owned()),
+    }
+    if let Some(role) = f["role"].as_str() {
+        notes.push(role.to_owned());
+    }
+    if f["unique"] == true {
+        notes.push("unique".to_owned());
+    }
+    if !notes.is_empty() {
+        let _ = write!(s, " ({})", notes.join(", "));
     }
     s
 }
@@ -640,6 +648,21 @@ lru-cache  todo    LRU Cache  medium      -    -            2         true
         let out = show(&RecordsCmd::Collections, &data, &Value::Null);
         assert!(
             out.contains("leetcode  LeetCode  title*, difficulty (easy|medium|hard), url, last_solved (date)"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn collections_show_roles_and_unique() {
+        let jobs = json!({"id": "jobs", "label": "Jobs", "fields": [
+            {"name": "company", "type": "string", "required": true},
+            {"name": "url", "type": "string", "required": false, "role": "url", "unique": true},
+            {"name": "stage", "type": "enum", "values": ["oa", "interview"], "required": false},
+            {"name": "oa_deadline", "type": "date", "required": false, "role": "deadline"}
+        ]});
+        let out = show(&RecordsCmd::Collections, &json!({"collections": [jobs]}), &Value::Null);
+        assert!(
+            out.contains("company*, url (url, unique), stage (oa|interview), oa_deadline (date, deadline)"),
             "{out}"
         );
     }

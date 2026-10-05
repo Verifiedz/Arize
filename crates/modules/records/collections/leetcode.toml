@@ -3,6 +3,8 @@
 [collection]
 id = "leetcode"
 label = "LeetCode"
+# How a problem is named in reminders and notifications (ADR 0017).
+title = "{title}"
 # `records.complete` sets this field to today's date.
 stamp_on_complete = "last_solved"
 

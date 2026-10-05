@@ -195,14 +195,16 @@ impl Records {
         let item = Item::new(&p.id, p.fields);
         let wire = item.to_wire(&c);
 
+        // Under the write lock, so nothing can take the id or a unique value in between.
         let _g = self.write.lock();
         let path = item_path(&c.id, &p.id);
+        if ctx.store.read_string(&path)?.is_some() {
+            return Err(Error::conflict(format!("'{}' already has a record '{}'", c.id, p.id)));
+        }
+        check_unique(ctx, &c, &item.id, &item.fields_map())?;
         ctx.store.transaction(|tx| {
-            if tx.read(&path)?.is_some() {
-                return Err(Error::conflict(format!("'{}' already has a record '{}'", c.id, p.id)));
-            }
             tx.put(&path, item.to_toml())?;
-            tx.emit("records.item.created", json!({"collection": c.id, "id": p.id, "item": wire}))
+            tx.emit("records.item.created", payload(&c, &item, &wire))
         })?;
         Ok(wire)
     }
@@ -246,17 +248,20 @@ impl Records {
     fn update(&self, ctx: &Ctx, p: WithFields) -> Result<Value> {
         let c = load_collection(ctx, &p.collection)?;
         c.check_changes(&p.fields)?;
-        let mut changed: Vec<String> = p.fields.keys().cloned().collect();
-        changed.sort();
 
         let _g = self.write.lock();
-        let mut item = load_item(ctx, &c, &p.id)?;
+        let before = load_item(ctx, &c, &p.id)?;
+        check_unique(ctx, &c, &p.id, &p.fields)?;
+        let mut item = before.clone();
         item.apply(p.fields);
         c.check_required(&item.fields_map())?;
         let wire = item.to_wire(&c);
+        let mut event = payload(&c, &item, &wire);
+        // Only fields whose value actually changed (ADR 0017 §8).
+        event["changed"] = json!(item::changed(&before.fields, &item.fields));
         ctx.store.transaction(|tx| {
             tx.put(&item_path(&c.id, &p.id), item.to_toml())?;
-            tx.emit("records.item.updated", json!({"collection": c.id, "id": p.id, "item": wire, "changed": changed}))
+            tx.emit("records.item.updated", event)
         })?;
         Ok(wire)
     }
@@ -269,7 +274,9 @@ impl Records {
         let today = shimmer_core::local_date(ctx.clock.now(), &ctx.local_tz).format("%Y-%m-%d").to_string();
 
         let _g = self.write.lock();
-        let item = lifecycle::complete(&c, &load_item(ctx, &c, &p.id)?, p.fields, &today)?;
+        let current = load_item(ctx, &c, &p.id)?;
+        check_unique(ctx, &c, &p.id, &p.fields)?;
+        let item = lifecycle::complete(&c, &current, p.fields, &today)?;
         self.save(ctx, &c, &item, "records.item.completed")
     }
 
@@ -281,12 +288,12 @@ impl Records {
         self.save(ctx, &c, &item, "records.item.reopened")
     }
 
-    /// Write `item` and emit `topic` with the full wire item, in one transaction (§7.1).
+    /// Write `item` and emit `topic` with its payload, in one transaction (§7.1).
     fn save(&self, ctx: &Ctx, c: &Collection, item: &Item, topic: &str) -> Result<Value> {
         let wire = item.to_wire(c);
         ctx.store.transaction(|tx| {
             tx.put(&item_path(&c.id, &item.id), item.to_toml())?;
-            tx.emit(topic, json!({"collection": c.id, "id": item.id, "item": wire}))
+            tx.emit(topic, payload(c, item, &wire))
         })?;
         Ok(wire)
     }
@@ -301,6 +308,47 @@ impl Records {
         })?;
         Ok(json!({"removed": true}))
     }
+}
+
+/// An item event's payload: what changed, what to call it, and what is due (ADR 0017 §7), so a
+/// listener needs nothing but the event.
+fn payload(c: &Collection, item: &Item, wire: &Value) -> Value {
+    json!({
+        "collection": c.id,
+        "id": item.id,
+        "title": c.title_of(&item.id, &item.fields),
+        "deadlines": c.deadlines_of(&item.fields),
+        "item": wire,
+    })
+}
+
+/// No other record in the collection already has a value a unique field in `values` would take
+/// (ADR 0017 §4). Reads every record, like `records.list`; called under the write lock so two
+/// requests can't both take a value. Unreadable files are skipped: they never block a write.
+fn check_unique(ctx: &Ctx, c: &Collection, id: &str, values: &Map<String, Value>) -> Result<()> {
+    let wanted = c.unique_values(values);
+    if wanted.is_empty() {
+        return Ok(());
+    }
+    let dir = format!("items/{}", c.id);
+    for path in ctx.store.list(&dir)? {
+        let Some(other) = path.strip_prefix(&format!("{dir}/")).and_then(|p| p.strip_suffix(".toml")) else {
+            continue;
+        };
+        if other == id {
+            continue;
+        }
+        let Some(Ok(record)) = ctx.store.read_string(&path)?.map(|text| Item::from_toml(other, &text)) else {
+            continue;
+        };
+        for (field, value) in &wanted {
+            if record.fields.get(*field) == Some(*value) {
+                let shown = value.as_str().map_or_else(|| value.to_string(), str::to_owned);
+                return Err(Error::conflict(format!("{field} '{shown}' is already used by '{other}' in '{}'", c.id)));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn load_collection(ctx: &Ctx, id: &str) -> Result<Collection> {
