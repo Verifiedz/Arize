@@ -1375,7 +1375,7 @@ async fn a_certification_is_earned_then_renewed() {
     let (r, env) = setup().await;
     call(&r, &env, "records.create_collection", json!({"id": "certs", "template": "certifications"})).await.unwrap();
     call(&r, &env, "records.add", json!({"collection": "certs", "fields": {
-        "name": "AWS Solutions Architect - Associate", "provider": "AWS", "stage": "studying", "exam_date": "2026-12-10"}}))
+        "name": "AWS Solutions Architect - Associate", "provider": "AWS", "stage": "studying", "exam_at": "2026-12-10 09:00"}}))
         .await
         .unwrap();
     let id = "aws-solutions-architect-associate";
@@ -1385,7 +1385,8 @@ async fn a_certification_is_earned_then_renewed() {
     assert_eq!(earned["status"], "done");
     assert_eq!(
         env.backend.events().pop().unwrap().payload["deadlines"],
-        json!({"exam_date": "2026-12-10", "expires_on": "2029-12-10"})
+        json!({"exam_at": "2026-12-10T09:00:00Z", "expires_on": "2029-12-10"}),
+        "a local time is stored as UTC (the test timezone is UTC)"
     );
     // Renewing three years on is another completion, with a new expiry.
     env.clock.advance(Duration::from_secs(3 * 365 * 86_400));
@@ -1406,15 +1407,17 @@ async fn an_event_is_attended_then_followed_up() {
         &env,
         "records.add",
         json!({"collection": "events", "fields": {
-        "name": "Fall Career Fair 2026", "kind": "career-fair", "event_date": "2026-10-22",
-        "registration_deadline": "2026-10-15", "rsvp": "registered"}}),
+        "name": "Fall Career Fair 2026", "kind": "career-fair", "starts_at": "2026-10-22 18:00",
+        "companies": ["Shopify", "RBC"], "registration_deadline": "2026-10-15", "rsvp": "registered"}}),
     )
     .await
     .unwrap();
     assert_eq!(
         env.backend.events().pop().unwrap().payload["deadlines"],
-        json!({"event_date": "2026-10-22", "registration_deadline": "2026-10-15"})
+        json!({"starts_at": "2026-10-22T18:00:00Z", "registration_deadline": "2026-10-15"})
     );
+    let shopify = json!({"collection": "events", "filter": {"companies": {"has": "shopify"}}});
+    assert_eq!(call(&r, &env, "records.list", shopify).await.unwrap()["total"], 1);
     let attended = call(
         &r,
         &env,

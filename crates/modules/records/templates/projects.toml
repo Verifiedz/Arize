@@ -39,8 +39,9 @@ type = "enum"
 values = ["idea", "planning", "prototype", "building", "alpha", "beta", "launched", "maintained", "paused", "archived", "abandoned"]
 
 [[field]]
-name = "stack"           # e.g. "Rust, SQLite, Tokio"
-type = "string"
+name = "stack"           # --stack "Rust, SQLite, Tokio"; --filter "stack has rust"
+type = "list"
+of = "string"
 
 [[field]]
 name = "your_role"       # e.g. "solo", "backend lead"

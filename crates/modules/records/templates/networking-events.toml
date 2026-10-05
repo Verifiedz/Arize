@@ -1,13 +1,12 @@
 # Networking events: one record per meetup, conference, career fair or info session.
 # Created from Shimmer's networking-events template. It's your file now: edit it freely.
 #
-# Times are text ("18:00") for now; the day itself is a date the calendar can remind you about.
-#
 # How it works:
 #   shimmer records add <collection> --name "Fall Career Fair 2026" --kind career-fair \
-#       --companies "Shopify, RBC, Amazon" --event-date 2026-10-22 --registration-deadline 2026-10-15 \
+#       --companies "Shopify, RBC, Amazon" --starts-at "2026-10-22 18:00" --registration-deadline 2026-10-15 \
 #       --rsvp registered --bring-resume true --goal "talk to Shopify about the backend internship"
-#   shimmer records list <collection> --filter "status=todo" --sort event_date          what's coming up
+#   shimmer records list <collection> --filter "status=todo" --sort starts_at           what's coming up
+#   shimmer records list <collection> --filter "companies has shopify"                   where Shopify will be
 #   shimmer records complete <collection>/<id> --contacts-made 4 --follow-up-on 2026-10-24 --worth-it great
 #                                                                                       attended: stamps attended_on
 #   shimmer records list <collection> --filter "followed_up!=true" --sort follow_up_on  who you still owe a message
@@ -44,7 +43,8 @@ type = "string"
 
 [[field]]
 name = "companies"       # who'll be there: booths, sponsors, speakers' companies
-type = "string"
+type = "list"
+of = "string"
 
 [[field]]
 name = "format"
@@ -63,17 +63,13 @@ role = "url"
 # ---- when -----------------------------------------------------------------------------------
 
 [[field]]
-name = "event_date"      # the day; the calendar can remind you
-type = "date"
+name = "starts_at"       # "2026-10-22 18:00" in your timezone, or just the day; the calendar can remind you
+type = "datetime"
 role = "deadline"
 
 [[field]]
 name = "end_date"        # for events over several days
 type = "date"
-
-[[field]]
-name = "start_time"      # e.g. "18:00"
-type = "string"
 
 [[field]]
 name = "registration_deadline"
