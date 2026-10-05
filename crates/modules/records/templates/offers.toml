@@ -1,0 +1,157 @@
+# Offers: one record per job offer, to compare them and answer each one in time.
+# Created from Shimmer's offers template. It's your file now: edit it freely.
+#
+# Money is whole numbers in your currency. Records can't add things up, so total_comp is your
+# own estimate of the first year's total, there so you can sort offers by it.
+#
+# How it works:
+#   shimmer records add <collection> --company Amazon --position "SDE Intern" --application amazon-sde-intern \
+#       --hourly-rate 52 --currency CAD --decision-deadline 2026-11-01 --decision considering
+#   shimmer records list <collection> --filter "status=todo" --sort decision_deadline   still to answer, soonest first
+#   shimmer records list <collection> --sort -total_comp                               best first
+#   shimmer records complete <collection>/<id> --decision accepted                     decided: stamps decided_on
+
+[collection]
+id = "offers"
+label = "Offers"
+description = "Job offers side by side: pay, equity, deadlines, and what you decided"
+title = "{company}: {position}"
+# Completing an offer means "decided" (accepted, declined…): it stamps decided_on.
+stamp_on_complete = "decided_on"
+repeat_complete = "refuse"
+related = ["job-applications", "interviews"]
+
+# ---- the job --------------------------------------------------------------------------------
+
+[[field]]
+name = "company"
+type = "string"
+required = true
+
+[[field]]
+name = "position"
+type = "string"
+required = true
+
+[[field]]
+name = "application"     # the id of the job in your job-applications collection
+type = "string"
+
+[[field]]
+name = "level"
+type = "enum"
+values = ["intern", "new-grad", "junior", "mid", "senior", "staff"]
+
+[[field]]
+name = "team"
+type = "string"
+
+[[field]]
+name = "employment_type"
+type = "enum"
+values = ["full-time", "part-time", "internship", "co-op", "contract"]
+
+[[field]]
+name = "location"
+type = "string"
+
+[[field]]
+name = "work_mode"
+type = "enum"
+values = ["remote", "hybrid", "onsite"]
+
+[[field]]
+name = "start_date"      # when you'd start
+type = "date"
+
+# ---- deciding -------------------------------------------------------------------------------
+
+[[field]]
+name = "received_on"
+type = "date"
+
+[[field]]
+name = "decision_deadline" # when you must answer; the calendar can remind you
+type = "date"
+role = "deadline"
+
+[[field]]
+name = "decision"
+type = "enum"
+values = ["considering", "negotiating", "accepted", "declined", "withdrawn", "rescinded", "expired"]
+
+[[field]]
+name = "decided_on"      # stamped by records complete
+type = "date"
+
+# ---- pay (whole numbers, in currency) ------------------------------------------------------
+
+[[field]]
+name = "currency"        # e.g. "CAD", "USD"
+type = "string"
+
+[[field]]
+name = "base_salary"     # yearly, for full-time roles
+type = "int"
+
+[[field]]
+name = "hourly_rate"     # for internships and co-ops
+type = "int"
+
+[[field]]
+name = "sign_on_bonus"
+type = "int"
+
+[[field]]
+name = "relocation"
+type = "int"
+
+[[field]]
+name = "annual_bonus"    # e.g. "10% target", "performance-based"
+type = "string"
+
+[[field]]
+name = "equity"          # e.g. "$120k RSUs over 4 years, 1-year cliff"
+type = "string"
+
+[[field]]
+name = "equity_per_year" # your yearly estimate, for comparing
+type = "int"
+
+[[field]]
+name = "total_comp"      # your estimate of the first year's total, for sorting offers
+type = "int"
+
+[[field]]
+name = "pto_days"
+type = "int"
+
+[[field]]
+name = "benefits"        # health, retirement match, learning budget…
+type = "string"
+
+[[field]]
+name = "visa_sponsorship"
+type = "bool"
+
+# ---- negotiating and paperwork -------------------------------------------------------------
+
+[[field]]
+name = "negotiated"
+type = "bool"
+
+[[field]]
+name = "negotiation_notes" # what you asked for, what they said
+type = "string"
+
+[[field]]
+name = "recruiter"       # name and contact
+type = "string"
+
+[[field]]
+name = "offer_letter"    # a path or link to the PDF
+type = "string"
+
+[[field]]
+name = "notes"
+type = "string"

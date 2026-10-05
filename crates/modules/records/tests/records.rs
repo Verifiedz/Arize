@@ -1033,6 +1033,7 @@ async fn every_template_is_listed_and_creates_a_valid_collection() {
             "interviews",
             "job-applications",
             "leetcode",
+            "offers",
             "projects",
             "stories"
         ]
@@ -1069,7 +1070,7 @@ async fn create_collection_never_overwrites_and_says_what_exists() {
         (
             json!({"id": "jobs", "template": "jobs"}),
             ErrorCode::NotFound,
-            "there are: addresses, charity, education, employment, interview-questions, interviews, job-applications, leetcode, projects, stories",
+            "there are: addresses, charity, education, employment, interview-questions, interviews, job-applications, leetcode, offers, projects, stories",
         ),
         (json!({"id": "Jobs!", "template": "job-applications"}), ErrorCode::InvalidParams, "not a valid collection id"),
         (json!({"id": "jobs", "template": "job-applications", "label": " "}), ErrorCode::InvalidParams, "label"),
@@ -1327,4 +1328,39 @@ async fn a_project_is_shipped_once_and_sorts_by_stars() {
     .unwrap();
     let ids: Vec<&str> = resume["items"].as_array().unwrap().iter().map(|i| i["id"].as_str().unwrap()).collect();
     assert_eq!(ids, ["shimmer", "todo-app"]);
+}
+
+#[tokio::test]
+async fn offers_compare_by_total_comp_and_are_decided_once() {
+    let (r, env) = setup().await;
+    call(&r, &env, "records.create_collection", json!({"id": "offers", "template": "offers"})).await.unwrap();
+    for (company, total, deadline) in [("Amazon", 95_000, "2026-11-01"), ("Google", 110_000, "2026-10-20")] {
+        call(
+            &r,
+            &env,
+            "records.add",
+            json!({"collection": "offers", "fields": {
+            "company": company, "position": "SWE", "total_comp": total, "currency": "CAD",
+            "decision_deadline": deadline, "decision": "considering"}}),
+        )
+        .await
+        .unwrap();
+    }
+    let ev = env.backend.events().pop().unwrap();
+    assert_eq!(ev.payload["deadlines"], json!({"decision_deadline": "2026-10-20"}));
+    let best = call(&r, &env, "records.list", json!({"collection": "offers", "sort": ["-total_comp"]})).await.unwrap();
+    assert_eq!(best["items"][0]["id"], "google-swe");
+    let target = json!({"collection": "offers", "id": "google-swe", "fields": {"decision": "accepted"}});
+    let decided = call(&r, &env, "records.complete", target.clone()).await.unwrap();
+    assert_eq!((decided["status"].clone(), decided["decision"].clone()), (json!("done"), json!("accepted")));
+    assert_eq!(call(&r, &env, "records.complete", target).await.unwrap_err().code, ErrorCode::Conflict);
+    let open = call(
+        &r,
+        &env,
+        "records.list",
+        json!({"collection": "offers", "filter": {"status": "todo"}, "sort": ["decision_deadline"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(open["items"][0]["id"], "amazon-swe", "still to answer");
 }

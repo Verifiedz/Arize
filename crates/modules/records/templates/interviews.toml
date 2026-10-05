@@ -19,7 +19,7 @@ title = "{application}: {kind}"
 # Completing a round means it happened: it stamps today's date in done_on.
 stamp_on_complete = "done_on"
 repeat_complete = "refuse"
-related = ["job-applications", "interview-questions", "stories"]
+related = ["job-applications", "interview-questions", "stories", "offers"]
 
 [[field]]
 name = "application"     # the id of the job in your job-applications collection
