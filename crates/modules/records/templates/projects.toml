@@ -1,0 +1,110 @@
+# Projects: one record per thing you've built or are building, for your portfolio, resume and
+# interviews. Created from Shimmer's projects template. It's your file now: edit it freely.
+#
+# How it works:
+#   shimmer records add <collection> --name Shimmer --pitch "Local-first productivity platform" \
+#       --kind personal --stage building --stack "Rust, SQLite" --repo-url https://github.com/you/shimmer
+#   shimmer records list <collection> --filter "status=todo" --sort due_on      what you're building, by deadline
+#   shimmer records complete <collection>/<id> --users 200                      shipped: stamps shipped_on
+#   shimmer records list <collection> --filter "on_resume=true" --sort -stars   what's on your resume
+
+[collection]
+id = "projects"
+label = "Projects"
+description = "What you've built: pitch, stack, links, impact, and the lines for your resume and interviews"
+title = "{name}"
+# Completing a project means "shipped": it stamps shipped_on. Not shipped yet = todo.
+stamp_on_complete = "shipped_on"
+# Shipping happens once; reopen a project to revive it.
+repeat_complete = "refuse"
+related = ["stories", "job-applications"]
+
+[[field]]
+name = "name"
+type = "string"
+required = true
+
+[[field]]
+name = "pitch"           # the one-liner
+type = "string"
+
+[[field]]
+name = "kind"
+type = "enum"
+values = ["personal", "school", "capstone", "hackathon", "game-jam", "competition", "open-source", "internship", "work", "freelance", "startup", "research", "learning", "other"]
+
+[[field]]
+name = "stage"           # where it stands; listed in order, so --sort stage follows it
+type = "enum"
+values = ["idea", "planning", "prototype", "building", "alpha", "beta", "launched", "maintained", "paused", "archived", "abandoned"]
+
+[[field]]
+name = "stack"           # e.g. "Rust, SQLite, Tokio"
+type = "string"
+
+[[field]]
+name = "your_role"       # e.g. "solo", "backend lead"
+type = "string"
+
+[[field]]
+name = "team_size"
+type = "int"
+
+[[field]]
+name = "repo_url"        # the same project can't be added twice
+type = "string"
+role = "url"
+unique = true
+
+[[field]]
+name = "live_url"        # the running site or app
+type = "string"
+
+[[field]]
+name = "demo_url"        # a video or screenshots
+type = "string"
+
+[[field]]
+name = "started_on"
+type = "date"
+
+[[field]]
+name = "next_milestone"  # e.g. "public beta", "submit to the hackathon"
+type = "string"
+
+[[field]]
+name = "due_on"          # the milestone or hackathon deadline; the calendar can remind you
+type = "date"
+role = "deadline"
+
+[[field]]
+name = "shipped_on"      # stamped by records complete
+type = "date"
+
+[[field]]
+name = "users"           # how many people use it
+type = "int"
+
+[[field]]
+name = "stars"           # e.g. GitHub stars
+type = "int"
+
+[[field]]
+name = "impact"          # anything else that shows it mattered, e.g. "won 2nd place"
+type = "string"
+
+[[field]]
+name = "challenges"      # the hardest technical problem; interviewers always ask
+type = "string"
+
+[[field]]
+name = "resume_bullet"   # the exact line on your resume
+type = "string"
+
+[[field]]
+name = "on_resume"       # on your resume right now
+type = "bool"
+
+[[field]]
+name = "notes"
+type = "string"

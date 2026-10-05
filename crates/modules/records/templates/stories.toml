@@ -20,7 +20,7 @@ title = "{name}"
 stamp_on_complete = "last_practiced"
 # Practising again is another practice.
 repeat_complete = "restamp"
-related = ["interview-questions", "interviews", "employment"]
+related = ["interview-questions", "interviews", "employment", "projects"]
 
 [[field]]
 name = "name"            # a short handle, e.g. "Billing migration crunch"

@@ -1033,6 +1033,7 @@ async fn every_template_is_listed_and_creates_a_valid_collection() {
             "interviews",
             "job-applications",
             "leetcode",
+            "projects",
             "stories"
         ]
     );
@@ -1068,7 +1069,7 @@ async fn create_collection_never_overwrites_and_says_what_exists() {
         (
             json!({"id": "jobs", "template": "jobs"}),
             ErrorCode::NotFound,
-            "there are: addresses, charity, education, employment, interview-questions, interviews, job-applications, leetcode, stories",
+            "there are: addresses, charity, education, employment, interview-questions, interviews, job-applications, leetcode, projects, stories",
         ),
         (json!({"id": "Jobs!", "template": "job-applications"}), ErrorCode::InvalidParams, "not a valid collection id"),
         (json!({"id": "jobs", "template": "job-applications", "label": " "}), ErrorCode::InvalidParams, "label"),
@@ -1284,4 +1285,46 @@ async fn a_question_points_at_the_story_that_answers_it() {
             .await
             .unwrap();
     assert_eq!(told["total"], 1);
+}
+
+#[tokio::test]
+async fn a_project_is_shipped_once_and_sorts_by_stars() {
+    let (r, env) = setup().await;
+    call(&r, &env, "records.create_collection", json!({"id": "projects", "template": "projects"})).await.unwrap();
+    for (name, stars, url) in
+        [("Shimmer", 40, "https://github.com/x/shimmer"), ("Todo app", 3, "https://github.com/x/todo")]
+    {
+        call(
+            &r,
+            &env,
+            "records.add",
+            json!({"collection": "projects", "fields": {
+            "name": name, "stars": stars, "repo_url": url, "stage": "building", "on_resume": true}}),
+        )
+        .await
+        .unwrap();
+    }
+    let dup = call(
+        &r,
+        &env,
+        "records.add",
+        json!({"collection": "projects", "fields": {"name": "Copy", "repo_url": "https://github.com/x/shimmer"}}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(dup.code, ErrorCode::Conflict, "the same repo can't be added twice");
+    let target = json!({"collection": "projects", "id": "shimmer", "fields": {"stage": "launched", "users": 200}});
+    let shipped = call(&r, &env, "records.complete", target.clone()).await.unwrap();
+    assert_eq!((shipped["status"].clone(), shipped["users"].clone()), (json!("done"), json!(200)));
+    assert_eq!(call(&r, &env, "records.complete", target).await.unwrap_err().code, ErrorCode::Conflict);
+    let resume = call(
+        &r,
+        &env,
+        "records.list",
+        json!({"collection": "projects", "filter": {"on_resume": true}, "sort": ["-stars"]}),
+    )
+    .await
+    .unwrap();
+    let ids: Vec<&str> = resume["items"].as_array().unwrap().iter().map(|i| i["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["shimmer", "todo-app"]);
 }

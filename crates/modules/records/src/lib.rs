@@ -33,6 +33,7 @@ const TEMPLATES: &[(&str, &str)] = &[
     ("interviews", include_str!("../templates/interviews.toml")),
     ("job-applications", include_str!("../templates/job-applications.toml")),
     ("leetcode", include_str!("../templates/leetcode.toml")),
+    ("projects", include_str!("../templates/projects.toml")),
     ("stories", include_str!("../templates/stories.toml")),
 ];
 const DEFAULT_LIMIT: usize = 50;
