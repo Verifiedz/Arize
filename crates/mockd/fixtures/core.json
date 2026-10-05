@@ -69,6 +69,12 @@
                 "execution": "inline"
               },
               {
+                "op": "records.rename",
+                "summary": "Give a record a new id",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
                 "op": "records.reopen",
                 "summary": "Mark a done record todo again (the stamp is kept unless clear_stamp)",
                 "params_schema": {},
@@ -86,6 +92,7 @@
               "records.item.updated",
               "records.item.completed",
               "records.item.reopened",
+              "records.item.renamed",
               "records.item.removed",
               "records.collection.created"
             ]

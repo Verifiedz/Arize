@@ -42,6 +42,7 @@ impl Module for Records {
                 "records.item.updated",
                 "records.item.completed",
                 "records.item.reopened",
+                "records.item.renamed",
                 "records.item.removed",
                 "records.collection.created",
             ]
@@ -74,7 +75,12 @@ impl Module for Records {
         let fields = json!({"fields": {"type": "object"}});
         [
             ("records.collections", "List collection definitions", json!({"type": "object"})),
-            ("records.add", "Add a record to a collection", with(fields.clone())),
+            (
+                "records.add",
+                "Add a record to a collection; without an id, one is made from its title",
+                json!({"type": "object", "required": ["collection"], "properties": {
+                    "collection": {"type": "string"}, "id": {"type": "string"}, "fields": {"type": "object"}}}),
+            ),
             ("records.get", "Get one record", with(json!({}))),
             (
                 "records.list",
@@ -94,6 +100,12 @@ impl Module for Records {
                 "records.reopen",
                 "Mark a done record todo again (the stamp is kept unless clear_stamp)",
                 with(json!({"clear_stamp": {"type": "boolean"}})),
+            ),
+            (
+                "records.rename",
+                "Give a record a new id",
+                json!({"type": "object", "required": ["collection", "id", "new_id"], "properties": {
+                    "collection": {"type": "string"}, "id": {"type": "string"}, "new_id": {"type": "string"}}}),
             ),
             ("records.remove", "Delete a record", with(json!({}))),
         ]
@@ -120,6 +132,7 @@ impl Module for Records {
             "records.update" => self.update(ctx, decode(params)?),
             "records.complete" => self.complete(ctx, decode(params)?),
             "records.reopen" => self.reopen(ctx, decode(params)?),
+            "records.rename" => self.rename(ctx, decode(params)?),
             "records.remove" => self.remove(ctx, decode(params)?),
             _ => Err(Error::unknown_op(format!("records has no op '{op}'"))),
         }
@@ -138,6 +151,23 @@ struct WithFields {
     id: String,
     #[serde(default)]
     fields: Map<String, Value>,
+}
+
+/// `records.add`: the id is optional (ADR 0018 §1).
+#[derive(Deserialize)]
+struct Add {
+    collection: String,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    fields: Map<String, Value>,
+}
+
+#[derive(Deserialize)]
+struct Rename {
+    collection: String,
+    id: String,
+    new_id: String,
 }
 
 #[derive(Deserialize)]
@@ -184,23 +214,37 @@ impl Records {
         Ok(data)
     }
 
-    fn add(&self, ctx: &Ctx, p: WithFields) -> Result<Value> {
+    fn add(&self, ctx: &Ctx, p: Add) -> Result<Value> {
         let c = load_collection(ctx, &p.collection)?;
-        item::check_id(&p.id)?;
+        if let Some(id) = &p.id {
+            item::check_id(id)?;
+        }
         if let Some((k, _)) = p.fields.iter().find(|(_, v)| v.is_null()) {
             return Err(Error::invalid_params(format!("field '{k}' is null; leave it out to leave it unset")));
         }
         c.check_values(&p.fields)?;
         c.check_required(&p.fields)?;
-        let item = Item::new(&p.id, p.fields);
-        let wire = item.to_wire(&c);
 
         // Under the write lock, so nothing can take the id or a unique value in between.
         let _g = self.write.lock();
-        let path = item_path(&c.id, &p.id);
-        if ctx.store.read_string(&path)?.is_some() {
-            return Err(Error::conflict(format!("'{}' already has a record '{}'", c.id, p.id)));
-        }
+        let exists = |id: &str| Ok(ctx.store.read_string(&item_path(&c.id, id))?.is_some());
+        let id = match p.id {
+            Some(id) if exists(&id)? => {
+                return Err(Error::conflict(format!("'{}' already has a record '{id}'", c.id)));
+            }
+            Some(id) => id,
+            // ADR 0018 §1: from the title, else from today's date; never clashing.
+            None => {
+                let fields = p.fields.clone().into_iter().collect();
+                match c.render_title(&fields).map(|t| item::slug(&t)).filter(|s| !s.is_empty()) {
+                    Some(base) => item::first_free(&base, false, exists)?,
+                    None => item::first_free(&today(ctx), true, exists)?,
+                }
+            }
+        };
+        let item = Item::new(&id, p.fields);
+        let wire = item.to_wire(&c);
+        let path = item_path(&c.id, &id);
         check_unique(ctx, &c, &item.id, &item.fields_map())?;
         ctx.store.transaction(|tx| {
             tx.put(&path, item.to_toml())?;
@@ -269,9 +313,7 @@ impl Records {
     /// Done, stamped, and any `fields` set, in one transaction with one event (ADR 0016 §2).
     fn complete(&self, ctx: &Ctx, p: WithFields) -> Result<Value> {
         let c = load_collection(ctx, &p.collection)?;
-        // Local calendar date, not the UTC date (ADR 0009): a late-evening completion west
-        // of UTC must not stamp tomorrow.
-        let today = shimmer_core::local_date(ctx.clock.now(), &ctx.local_tz).format("%Y-%m-%d").to_string();
+        let today = today(ctx);
 
         let _g = self.write.lock();
         let current = load_item(ctx, &c, &p.id)?;
@@ -286,6 +328,33 @@ impl Records {
         let _g = self.write.lock();
         let item = lifecycle::reopen(&c, &load_item(ctx, &c, &p.id)?, p.clear_stamp)?;
         self.save(ctx, &c, &item, "records.item.reopened")
+    }
+
+    /// Move a record to a new id: one transaction writes the new file, deletes the old one, and
+    /// emits `records.item.renamed` (ADR 0018 §2). Values are untouched, so no unique check.
+    fn rename(&self, ctx: &Ctx, p: Rename) -> Result<Value> {
+        let c = load_collection(ctx, &p.collection)?;
+        item::check_id(&p.new_id)?;
+        if p.new_id == p.id {
+            return Err(Error::invalid_params(format!("'{}' is already called that", p.id)));
+        }
+        let _g = self.write.lock();
+        let mut item = load_item(ctx, &c, &p.id)?;
+        let new_path = item_path(&c.id, &p.new_id);
+        if ctx.store.read_string(&new_path)?.is_some() {
+            return Err(Error::conflict(format!("'{}' already has a record '{}'", c.id, p.new_id)));
+        }
+        item.id = p.new_id.clone();
+        let wire = item.to_wire(&c);
+        let mut event = payload(&c, &item, &wire);
+        event["id"] = json!(p.id);
+        event["new_id"] = json!(p.new_id);
+        ctx.store.transaction(|tx| {
+            tx.put(&new_path, item.to_toml())?;
+            tx.delete(&item_path(&c.id, &p.id))?;
+            tx.emit("records.item.renamed", event)
+        })?;
+        Ok(wire)
     }
 
     /// Write `item` and emit `topic` with its payload, in one transaction (§7.1).
@@ -349,6 +418,12 @@ fn check_unique(ctx: &Ctx, c: &Collection, id: &str, values: &Map<String, Value>
         }
     }
     Ok(())
+}
+
+/// Today's local date (ADR 0009), `YYYY-MM-DD`: a late-evening action west of UTC must not
+/// count as tomorrow.
+fn today(ctx: &Ctx) -> String {
+    shimmer_core::local_date(ctx.clock.now(), &ctx.local_tz).format("%Y-%m-%d").to_string()
 }
 
 fn load_collection(ctx: &Ctx, id: &str) -> Result<Collection> {

@@ -403,8 +403,8 @@ mod tests {
         let lines: Vec<&str> = help.lines().collect();
         assert_eq!(lines[0], "aliases (short pack; 'shimmer --help --canonical' hides these):");
         assert_eq!(lines[1].trim_end(), "  up       shimmer ping");
-        assert_eq!(lines[17].trim_end(), "  wreset   shimmer workspaces reset");
-        assert_eq!(lines[26].trim_end(), "  sdel     shimmer scheduler remove");
-        assert_eq!(lines.len(), 28);
+        assert_eq!(lines[18].trim_end(), "  wreset   shimmer workspaces reset");
+        assert_eq!(lines[27].trim_end(), "  sdel     shimmer scheduler remove");
+        assert_eq!(lines.len(), 29);
     }
 }

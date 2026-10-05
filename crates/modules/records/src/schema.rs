@@ -223,7 +223,13 @@ impl Collection {
     /// value (unset renders as nothing), trimmed. The record id when there is no template, or
     /// when none of the fields it names is set (so `": "` never stands in for a name).
     pub fn title_of(&self, id: &str, fields: &BTreeMap<String, Value>) -> String {
-        let Some(parts) = self.title.as_deref().and_then(|t| title_parts(t).ok()) else { return id.to_owned() };
+        self.render_title(fields).unwrap_or_else(|| id.to_owned())
+    }
+
+    /// The rendered title, or `None` when there is no template or none of its fields is set.
+    /// Also what a generated record id is made from (ADR 0018 §1).
+    pub fn render_title(&self, fields: &BTreeMap<String, Value>) -> Option<String> {
+        let parts = title_parts(self.title.as_deref()?).ok()?;
         let value = |name: &str| match fields.get(name) {
             None | Some(Value::Null) => None,
             Some(Value::String(s)) if s.is_empty() => None,
@@ -244,10 +250,7 @@ impl Collection {
             }
         }
         let out = out.trim();
-        match any_set && !out.is_empty() {
-            true => out.to_owned(),
-            false => id.to_owned(),
-        }
+        (any_set && !out.is_empty()).then(|| out.to_owned())
     }
 
     /// Every set field with `role = "deadline"`, as `{field: date}` (ADR 0017 §7).

@@ -49,6 +49,48 @@ pub fn check_id(id: &str) -> Result<()> {
     }
 }
 
+/// Generated ids leave room for a `-NN` suffix under the 128-character limit (ADR 0018 §1).
+const MAX_SLUG_LEN: usize = 120;
+
+/// Text turned into an id (ADR 0018 §1): lowercase `a-z` and `0-9` kept, every run of anything
+/// else becomes one `-`, no `-` at either end, cut at a `-` to at most 120 characters. Empty when
+/// nothing usable is left (a title with no Latin letters or digits).
+pub fn slug(text: &str) -> String {
+    let mut out = String::new();
+    for c in text.chars().flat_map(char::to_lowercase) {
+        if c.is_ascii_lowercase() || c.is_ascii_digit() {
+            out.push(c);
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let mut out = out.trim_end_matches('-').to_owned();
+    if out.len() > MAX_SLUG_LEN {
+        out.truncate(MAX_SLUG_LEN);
+        // Cut at the last whole word when there is one, so `amazon-sde-inte` doesn't happen.
+        if let Some(cut) = out.rfind('-') {
+            out.truncate(cut);
+        }
+    }
+    out
+}
+
+/// The first id from `base` that `taken` says is free: `base`, then `base-2`, `base-3`, …, or,
+/// when `always_number` is set (date ids), `base-1`, `base-2`, … (ADR 0018 §1).
+pub fn first_free(base: &str, always_number: bool, mut taken: impl FnMut(&str) -> Result<bool>) -> Result<String> {
+    if !always_number && !taken(base)? {
+        return Ok(base.to_owned());
+    }
+    let first = if always_number { 1 } else { 2 };
+    for n in first.. {
+        let candidate = format!("{base}-{n}");
+        if !taken(&candidate)? {
+            return Ok(candidate);
+        }
+    }
+    unreachable!("an unbounded range always finds a free number")
+}
+
 impl Item {
     pub fn new(id: &str, fields: Map<String, Value>) -> Self {
         Self { id: id.to_owned(), status: Status::Todo, fields: fields.into_iter().collect() }
@@ -210,6 +252,42 @@ mod tests {
             json!({"id": "lru-cache", "status": "todo", "title": "LRU Cache", "difficulty": "medium",
                    "url": null, "last_solved": null})
         );
+    }
+
+    #[test]
+    fn slugs_keep_letters_and_digits() {
+        for (text, want) in [
+            ("Amazon: SDE Intern", "amazon-sde-intern"),
+            ("Two Sum", "two-sum"),
+            ("  LRU   Cache!! ", "lru-cache"),
+            ("Café Résumé", "caf-r-sum"),
+            ("C++ & Rust (2027)", "c-rust-2027"),
+            ("شركة", ""),
+            ("---", ""),
+        ] {
+            assert_eq!(slug(text), want, "{text:?}");
+            if !want.is_empty() {
+                assert!(check_id(want).is_ok(), "{want} must be a valid id");
+            }
+        }
+    }
+
+    #[test]
+    fn long_slugs_are_cut_at_a_word() {
+        let long = "word ".repeat(40);
+        let s = slug(&long);
+        assert!(s.len() <= MAX_SLUG_LEN && !s.ends_with('-') && s.ends_with("word"), "{s}");
+        assert!(check_id(&format!("{s}-99")).is_ok(), "room for a suffix");
+    }
+
+    #[test]
+    fn first_free_adds_a_counter_only_when_needed() {
+        let taken = ["two-sum", "two-sum-2", "2026-10-05-1"];
+        let is_taken = |id: &str| Ok(taken.contains(&id));
+        assert_eq!(first_free("lru-cache", false, is_taken).unwrap(), "lru-cache");
+        assert_eq!(first_free("two-sum", false, is_taken).unwrap(), "two-sum-3");
+        assert_eq!(first_free("2026-10-05", true, is_taken).unwrap(), "2026-10-05-2", "date ids always count");
+        assert_eq!(first_free("2026-10-06", true, is_taken).unwrap(), "2026-10-06-1");
     }
 
     #[test]

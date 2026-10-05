@@ -282,8 +282,8 @@ Clients should offer: run cleanup, force relaunch, or open the log. Never auto-f
   ]}}
 ```
 
-Illustrative excerpt — `records` actually registers eight ops (`records.collections`,
-`.add`, `.get`, `.list`, `.update`, `.complete`, `.reopen`, `.remove`) and six topics; see "Records
+Illustrative excerpt — `records` actually registers nine ops (`records.collections`,
+`.add`, `.get`, `.list`, `.update`, `.complete`, `.reopen`, `.rename`, `.remove`) and seven topics; see "Records
 ops" below and `docs/decisions/0008-records-collections-and-storage.md` for the full list.
 This example only shows two commands to keep the shape readable.
 
@@ -388,11 +388,12 @@ after a step has run leaves it `dirty`.
 | Op | Execution | Params | Returns |
 |---|---|---|---|
 | `records.collections` | inline | `{}` | `{"collections":[...]}`, each collection definition as JSON (+ `"skipped"` naming each malformed collection file). |
-| `records.add` | inline | `{"collection","id","fields"?}` | The new item. `conflict` if the id exists. |
+| `records.add` | inline | `{"collection","id"?,"fields"?}` | The new item, which carries its `id`. Without an `id`, one is made from the collection's `title` (`"Two Sum"` → `two-sum`, then `two-sum-2`, …), or from today's date (`2026-10-05-1`) when there's no title to use. An explicit `id` that exists is `conflict`. ADR 0018. |
 | `records.get` | inline | `{"collection","id"}` | The item. |
 | `records.list` | inline | `{"collection","filter"?,"limit"?,"offset"?}` | `{"items","total"}` (+ `"skipped"` if a hand-edited file was unreadable). |
 | `records.update` | inline | `{"collection","id","fields"}` | The item. A `null` field value unsets it. Setting a `unique` field to a value another record has is `conflict`, naming that record. |
 | `records.complete` | inline | `{"collection","id","fields"?}` | The item, now `done`, with its `stamp_on_complete` field set. `fields` are applied first, with `records.update`'s rules; an explicit value for the stamp field wins over today (back-dating). One `records.item.completed`. When the record is already `done`: re-stamped again, unless the collection says `repeat_complete = "refuse"`, then `conflict`. |
+| `records.rename` | inline | `{"collection","id","new_id"}` | The item under its new id. One transaction moves the file and emits `records.item.renamed`. `conflict` if `new_id` exists; `not_found` if `id` doesn't. ADR 0018. |
 | `records.reopen` | inline | `{"collection","id","clear_stamp"?}` | The item, now `todo`. The stamp is kept unless `clear_stamp`. `conflict` if it isn't `done`. ADR 0016. |
 | `records.remove` | inline | `{"collection","id"}` | `{"removed":true}` |
 
@@ -446,7 +447,7 @@ tolerate unknown topics.
 | `workspaces.session.cleaned` | Cleanup script succeeded; state back to `ready`. Payload `{workspace, log}`. |
 | `workspaces.session.abandoned` | A launch (forced or not) was claimed but no step ran: cancelled first, or step 1 couldn't start. The workspace is back to the state it had. Payload `{workspace, reason, forced, back_to}`. |
 | `workspaces.workspace.reset` | `workspaces.reset` cleared `dirty` without cleanup. Payload `{workspace, prior}`. |
-| `records.item.created` / `.updated` / `.completed` / `.reopened` / `.removed` | Record mutations. All but `.removed` carry `{collection, id, title, deadlines, item}`: `item` is the full wire item, `title` the record's readable name (the collection's `title` template, or the id), `deadlines` `{field: date}` for every set field with `role = "deadline"` (ADR 0017). `.updated` also carries `changed`: the fields whose value actually changed, sorted (`[]` when nothing did). `.removed` carries `{collection, id}`. |
+| `records.item.created` / `.updated` / `.completed` / `.reopened` / `.renamed` / `.removed` | Record mutations. All but `.removed` carry `{collection, id, title, deadlines, item}`: `item` is the full wire item, `title` the record's readable name (the collection's `title` template, or the id), `deadlines` `{field: date}` for every set field with `role = "deadline"` (ADR 0017). `.updated` also carries `changed`: the fields whose value actually changed, sorted (`[]` when nothing did). `.renamed` also carries `new_id` (`id` is the old one; `item` is under the new one). `.removed` carries `{collection, id}`. |
 | `records.collection.created` | The built-in collection was seeded on first start. |
 | `fetchers.item.found` | A source returned a new, deduplicated item. |
 | `fetchers.fetch.finished` / `.failed` | A fetch run ended. |

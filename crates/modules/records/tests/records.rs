@@ -644,3 +644,102 @@ async fn collections_return_the_integration_keys() {
     let url = c["fields"].as_array().unwrap().iter().find(|f| f["name"] == "url").unwrap().clone();
     assert_eq!((url["role"].clone(), url["unique"].clone()), (json!("url"), json!(true)));
 }
+
+// ---------------------------------------------------------------- ADR 0018: ids
+
+#[tokio::test]
+async fn add_without_an_id_names_the_record_from_its_title() {
+    let (r, env) = setup().await;
+    let add =
+        |title: &str| call(&r, &env, "records.add", json!({"collection": "leetcode", "fields": {"title": title}}));
+    assert_eq!(add("Two Sum").await.unwrap()["id"], "two-sum");
+    assert_eq!(add("Two Sum").await.unwrap()["id"], "two-sum-2", "never clashes");
+    assert_eq!(add("Two Sum").await.unwrap()["id"], "two-sum-3");
+    assert!(file(&env, "items/leetcode/two-sum-2.toml").is_some());
+    let ev = env.backend.events().pop().unwrap();
+    assert_eq!((ev.topic.as_str(), ev.payload["id"].clone()), ("records.item.created", json!("two-sum-3")));
+}
+
+#[tokio::test]
+async fn add_without_a_usable_title_uses_todays_date() {
+    let (r, env) = setup().await;
+    let today = env.clock.now().date_naive().to_string();
+    // A title with nothing Latin in it leaves no id: fall back to the date.
+    let item =
+        call(&r, &env, "records.add", json!({"collection": "leetcode", "fields": {"title": "شركة"}})).await.unwrap();
+    assert_eq!(item["id"], format!("{today}-1"));
+
+    // A collection with no title at all: the date too, counting up.
+    env.ctx
+        .store
+        .write(
+            "collections/notes.toml",
+            "[collection]\nid = \"notes\"\nlabel = \"Notes\"\n[[field]]\nname = \"text\"\ntype = \"string\"\n",
+        )
+        .unwrap();
+    for n in 1..=2 {
+        let item =
+            call(&r, &env, "records.add", json!({"collection": "notes", "fields": {"text": "hi"}})).await.unwrap();
+        assert_eq!(item["id"], format!("{today}-{n}"));
+    }
+}
+
+#[tokio::test]
+async fn an_explicit_id_is_used_as_given() {
+    let (r, env) = setup().await;
+    add_two_sum(&r, &env).await;
+    let e = call(
+        &r,
+        &env,
+        "records.add",
+        json!({"collection": "leetcode", "id": "two-sum", "fields": {"title": "Two Sum"}}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(e.code, ErrorCode::Conflict, "an explicit id is never suffixed");
+}
+
+#[tokio::test]
+async fn rename_moves_the_record_in_one_step() {
+    let (r, env) = setup().await;
+    add_two_sum(&r, &env).await;
+    call(&r, &env, "records.complete", json!({"collection": "leetcode", "id": "two-sum"})).await.unwrap();
+
+    let item =
+        call(&r, &env, "records.rename", json!({"collection": "leetcode", "id": "two-sum", "new_id": "1-two-sum"}))
+            .await
+            .unwrap();
+    assert_eq!((item["id"].clone(), item["status"].clone()), (json!("1-two-sum"), json!("done")), "values untouched");
+    assert!(file(&env, "items/leetcode/two-sum.toml").is_none());
+    assert!(file(&env, "items/leetcode/1-two-sum.toml").is_some());
+    let ev = env.backend.events().pop().unwrap();
+    assert_eq!(ev.topic, "records.item.renamed");
+    assert_eq!(
+        (ev.payload["id"].clone(), ev.payload["new_id"].clone(), ev.payload["title"].clone()),
+        (json!("two-sum"), json!("1-two-sum"), json!("Two Sum"))
+    );
+    assert_eq!(ev.payload["item"], item);
+}
+
+#[tokio::test]
+async fn rename_refuses_bad_or_taken_ids_and_changes_nothing() {
+    let (r, env) = setup().await;
+    add_two_sum(&r, &env).await;
+    call(&r, &env, "records.add", json!({"collection": "leetcode", "id": "lru", "fields": {"title": "LRU"}}))
+        .await
+        .unwrap();
+    let before = topics(&env).len();
+    let rename = |id: &str, new_id: &str| {
+        call(&r, &env, "records.rename", json!({"collection": "leetcode", "id": id, "new_id": new_id}))
+    };
+    for (id, new_id, code) in [
+        ("two-sum", "lru", ErrorCode::Conflict),
+        ("two-sum", "Bad Id", ErrorCode::InvalidParams),
+        ("two-sum", "two-sum", ErrorCode::InvalidParams),
+        ("ghost", "anything", ErrorCode::NotFound),
+    ] {
+        assert_eq!(rename(id, new_id).await.unwrap_err().code, code, "{id} -> {new_id}");
+    }
+    assert_eq!(topics(&env).len(), before);
+    assert!(file(&env, "items/leetcode/two-sum.toml").is_some());
+}

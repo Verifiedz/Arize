@@ -16,8 +16,9 @@ pub const USAGE: &str = "usage: shimmer records <command>
 
 commands:
   collections                          list collections and their fields
-  add COLLECTION ID [--FIELD VALUE]…   add a record, e.g.
-                                         shimmer records add leetcode two-sum --title \"Two Sum\" --difficulty easy
+  add COLLECTION [ID] [--FIELD VALUE]… add a record, e.g.
+                                         shimmer records add leetcode --title \"Two Sum\" --difficulty easy
+                                       without an ID, one is made from its title (two-sum)
   list COLLECTION [--FIELD VALUE]…     list records; each --FIELD filters on an exact value
        [--status todo|done] [--limit N] [--offset N]
   get COLLECTION/ID                    show one record
@@ -26,6 +27,7 @@ commands:
                                        mark done and stamp the collection's date field;
                                        a value for the date field back-dates it
   reopen COLLECTION/ID [--clear-stamp] mark a done record todo again
+  rename COLLECTION/ID NEW_ID          give a record a new id
   remove COLLECTION/ID                 delete a record
 
 A record can be written COLLECTION/ID or COLLECTION ID. Field names come from the
@@ -38,13 +40,48 @@ pub type Flags = Vec<(String, String)>;
 pub enum RecordsCmd {
     Help,
     Collections,
-    Add { collection: String, id: String, set: Flags },
-    List { collection: String, filter: Flags, limit: Option<usize>, offset: Option<usize> },
-    Get { collection: String, id: String },
-    Update { collection: String, id: String, set: Flags, unset: Vec<String> },
-    Complete { collection: String, id: String, set: Flags, unset: Vec<String> },
-    Reopen { collection: String, id: String, clear_stamp: bool },
-    Remove { collection: String, id: String },
+    /// `id` is `None` when the daemon should make one from the title (ADR 0018).
+    Add {
+        collection: String,
+        id: Option<String>,
+        set: Flags,
+    },
+    Rename {
+        collection: String,
+        id: String,
+        new_id: String,
+    },
+    List {
+        collection: String,
+        filter: Flags,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    },
+    Get {
+        collection: String,
+        id: String,
+    },
+    Update {
+        collection: String,
+        id: String,
+        set: Flags,
+        unset: Vec<String>,
+    },
+    Complete {
+        collection: String,
+        id: String,
+        set: Flags,
+        unset: Vec<String>,
+    },
+    Reopen {
+        collection: String,
+        id: String,
+        clear_stamp: bool,
+    },
+    Remove {
+        collection: String,
+        id: String,
+    },
 }
 
 // ---------------------------------------------------------------- parsing
@@ -74,8 +111,22 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
             }
         }
         "add" => {
-            let (collection, id) = target(&sub, positional)?;
+            // `COLLECTION` alone (no `/`) leaves the id to the daemon (ADR 0018).
+            let (collection, id) = match positional.as_slice() {
+                [one] if !one.contains('/') => (one.clone(), None),
+                _ => target(&sub, positional).map(|(c, id)| (c, Some(id)))?,
+            };
             Ok(RecordsCmd::Add { collection, id, set: flags })
+        }
+        "rename" => {
+            no_flags()?;
+            let usage = "usage: shimmer records rename COLLECTION/ID NEW_ID";
+            let (target_words, new_id) = match positional.split_last() {
+                Some((new_id, rest)) if !rest.is_empty() => (rest.to_vec(), new_id.clone()),
+                _ => return Err(usage.into()),
+            };
+            let (collection, id) = target(&sub, target_words).map_err(|_| usage.to_owned())?;
+            Ok(RecordsCmd::Rename { collection, id, new_id })
         }
         "list" => {
             let [collection]: [String; 1] =
@@ -164,6 +215,7 @@ impl RecordsCmd {
         match self {
             Self::Help | Self::Collections => None,
             Self::Add { collection, .. }
+            | Self::Rename { collection, .. }
             | Self::List { collection, .. }
             | Self::Get { collection, .. }
             | Self::Update { collection, .. }
@@ -193,7 +245,14 @@ pub fn request(cmd: &RecordsCmd, schema: &Value) -> Result<(&'static str, Value)
         RecordsCmd::Help => return Err(Error::internal("help is not a request")),
         RecordsCmd::Collections => ("records.collections", json!({})),
         RecordsCmd::Add { collection, id, set } => {
-            ("records.add", json!({"collection": collection, "id": id, "fields": fields(set)?}))
+            let mut params = json!({"collection": collection, "fields": fields(set)?});
+            if let Some(id) = id {
+                params["id"] = json!(id);
+            }
+            ("records.add", params)
+        }
+        RecordsCmd::Rename { collection, id, new_id } => {
+            ("records.rename", json!({"collection": collection, "id": id, "new_id": new_id}))
         }
         RecordsCmd::List { collection, filter, limit, offset } => {
             let mut params = json!({"collection": collection, "filter": fields(filter)?});
@@ -290,7 +349,11 @@ pub fn show(cmd: &RecordsCmd, data: &Value, schema: &Value) -> String {
     match cmd {
         RecordsCmd::Help => USAGE.into(),
         RecordsCmd::Collections => collections(data),
-        RecordsCmd::Add { collection, id, .. } => format!("added {collection}/{id}"),
+        // The id comes from the reply: the daemon may have made it (ADR 0018).
+        RecordsCmd::Add { collection, .. } => format!("added {collection}/{}", cell(&data["id"])),
+        RecordsCmd::Rename { collection, id, new_id } => {
+            format!("✓ {collection}/{id} renamed to {collection}/{new_id}")
+        }
         RecordsCmd::Update { collection, id, .. } => format!("updated {collection}/{id}"),
         RecordsCmd::Remove { collection, id } => format!("removed {collection}/{id}"),
         RecordsCmd::Complete { collection, id, .. } => {
@@ -468,7 +531,7 @@ mod tests {
             parse_words(&["add", "leetcode", "two-sum", "--title", "Two Sum", "--difficulty=easy"]).unwrap(),
             RecordsCmd::Add {
                 collection: "leetcode".into(),
-                id: "two-sum".into(),
+                id: Some("two-sum".into()),
                 set: pairs(&[("title", "Two Sum"), ("difficulty", "easy")])
             }
         );
@@ -486,7 +549,7 @@ mod tests {
         // A value may look like a flag: the word after --attempts is its value.
         assert_eq!(
             parse_words(&["add", "leetcode/x", "--attempts", "-1"]).unwrap(),
-            RecordsCmd::Add { collection: "leetcode".into(), id: "x".into(), set: pairs(&[("attempts", "-1")]) }
+            RecordsCmd::Add { collection: "leetcode".into(), id: Some("x".into()), set: pairs(&[("attempts", "-1")]) }
         );
     }
 
@@ -553,6 +616,34 @@ mod tests {
         assert_eq!(show(&keep, &item, &leetcode()), "✓ leetcode/x reopened (todo)");
         let clear = RecordsCmd::Reopen { collection: "leetcode".into(), id: "x".into(), clear_stamp: true };
         assert_eq!(show(&clear, &item, &leetcode()), "✓ leetcode/x reopened (todo); cleared last_solved");
+    }
+
+    #[test]
+    fn add_may_leave_the_id_to_the_daemon() {
+        let add = parse_words(&["add", "leetcode", "--title", "Two Sum"]).unwrap();
+        assert_eq!(
+            add,
+            RecordsCmd::Add { collection: "leetcode".into(), id: None, set: pairs(&[("title", "Two Sum")]) }
+        );
+        let (op, params) = request(&add, &leetcode()).unwrap();
+        assert_eq!((op, params), ("records.add", json!({"collection": "leetcode", "fields": {"title": "Two Sum"}})));
+        // The reply names the id it chose.
+        assert_eq!(show(&add, &json!({"id": "two-sum"}), &leetcode()), "added leetcode/two-sum");
+    }
+
+    #[test]
+    fn rename_takes_a_target_and_a_new_id() {
+        let want = RecordsCmd::Rename { collection: "jobs".into(), id: "amzon".into(), new_id: "amazon".into() };
+        assert_eq!(parse_words(&["rename", "jobs/amzon", "amazon"]).unwrap(), want);
+        assert_eq!(parse_words(&["rename", "jobs", "amzon", "amazon"]).unwrap(), want);
+        assert_eq!(
+            request(&want, &Value::Null).unwrap(),
+            ("records.rename", json!({"collection": "jobs", "id": "amzon", "new_id": "amazon"}))
+        );
+        assert_eq!(show(&want, &json!({}), &Value::Null), "✓ jobs/amzon renamed to jobs/amazon");
+        for bad in [&["rename"][..], &["rename", "jobs/amzon"], &["rename", "jobs", "a", "b", "c"]] {
+            assert!(parse_words(bad).unwrap_err().contains("NEW_ID"), "{bad:?}");
+        }
     }
 
     #[test]
