@@ -1026,6 +1026,7 @@ async fn every_template_is_listed_and_creates_a_valid_collection() {
         ids,
         [
             "addresses",
+            "certifications",
             "charity",
             "education",
             "employment",
@@ -1070,7 +1071,7 @@ async fn create_collection_never_overwrites_and_says_what_exists() {
         (
             json!({"id": "jobs", "template": "jobs"}),
             ErrorCode::NotFound,
-            "there are: addresses, charity, education, employment, interview-questions, interviews, job-applications, leetcode, offers, projects, stories",
+            "there are: addresses, certifications, charity, education, employment, interview-questions, interviews, job-applications, leetcode, offers, projects, stories",
         ),
         (json!({"id": "Jobs!", "template": "job-applications"}), ErrorCode::InvalidParams, "not a valid collection id"),
         (json!({"id": "jobs", "template": "job-applications", "label": " "}), ErrorCode::InvalidParams, "label"),
@@ -1363,4 +1364,29 @@ async fn offers_compare_by_total_comp_and_are_decided_once() {
     .await
     .unwrap();
     assert_eq!(open["items"][0]["id"], "amazon-swe", "still to answer");
+}
+
+#[tokio::test]
+async fn a_certification_is_earned_then_renewed() {
+    let (r, env) = setup().await;
+    call(&r, &env, "records.create_collection", json!({"id": "certs", "template": "certifications"})).await.unwrap();
+    call(&r, &env, "records.add", json!({"collection": "certs", "fields": {
+        "name": "AWS Solutions Architect - Associate", "provider": "AWS", "stage": "studying", "exam_date": "2026-12-10"}}))
+        .await
+        .unwrap();
+    let id = "aws-solutions-architect-associate";
+    let mut params =
+        json!({"collection": "certs", "id": id, "fields": {"stage": "passed", "expires_on": "2029-12-10"}});
+    let earned = call(&r, &env, "records.complete", params.clone()).await.unwrap();
+    assert_eq!(earned["status"], "done");
+    assert_eq!(
+        env.backend.events().pop().unwrap().payload["deadlines"],
+        json!({"exam_date": "2026-12-10", "expires_on": "2029-12-10"})
+    );
+    // Renewing three years on is another completion, with a new expiry.
+    env.clock.advance(Duration::from_secs(3 * 365 * 86_400));
+    params["fields"] = json!({"expires_on": "2032-12-10"});
+    let renewed = call(&r, &env, "records.complete", params).await.unwrap();
+    assert_ne!(renewed["earned_on"], earned["earned_on"]);
+    assert_eq!(renewed["expires_on"], "2032-12-10");
 }

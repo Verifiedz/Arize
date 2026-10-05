@@ -1,0 +1,112 @@
+# Certifications: one record per certification you're working towards or hold.
+# Created from Shimmer's certifications template. It's your file now: edit it freely.
+#
+# How it works:
+#   shimmer records add <collection> --name "AWS Solutions Architect – Associate" --provider AWS \
+#       --exam-code SAA-C03 --level associate --area cloud --stage studying --exam-date 2026-12-10
+#   shimmer records complete <collection>/<id> --stage passed --score 812 --expires-on 2029-12-10
+#                                   earned: stamps earned_on; completing again later is a renewal
+#   shimmer records list <collection> --filter "expires_on<=2027-06-01" --sort expires_on     renewing soon
+
+[collection]
+id = "certifications"
+label = "Certifications"
+description = "Certifications you're studying for or hold: exams, scores, and when they expire"
+title = "{name}"
+# Completing a certification means "earned"; completing it again later is a renewal.
+stamp_on_complete = "earned_on"
+repeat_complete = "restamp"
+related = ["projects", "job-applications"]
+
+[[field]]
+name = "name"            # e.g. "AWS Solutions Architect – Associate"
+type = "string"
+required = true
+
+[[field]]
+name = "provider"        # e.g. AWS, Google Cloud, Azure, CNCF, CompTIA
+type = "string"
+
+[[field]]
+name = "exam_code"       # e.g. "SAA-C03"
+type = "string"
+
+[[field]]
+name = "level"
+type = "enum"
+values = ["foundational", "associate", "professional", "specialty", "expert", "other"]
+
+[[field]]
+name = "area"            # --filter area=cloud
+type = "enum"
+values = ["cloud", "devops", "kubernetes", "security", "data", "ai-ml", "networking", "databases", "programming", "project-management", "other"]
+
+[[field]]
+name = "stage"           # where you are; listed in order
+type = "enum"
+values = ["planning", "studying", "exam-scheduled", "failed", "passed", "expired"]
+
+[[field]]
+name = "exam_date"       # the calendar can remind you before the exam
+type = "date"
+role = "deadline"
+
+[[field]]
+name = "attempts"
+type = "int"
+
+[[field]]
+name = "score"
+type = "int"
+
+[[field]]
+name = "passing_score"
+type = "int"
+
+[[field]]
+name = "study_hours"     # a rough total
+type = "int"
+
+[[field]]
+name = "study_resources" # e.g. "Adrian Cantrill course, Tutorials Dojo practice exams"
+type = "string"
+
+[[field]]
+name = "exam_cost"
+type = "int"
+
+[[field]]
+name = "currency"
+type = "string"
+
+[[field]]
+name = "paid_by"
+type = "enum"
+values = ["me", "employer", "school", "voucher", "other"]
+
+[[field]]
+name = "earned_on"       # stamped by records complete
+type = "date"
+
+[[field]]
+name = "expires_on"      # the calendar can warn you before it lapses
+type = "date"
+role = "deadline"
+
+[[field]]
+name = "credential_id"   # the public verification id
+type = "string"
+
+[[field]]
+name = "credential_url"  # the verification link; the same certification can't be added twice
+type = "string"
+role = "url"
+unique = true
+
+[[field]]
+name = "on_resume"
+type = "bool"
+
+[[field]]
+name = "notes"
+type = "string"

@@ -26,6 +26,7 @@ use crate::schema::Collection;
 /// changed.
 const TEMPLATES: &[(&str, &str)] = &[
     ("addresses", include_str!("../templates/addresses.toml")),
+    ("certifications", include_str!("../templates/certifications.toml")),
     ("charity", include_str!("../templates/charity.toml")),
     ("education", include_str!("../templates/education.toml")),
     ("employment", include_str!("../templates/employment.toml")),
