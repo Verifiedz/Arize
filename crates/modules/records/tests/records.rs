@@ -1038,7 +1038,8 @@ async fn every_template_is_listed_and_creates_a_valid_collection() {
             "offers",
             "outreach",
             "projects",
-            "stories"
+            "stories",
+            "subscriptions"
         ]
     );
 
@@ -1073,7 +1074,7 @@ async fn create_collection_never_overwrites_and_says_what_exists() {
         (
             json!({"id": "jobs", "template": "jobs"}),
             ErrorCode::NotFound,
-            "there are: addresses, certifications, charity, education, employment, interview-questions, interviews, job-applications, leetcode, networking-events, offers, outreach, projects, stories",
+            "there are: addresses, certifications, charity, education, employment, interview-questions, interviews, job-applications, leetcode, networking-events, offers, outreach, projects, stories, subscriptions",
         ),
         (json!({"id": "Jobs!", "template": "job-applications"}), ErrorCode::InvalidParams, "not a valid collection id"),
         (json!({"id": "jobs", "template": "job-applications", "label": " "}), ErrorCode::InvalidParams, "label"),
@@ -1455,4 +1456,25 @@ async fn every_follow_up_counts_and_people_link_to_the_event() {
             .await
             .unwrap();
     assert_eq!(met["total"], 2);
+}
+
+#[tokio::test]
+async fn subscriptions_are_on_or_off_and_warn_before_charges() {
+    let (r, env) = setup().await;
+    call(&r, &env, "records.create_collection", json!({"id": "subs", "template": "subscriptions"})).await.unwrap();
+    let sub = call(&r, &env, "records.add", json!({"collection": "subs", "fields": {
+        "name": "Cloud storage", "state": "trial", "cost": 13, "trial_ends_on": "2026-10-12", "renews_on": "2026-11-12"}}))
+        .await
+        .unwrap();
+    assert!(sub.get("status").is_none(), "on or off, not finished");
+    assert_eq!(
+        env.backend.events().pop().unwrap().payload["deadlines"],
+        json!({"renews_on": "2026-11-12", "trial_ends_on": "2026-10-12"})
+    );
+    for kind in ["music", "gambling"] {
+        let e = call(&r, &env, "records.add", json!({"collection": "subs", "fields": {"name": "x", "category": kind}}))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, ErrorCode::InvalidParams, "{kind}");
+    }
 }

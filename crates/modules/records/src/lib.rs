@@ -39,6 +39,7 @@ const TEMPLATES: &[(&str, &str)] = &[
     ("outreach", include_str!("../templates/outreach.toml")),
     ("projects", include_str!("../templates/projects.toml")),
     ("stories", include_str!("../templates/stories.toml")),
+    ("subscriptions", include_str!("../templates/subscriptions.toml")),
 ];
 const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 500;
