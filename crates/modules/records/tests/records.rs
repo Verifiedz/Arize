@@ -1036,6 +1036,7 @@ async fn every_template_is_listed_and_creates_a_valid_collection() {
             "leetcode",
             "networking-events",
             "offers",
+            "outreach",
             "projects",
             "stories"
         ]
@@ -1072,7 +1073,7 @@ async fn create_collection_never_overwrites_and_says_what_exists() {
         (
             json!({"id": "jobs", "template": "jobs"}),
             ErrorCode::NotFound,
-            "there are: addresses, certifications, charity, education, employment, interview-questions, interviews, job-applications, leetcode, networking-events, offers, projects, stories",
+            "there are: addresses, certifications, charity, education, employment, interview-questions, interviews, job-applications, leetcode, networking-events, offers, outreach, projects, stories",
         ),
         (json!({"id": "Jobs!", "template": "job-applications"}), ErrorCode::InvalidParams, "not a valid collection id"),
         (json!({"id": "jobs", "template": "job-applications", "label": " "}), ErrorCode::InvalidParams, "label"),
@@ -1426,4 +1427,32 @@ async fn an_event_is_attended_then_followed_up() {
         .await
         .unwrap();
     assert_eq!(owed["total"], 1, "followed_up not set yet");
+}
+
+#[tokio::test]
+async fn every_follow_up_counts_and_people_link_to_the_event() {
+    let (r, env) = setup().await;
+    call(&r, &env, "records.create_collection", json!({"id": "outreach", "template": "outreach"})).await.unwrap();
+    for name in ["Priya Shah", "Ben Lee"] {
+        call(
+            &r,
+            &env,
+            "records.add",
+            json!({"collection": "outreach", "fields": {
+            "name": name, "goal": "referral", "event": "fall-career-fair-2026"}}),
+        )
+        .await
+        .unwrap();
+    }
+    let target = json!({"collection": "outreach", "id": "priya-shah", "fields": {"follow_up_on": "2026-10-29"}});
+    let first = call(&r, &env, "records.complete", target.clone()).await.unwrap();
+    assert_eq!(env.backend.events().pop().unwrap().payload["deadlines"], json!({"follow_up_on": "2026-10-29"}));
+    env.clock.advance(Duration::from_secs(7 * 86_400));
+    let again = call(&r, &env, "records.complete", target).await.unwrap();
+    assert_ne!(again["last_contacted_on"], first["last_contacted_on"], "a follow-up counts again");
+    let met =
+        call(&r, &env, "records.list", json!({"collection": "outreach", "filter": {"event": "fall-career-fair-2026"}}))
+            .await
+            .unwrap();
+    assert_eq!(met["total"], 2);
 }

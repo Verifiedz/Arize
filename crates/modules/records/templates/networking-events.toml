@@ -20,7 +20,7 @@ title = "{name}"
 # Completing an event means "attended": it stamps attended_on. Upcoming events are todo.
 stamp_on_complete = "attended_on"
 repeat_complete = "refuse"
-related = ["job-applications"]
+related = ["outreach", "job-applications"]
 
 # ---- the event ------------------------------------------------------------------------------
 

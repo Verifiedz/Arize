@@ -36,6 +36,7 @@ const TEMPLATES: &[(&str, &str)] = &[
     ("leetcode", include_str!("../templates/leetcode.toml")),
     ("networking-events", include_str!("../templates/networking-events.toml")),
     ("offers", include_str!("../templates/offers.toml")),
+    ("outreach", include_str!("../templates/outreach.toml")),
     ("projects", include_str!("../templates/projects.toml")),
     ("stories", include_str!("../templates/stories.toml")),
 ];
