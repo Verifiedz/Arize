@@ -32,7 +32,9 @@ commands:
                                        a value for the date field back-dates it
   reopen COLLECTION/ID [--clear-stamp] mark a done record todo again
   rename COLLECTION/ID NEW_ID          give a record a new id
-  remove COLLECTION/ID                 delete a record
+  remove COLLECTION/ID                 remove a record (it goes to the trash)
+  restore COLLECTION/ID                bring a removed record back
+  trash COLLECTION                     list removed records you can restore
 
 A record can be written COLLECTION/ID or COLLECTION ID. Field names come from the
 collection: see 'shimmer records collections'. Add --json to any command for raw output.";
@@ -86,6 +88,13 @@ pub enum RecordsCmd {
     Remove {
         collection: String,
         id: String,
+    },
+    Restore {
+        collection: String,
+        id: String,
+    },
+    Trash {
+        collection: String,
     },
 }
 
@@ -175,12 +184,19 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
             }
             Ok(RecordsCmd::Update { collection, id, set, unset })
         }
-        "get" | "remove" | "reopen" => {
+        "trash" => {
+            no_flags()?;
+            let [collection]: [String; 1] =
+                positional.try_into().map_err(|_| "usage: shimmer records trash COLLECTION")?;
+            Ok(RecordsCmd::Trash { collection })
+        }
+        "get" | "remove" | "reopen" | "restore" => {
             no_flags()?;
             let (collection, id) = target(&sub, positional)?;
             Ok(match sub.as_str() {
                 "get" => RecordsCmd::Get { collection, id },
                 "reopen" => RecordsCmd::Reopen { collection, id, clear_stamp },
+                "restore" => RecordsCmd::Restore { collection, id },
                 _ => RecordsCmd::Remove { collection, id },
             })
         }
@@ -243,7 +259,9 @@ impl RecordsCmd {
             | Self::Update { collection, .. }
             | Self::Complete { collection, .. }
             | Self::Reopen { collection, .. }
-            | Self::Remove { collection, .. } => Some(collection),
+            | Self::Remove { collection, .. }
+            | Self::Restore { collection, .. }
+            | Self::Trash { collection } => Some(collection),
         }
     }
 }
@@ -321,6 +339,8 @@ pub fn request(cmd: &RecordsCmd, schema: &Value) -> Result<(&'static str, Value)
             ("records.reopen", params)
         }
         RecordsCmd::Remove { collection, id } => ("records.remove", json!({"collection": collection, "id": id})),
+        RecordsCmd::Restore { collection, id } => ("records.restore", json!({"collection": collection, "id": id})),
+        RecordsCmd::Trash { collection } => ("records.trash", json!({"collection": collection})),
     })
 }
 
@@ -447,7 +467,14 @@ pub fn show(cmd: &RecordsCmd, data: &Value, schema: &Value) -> String {
             format!("✓ {collection}/{id} renamed to {collection}/{new_id}")
         }
         RecordsCmd::Update { collection, id, .. } => format!("updated {collection}/{id}"),
-        RecordsCmd::Remove { collection, id } => format!("removed {collection}/{id}"),
+        RecordsCmd::Remove { collection, id } => {
+            format!("removed {collection}/{id} (undo: shimmer records restore {collection}/{id})")
+        }
+        RecordsCmd::Restore { collection, id } => format!("✓ {collection}/{id} restored"),
+        RecordsCmd::Trash { collection } => match data["items"].as_array().is_none_or(Vec::is_empty) {
+            true => format!("nothing in {collection}'s trash"),
+            false => list(data, schema),
+        },
         RecordsCmd::Complete { collection, id, .. } => {
             let mut out = format!("✓ {collection}/{id} done");
             if let Some(stamp) = schema["stamp_on_complete"].as_str() {
@@ -794,6 +821,27 @@ mod tests {
             let e = request(&cmd, &leetcode()).unwrap_err();
             assert!(e.message.contains("FIELD OP VALUE") || e.message.contains("expects"), "{bad}: {}", e.message);
         }
+    }
+
+    #[test]
+    fn remove_says_how_to_undo_and_restore_and_trash_parse() {
+        let remove = parse_words(&["remove", "jobs/acme"]).unwrap();
+        assert_eq!(
+            show(&remove, &json!({"removed": true}), &Value::Null),
+            "removed jobs/acme (undo: shimmer records restore jobs/acme)"
+        );
+
+        let restore = parse_words(&["restore", "jobs", "acme"]).unwrap();
+        assert_eq!(
+            request(&restore, &Value::Null).unwrap(),
+            ("records.restore", json!({"collection": "jobs", "id": "acme"}))
+        );
+        assert_eq!(show(&restore, &json!({}), &Value::Null), "✓ jobs/acme restored");
+
+        let trash = parse_words(&["trash", "jobs"]).unwrap();
+        assert_eq!(request(&trash, &Value::Null).unwrap(), ("records.trash", json!({"collection": "jobs"})));
+        assert_eq!(show(&trash, &json!({"items": []}), &Value::Null), "nothing in jobs's trash");
+        assert!(parse_words(&["trash"]).unwrap_err().contains("records trash COLLECTION"));
     }
 
     #[test]

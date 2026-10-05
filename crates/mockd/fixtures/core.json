@@ -81,6 +81,18 @@
                 "execution": "inline"
               },
               {
+                "op": "records.restore",
+                "summary": "Bring a removed record back from the trash",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "records.trash",
+                "summary": "List a collection's removed records",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
                 "op": "records.remove",
                 "summary": "Delete a record",
                 "params_schema": {},
@@ -93,6 +105,7 @@
               "records.item.completed",
               "records.item.reopened",
               "records.item.renamed",
+              "records.item.restored",
               "records.item.removed",
               "records.collection.created"
             ]

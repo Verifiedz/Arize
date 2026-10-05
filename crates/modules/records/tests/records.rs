@@ -787,3 +787,68 @@ async fn list_filters_searches_and_sorts_through_the_op() {
     let e = list(json!({"filter": {"difficulty": {"lt": "hard"}}, "sort": ["nope"]})).await.unwrap_err();
     assert_eq!(e.code, ErrorCode::InvalidParams);
 }
+
+// ---------------------------------------------------------------- ADR 0020: trash and restore
+
+#[tokio::test]
+async fn remove_moves_the_record_to_the_trash_and_says_what_went() {
+    let (r, env) = setup().await;
+    add_two_sum(&r, &env).await;
+    call(&r, &env, "records.complete", json!({"collection": "leetcode", "id": "two-sum"})).await.unwrap();
+    let before = file(&env, "items/leetcode/two-sum.toml").unwrap();
+
+    call(&r, &env, "records.remove", json!({"collection": "leetcode", "id": "two-sum"})).await.unwrap();
+    assert!(file(&env, "items/leetcode/two-sum.toml").is_none());
+    assert_eq!(file(&env, "trash/leetcode/two-sum.toml").unwrap(), before, "trashed exactly as it was");
+    let ev = env.backend.events().pop().unwrap();
+    assert_eq!(ev.topic, "records.item.removed");
+    assert_eq!((ev.payload["title"].clone(), ev.payload["item"]["status"].clone()), (json!("Two Sum"), json!("done")));
+
+    let list = call(&r, &env, "records.list", json!({"collection": "leetcode"})).await.unwrap();
+    assert_eq!(list["total"], 0, "the trash isn't part of the collection");
+    let trash = call(&r, &env, "records.trash", json!({"collection": "leetcode"})).await.unwrap();
+    assert_eq!(trash["items"][0]["id"], "two-sum");
+}
+
+#[tokio::test]
+async fn restore_brings_it_back_exactly() {
+    let (r, env) = setup().await;
+    add_two_sum(&r, &env).await;
+    call(&r, &env, "records.complete", json!({"collection": "leetcode", "id": "two-sum"})).await.unwrap();
+    let target = json!({"collection": "leetcode", "id": "two-sum"});
+    let original = call(&r, &env, "records.get", target.clone()).await.unwrap();
+    call(&r, &env, "records.remove", target.clone()).await.unwrap();
+
+    let restored = call(&r, &env, "records.restore", target.clone()).await.unwrap();
+    assert_eq!(restored, original, "same status, values and stamp");
+    assert!(file(&env, "trash/leetcode/two-sum.toml").is_none());
+    let ev = env.backend.events().pop().unwrap();
+    assert_eq!((ev.topic.as_str(), ev.payload["item"].clone()), ("records.item.restored", original));
+
+    let e = call(&r, &env, "records.restore", target).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::NotFound, "nothing left in the trash");
+}
+
+#[tokio::test]
+async fn restore_refuses_when_the_id_or_a_unique_value_is_taken_again() {
+    let (r, env) = setup().await;
+    add_two_sum(&r, &env).await;
+    let target = json!({"collection": "leetcode", "id": "two-sum"});
+    call(&r, &env, "records.remove", target.clone()).await.unwrap();
+    add_two_sum(&r, &env).await;
+    let before = topics(&env).len();
+    let e = call(&r, &env, "records.restore", target).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::Conflict);
+    assert!(e.message.contains("rename one of them"), "{}", e.message);
+    assert_eq!(topics(&env).len(), before);
+
+    add_postings_collection(&env);
+    let url = "https://amazon.jobs/1";
+    add_posting(&r, &env, "old", json!({"company": "Amazon", "url": url})).await.unwrap();
+    call(&r, &env, "records.remove", json!({"collection": "postings", "id": "old"})).await.unwrap();
+    add_posting(&r, &env, "new", json!({"company": "Amazon", "url": url})).await.unwrap();
+    let e = call(&r, &env, "records.restore", json!({"collection": "postings", "id": "old"})).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::Conflict);
+    assert!(e.message.contains("already used by 'new'"), "{}", e.message);
+    assert!(file(&env, "trash/postings/old.toml").is_some(), "still in the trash");
+}

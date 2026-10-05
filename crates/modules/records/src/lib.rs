@@ -44,6 +44,7 @@ impl Module for Records {
                 "records.item.completed",
                 "records.item.reopened",
                 "records.item.renamed",
+                "records.item.restored",
                 "records.item.removed",
                 "records.collection.created",
             ]
@@ -109,7 +110,17 @@ impl Module for Records {
                 json!({"type": "object", "required": ["collection", "id", "new_id"], "properties": {
                     "collection": {"type": "string"}, "id": {"type": "string"}, "new_id": {"type": "string"}}}),
             ),
-            ("records.remove", "Delete a record", with(json!({}))),
+            (
+                "records.remove",
+                "Remove a record (it goes to the trash; records.restore brings it back)",
+                with(json!({})),
+            ),
+            ("records.restore", "Bring a removed record back from the trash", with(json!({}))),
+            (
+                "records.trash",
+                "List a collection's removed records",
+                json!({"type": "object", "required": ["collection"], "properties": {"collection": {"type": "string"}}}),
+            ),
         ]
         .into_iter()
         .map(|(op, summary, params_schema)| CommandSpec {
@@ -136,6 +147,8 @@ impl Module for Records {
             "records.reopen" => self.reopen(ctx, decode(params)?),
             "records.rename" => self.rename(ctx, decode(params)?),
             "records.remove" => self.remove(ctx, decode(params)?),
+            "records.restore" => self.restore(ctx, decode(params)?),
+            "records.trash" => self.trash(ctx, decode(params)?),
             _ => Err(Error::unknown_op(format!("records has no op '{op}'"))),
         }
     }
@@ -163,6 +176,11 @@ struct Add {
     id: Option<String>,
     #[serde(default)]
     fields: Map<String, Value>,
+}
+
+#[derive(Deserialize)]
+struct CollectionOnly {
+    collection: String,
 }
 
 #[derive(Deserialize)]
@@ -375,15 +393,62 @@ impl Records {
         Ok(wire)
     }
 
+    /// Move the record to the trash and say what went, in one transaction (ADR 0020 §1–2).
     fn remove(&self, ctx: &Ctx, t: Target) -> Result<Value> {
         let c = load_collection(ctx, &t.collection)?;
         let _g = self.write.lock();
-        load_item(ctx, &c, &t.id)?;
+        let item = load_item(ctx, &c, &t.id)?;
+        let event = payload(&c, &item, &item.to_wire(&c));
         ctx.store.transaction(|tx| {
+            tx.put(&trash_path(&c.id, &t.id), item.to_toml())?;
             tx.delete(&item_path(&c.id, &t.id))?;
-            tx.emit("records.item.removed", json!({"collection": c.id, "id": t.id}))
+            tx.emit("records.item.removed", event)
         })?;
         Ok(json!({"removed": true}))
+    }
+
+    /// Bring a removed record back exactly as it was (ADR 0020 §3).
+    fn restore(&self, ctx: &Ctx, t: Target) -> Result<Value> {
+        let c = load_collection(ctx, &t.collection)?;
+        item::check_id(&t.id)?;
+        let _g = self.write.lock();
+        let text = ctx
+            .store
+            .read_string(&trash_path(&c.id, &t.id))?
+            .ok_or_else(|| Error::not_found(format!("no removed record '{}' in '{}'", t.id, c.id)))?;
+        if ctx.store.read_string(&item_path(&c.id, &t.id))?.is_some() {
+            return Err(Error::conflict(format!(
+                "'{}' already has a record '{}' again; rename one of them first",
+                c.id, t.id
+            )));
+        }
+        let item = Item::from_toml(&t.id, &text)?;
+        check_unique(ctx, &c, &t.id, &item.fields_map())?;
+        let wire = item.to_wire(&c);
+        let event = payload(&c, &item, &wire);
+        ctx.store.transaction(|tx| {
+            tx.put(&item_path(&c.id, &t.id), text)?;
+            tx.delete(&trash_path(&c.id, &t.id))?;
+            tx.emit("records.item.restored", event)
+        })?;
+        Ok(wire)
+    }
+
+    /// The removed records that could be restored, by id (ADR 0020 §4).
+    fn trash(&self, ctx: &Ctx, p: CollectionOnly) -> Result<Value> {
+        let c = load_collection(ctx, &p.collection)?;
+        let dir = format!("trash/{}", c.id);
+        let mut items: Vec<Value> = Vec::new();
+        for path in ctx.store.list(&dir)? {
+            let Some(id) = path.strip_prefix(&format!("{dir}/")).and_then(|p| p.strip_suffix(".toml")) else {
+                continue;
+            };
+            if let Some(Ok(item)) = ctx.store.read_string(&path)?.map(|text| Item::from_toml(id, &text)) {
+                items.push(item.to_wire(&c));
+            }
+        }
+        items.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+        Ok(json!({"items": items}))
     }
 }
 
@@ -449,6 +514,11 @@ fn load_item(ctx: &Ctx, c: &Collection, id: &str) -> Result<Item> {
         Some(text) => Item::from_toml(id, &text),
         None => Err(Error::not_found(format!("no record '{id}' in '{}'", c.id))),
     }
+}
+
+/// Where a removed record waits to be restored (ADR 0020 §1).
+fn trash_path(collection: &str, id: &str) -> String {
+    format!("trash/{collection}/{id}.toml")
 }
 
 fn item_path(collection: &str, id: &str) -> String {
