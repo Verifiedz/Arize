@@ -93,10 +93,11 @@ collection = "jobs"      # the collection its value must be a record of
   record in the target collection is `invalid_params` naming both. A ref to a collection that
   doesn't exist is an error naming the collection file.
 - **Removing a target that others point at is `conflict`**, listing up to five of the records
-  that refer to it, unless `"force": true` (`--force`). Forced, the references are left dangling
+  that refer to it (all of them in `detail.referred_by`, as `"collection/id"`), unless
+  `"force": true` (`--force`). Forced, the references are left dangling
   and `records.check` reports them. Never cascade-deleting user data.
 - **Renaming a target** (`records.rename`) rewrites every reference to it in the same transaction,
-  and the event says how many. **Renaming a collection** (`records.rename_collection`) rewrites
+  and the event says how many (`references`). **Renaming a collection** (`records.rename_collection`) rewrites
   `collection = "…"` in every collection file that refers to it, comments kept.
 - `records.check` reports references to records that don't exist.
 - Filters and sorting treat a ref like a string; lists of refs (`of = "ref"`) use `has`.

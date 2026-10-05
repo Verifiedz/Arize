@@ -38,7 +38,8 @@ commands:
                                        a value for the date field back-dates it
   reopen COLLECTION/ID [--clear-stamp] mark a done record todo again
   rename COLLECTION/ID NEW_ID          give a record a new id
-  remove COLLECTION/ID                 remove a record (it goes to the trash)
+  remove COLLECTION/ID [--force]       remove a record (it goes to the trash); --force even
+                                       if other records refer to it
   restore COLLECTION/ID                bring a removed record back
   trash COLLECTION                     list removed records you can restore
 
@@ -101,9 +102,11 @@ pub enum RecordsCmd {
         id: String,
         clear_stamp: bool,
     },
+    /// `force`: remove it even if other records refer to it (ADR 0024 §3).
     Remove {
         collection: String,
         id: String,
+        force: bool,
     },
     Restore {
         collection: String,
@@ -193,6 +196,10 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
             }
         }
         rest = kept;
+    }
+    let force = sub == "remove" && rest.iter().any(|w| w == "--force");
+    if force {
+        rest.retain(|w| w != "--force");
     }
     let yes = sub == "remove-collection" && rest.iter().any(|w| w == "--yes");
     if yes {
@@ -317,7 +324,7 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
                 "get" => RecordsCmd::Get { collection, id },
                 "reopen" => RecordsCmd::Reopen { collection, id, clear_stamp },
                 "restore" => RecordsCmd::Restore { collection, id },
-                _ => RecordsCmd::Remove { collection, id },
+                _ => RecordsCmd::Remove { collection, id, force },
             })
         }
         other => Err(format!("unknown records command '{other}'; see 'shimmer records --help'")),
@@ -478,7 +485,13 @@ pub fn request(cmd: &RecordsCmd, schema: &Value) -> Result<(&'static str, Value)
             }
             ("records.reopen", params)
         }
-        RecordsCmd::Remove { collection, id } => ("records.remove", json!({"collection": collection, "id": id})),
+        RecordsCmd::Remove { collection, id, force } => {
+            let mut params = json!({"collection": collection, "id": id});
+            if *force {
+                params["force"] = json!(true);
+            }
+            ("records.remove", params)
+        }
         RecordsCmd::Restore { collection, id } => ("records.restore", json!({"collection": collection, "id": id})),
         RecordsCmd::Trash { collection } => ("records.trash", json!({"collection": collection})),
         RecordsCmd::Check { collection } => ("records.check", json!({"collection": collection})),
@@ -678,7 +691,7 @@ pub fn show(cmd: &RecordsCmd, data: &Value, schema: &Value) -> String {
             format!("✓ {collection}/{id} renamed to {collection}/{new_id}")
         }
         RecordsCmd::Update { collection, id, .. } => format!("updated {collection}/{id}"),
-        RecordsCmd::Remove { collection, id } => {
+        RecordsCmd::Remove { collection, id, .. } => {
             format!("removed {collection}/{id} (undo: shimmer records restore {collection}/{id})")
         }
         RecordsCmd::Restore { collection, id } => format!("✓ {collection}/{id} restored"),
@@ -813,6 +826,8 @@ fn describe_field(f: &Value) -> String {
         Some("enum") => {
             notes.push(f["values"].as_array().into_iter().flatten().map(cell).collect::<Vec<_>>().join("|"))
         }
+        Some("ref") => notes.push(format!("ref to {}", cell(&f["collection"]))),
+        Some("list") if f["of"] == "ref" => notes.push(format!("list of refs to {}", cell(&f["collection"]))),
         Some("list") => {
             let of = f["of"].as_str().unwrap_or("string");
             match f["values"].as_array() {
@@ -1384,6 +1399,23 @@ lru-cache  todo    LRU Cache  medium      -            2         true
         assert_eq!(describe_field(&schema["fields"][0]), "tech_stack (list of string)");
         assert_eq!(shown(&schema, "tech_stack", &json!(["go", "rust"])), "go, rust");
         assert_eq!(shown(&schema, "tech_stack", &json!([])), "-");
+    }
+
+    #[test]
+    fn refs_describe_their_target_and_remove_takes_force() {
+        let one = json!({"name": "application", "type": "ref", "collection": "jobs"});
+        let many = json!({"name": "also_for", "type": "list", "of": "ref", "collection": "jobs"});
+        assert_eq!(describe_field(&one), "application (ref to jobs)");
+        assert_eq!(describe_field(&many), "also_for (list of refs to jobs)");
+
+        let remove = parse_words(&["remove", "jobs/acme", "--force"]).unwrap();
+        assert_eq!(remove, RecordsCmd::Remove { collection: "jobs".into(), id: "acme".into(), force: true });
+        assert_eq!(
+            request(&remove, &Value::Null).unwrap().1,
+            json!({"collection": "jobs", "id": "acme", "force": true})
+        );
+        let plain = parse_words(&["remove", "jobs/acme"]).unwrap();
+        assert_eq!(request(&plain, &Value::Null).unwrap().1, json!({"collection": "jobs", "id": "acme"}));
     }
 
     #[test]

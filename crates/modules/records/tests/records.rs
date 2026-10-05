@@ -1621,3 +1621,90 @@ async fn list_fields_are_arrays_changed_whole_or_by_item() {
     let list = json!({"collection": "projects", "filter": {"stack": {"has": "go"}}});
     assert_eq!(call(&r, &env, "records.list", list).await.unwrap()["total"], 1);
 }
+
+fn add_linked_collections(env: &TestEnv) {
+    env.ctx
+        .store
+        .write(
+            "collections/jobs.toml",
+            "[collection]\nid = \"jobs\"\nlabel = \"Jobs\"\n[[field]]\nname = \"company\"\ntype = \"string\"\n",
+        )
+        .unwrap();
+    env.ctx
+        .store
+        .write(
+            "collections/rounds.toml",
+            r#"
+            [collection]
+            id = "rounds"
+            label = "Rounds"
+            title = "{application}: {kind}"
+
+            [[field]]
+            name = "application"
+            type = "ref"
+            collection = "jobs"   # the job this round is for
+
+            [[field]]
+            name = "kind"
+            type = "string"
+
+            [[field]]
+            name = "also_for"
+            type = "list"
+            of = "ref"
+            collection = "jobs"
+            "#,
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn references_are_checked_followed_on_rename_and_guard_removal() {
+    // ADR 0024 §3.
+    let (r, env) = setup().await;
+    add_linked_collections(&env);
+    let add = |c: &str, id: &str, fields: Value| json!({"collection": c, "id": id, "fields": fields});
+    call(&r, &env, "records.add", add("jobs", "acme", json!({"company": "Acme"}))).await.unwrap();
+    call(&r, &env, "records.add", add("jobs", "globex", json!({"company": "Globex"}))).await.unwrap();
+
+    let e = call(&r, &env, "records.add", add("rounds", "r0", json!({"application": "nope"}))).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::InvalidParams);
+    assert!(e.message.contains("no record 'nope' in 'jobs'"), "{}", e.message);
+    let e =
+        call(&r, &env, "records.add", add("rounds", "r0", json!({"also_for": ["acme", "nope"]}))).await.unwrap_err();
+    assert!(e.message.contains("'nope'"), "{}", e.message);
+
+    let round = add("rounds", "r1", json!({"application": "acme", "kind": "oa", "also_for": ["globex", "acme"]}));
+    call(&r, &env, "records.add", round).await.unwrap();
+    let list = json!({"collection": "rounds", "filter": {"application": "acme", "also_for": {"has": "globex"}}});
+    assert_eq!(call(&r, &env, "records.list", list).await.unwrap()["total"], 1);
+
+    // Removing a job a round points at is refused, unless forced.
+    let e = call(&r, &env, "records.remove", json!({"collection": "jobs", "id": "globex"})).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::Conflict);
+    assert!(e.message.contains("rounds/r1"), "{}", e.message);
+    assert_eq!(e.detail.unwrap()["referred_by"], json!(["rounds/r1"]));
+
+    // Renaming a job rewrites every reference in the same transaction.
+    let rename = json!({"collection": "jobs", "id": "acme", "new_id": "acme-corp"});
+    call(&r, &env, "records.rename", rename).await.unwrap();
+    assert_eq!(env.backend.events().pop().unwrap().payload["references"], 2);
+    let round = call(&r, &env, "records.get", json!({"collection": "rounds", "id": "r1"})).await.unwrap();
+    assert_eq!(round["application"], "acme-corp");
+    assert_eq!(round["also_for"], json!(["globex", "acme-corp"]));
+
+    // Renaming the collection rewrites `collection = …`, comments kept.
+    call(&r, &env, "records.rename_collection", json!({"id": "jobs", "new_id": "applications"})).await.unwrap();
+    let text = file(&env, "collections/rounds.toml").unwrap();
+    assert!(text.contains("collection = \"applications\"   # the job this round is for"), "{text}");
+    let check = call(&r, &env, "records.check", json!({"collection": "rounds"})).await.unwrap();
+    assert_eq!(check["problems"], json!([]));
+
+    // Forced, the reference is left dangling and `check` reports it.
+    let force = json!({"collection": "applications", "id": "globex", "force": true});
+    call(&r, &env, "records.remove", force).await.unwrap();
+    let check = call(&r, &env, "records.check", json!({"collection": "rounds"})).await.unwrap();
+    let problems = check["problems"][0]["problems"].to_string();
+    assert!(problems.contains("no record 'globex' in 'applications'"), "{problems}");
+}

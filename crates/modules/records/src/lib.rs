@@ -131,8 +131,8 @@ impl Module for Records {
             ),
             (
                 "records.remove",
-                "Remove a record (it goes to the trash; records.restore brings it back)",
-                with(json!({})),
+                "Remove a record (it goes to the trash; records.restore brings it back); force if others refer to it",
+                with(json!({"force": {"type": "boolean"}})),
             ),
             ("records.restore", "Bring a removed record back from the trash", with(json!({}))),
             (
@@ -219,6 +219,15 @@ impl Module for Records {
 struct Target {
     collection: String,
     id: String,
+}
+
+/// `records.remove`: `force` removes a record others still refer to (ADR 0024 §3).
+#[derive(Deserialize)]
+struct Remove {
+    collection: String,
+    id: String,
+    #[serde(default)]
+    force: bool,
 }
 
 #[derive(Deserialize)]
@@ -348,6 +357,7 @@ impl Records {
 
         // Under the write lock, so nothing can take the id or a unique value in between.
         let _g = self.write.lock();
+        check_refs(ctx, &c, &p.fields)?;
         let exists = |id: &str| Ok(ctx.store.read_string(&item_path(&c.id, id))?.is_some());
         let id = match p.id {
             Some(id) if exists(&id)? => {
@@ -421,6 +431,7 @@ impl Records {
         let before = load_item(ctx, &c, &p.id)?;
         values::patch_lists(&c, &mut p.fields, &before.fields)?;
         c.check_changes(&p.fields)?;
+        check_refs(ctx, &c, &p.fields)?;
         check_unique(ctx, &c, &p.id, &p.fields)?;
         let mut item = before.clone();
         item.apply(p.fields);
@@ -445,6 +456,7 @@ impl Records {
         let _g = self.write.lock();
         let current = load_item(ctx, &c, &p.id)?;
         values::patch_lists(&c, &mut p.fields, &current.fields)?;
+        check_refs(ctx, &c, &p.fields)?;
         check_unique(ctx, &c, &p.id, &p.fields)?;
         let item = lifecycle::complete(&c, &current, p.fields, &now)?;
         self.save(ctx, &c, &item, "records.item.completed")
@@ -473,13 +485,29 @@ impl Records {
             return Err(Error::conflict(format!("'{}' already has a record '{}'", c.id, p.new_id)));
         }
         item.id = p.new_id.clone();
+        // Every reference to it follows, in the same transaction (ADR 0024 §3).
+        let mut repointed = Vec::new();
+        let mut references = 0;
+        for (other, mut record) in referrers(ctx, &c.id, &p.id)? {
+            references += collections::repoint(&other, &mut record, &c.id, &p.id, &p.new_id);
+            // A record that points at itself is the one being moved.
+            if other.id == c.id && record.id == p.id {
+                collections::repoint(&c, &mut item, &c.id, &p.id, &p.new_id);
+                continue;
+            }
+            repointed.push((item_path(&other.id, &record.id), record.to_toml()));
+        }
         let wire = item.to_wire(&c);
         let mut event = payload(&c, &item, &wire);
         event["id"] = json!(p.id);
         event["new_id"] = json!(p.new_id);
+        event["references"] = json!(references);
         ctx.store.transaction(|tx| {
             tx.put(&new_path, item.to_toml())?;
             tx.delete(&item_path(&c.id, &p.id))?;
+            for (path, text) in repointed {
+                tx.put(&path, text)?;
+            }
             tx.emit("records.item.renamed", event)
         })?;
         Ok(wire)
@@ -539,7 +567,11 @@ impl Records {
             };
             checked += 1;
             let found = match ctx.store.read_string(&path)?.map(|text| Item::from_toml(id, &text)) {
-                Some(Ok(item)) => collections::problems(&c, &item),
+                Some(Ok(item)) => {
+                    let mut found = collections::problems(&c, &item);
+                    found.extend(dangling(ctx, &c, &item.fields)?);
+                    found
+                }
                 Some(Err(e)) => vec![e.message],
                 None => continue,
             };
@@ -610,7 +642,17 @@ impl Records {
             return Err(Error::conflict(format!("there is already a collection '{}'", p.new_id)));
         }
         let text = collections::set_id(&c.id, &collection_text(ctx, &c.id)?, &p.new_id)?;
+        // Ref fields pointing into it, here or in any other collection, follow (ADR 0024 §3).
+        let (text, _) = collections::retarget_refs(&p.new_id, &text, &c.id, &p.new_id)?;
         let new = Collection::parse(&p.new_id, &text)?;
+        let mut retargeted = Vec::new();
+        for other in all_collections(ctx)?.into_iter().filter(|o| o.id != c.id) {
+            let (changed_text, n) =
+                collections::retarget_refs(&other.id, &collection_text(ctx, &other.id)?, &c.id, &p.new_id)?;
+            if n > 0 {
+                retargeted.push((collection_path(&other.id), changed_text));
+            }
+        }
         let moves = [
             subtree(ctx, &format!("items/{}", c.id), &format!("items/{}", p.new_id))?,
             subtree(ctx, &format!("trash/{}", c.id), &format!("trash/{}", p.new_id))?,
@@ -620,6 +662,9 @@ impl Records {
             tx.put(&collection_path(&p.new_id), text)?;
             tx.delete(&collection_path(&c.id))?;
             apply_moves(tx, moves)?;
+            for (path, text) in retargeted {
+                tx.put(&path, text)?;
+            }
             tx.emit("records.collection.renamed", json!({"collection": c.id, "new_id": p.new_id}))
         })?;
         Ok(serde_json::to_value(new).unwrap_or_default())
@@ -695,10 +740,30 @@ impl Records {
     }
 
     /// Move the record to the trash and say what went, in one transaction (ADR 0020 §1–2).
-    fn remove(&self, ctx: &Ctx, t: Target) -> Result<Value> {
+    fn remove(&self, ctx: &Ctx, t: Remove) -> Result<Value> {
         let c = load_collection(ctx, &t.collection)?;
         let _g = self.write.lock();
         let item = load_item(ctx, &c, &t.id)?;
+        // Never quietly leave references pointing at nothing (ADR 0024 §3).
+        let pointing: Vec<String> = referrers(ctx, &c.id, &t.id)?
+            .into_iter()
+            .filter(|(o, r)| !(o.id == c.id && r.id == t.id))
+            .map(|(o, r)| format!("{}/{}", o.id, r.id))
+            .collect();
+        if !pointing.is_empty() && !t.force {
+            let shown: Vec<&str> = pointing.iter().take(5).map(String::as_str).collect();
+            let more = match pointing.len() > 5 {
+                true => format!(" and {} more", pointing.len() - 5),
+                false => String::new(),
+            };
+            return Err(Error::conflict(format!(
+                "'{}' in '{}' is referred to by {}{more}; remove those first, or force it and leave them pointing at nothing",
+                t.id,
+                c.id,
+                shown.join(", ")
+            ))
+            .with_detail(json!({"referred_by": pointing})));
+        }
         let event = payload(&c, &item, &item.to_wire(&c));
         ctx.store.transaction(|tx| {
             tx.put(&trash_path(&c.id, &t.id), item.to_toml())?;
@@ -792,6 +857,71 @@ fn check_unique(ctx: &Ctx, c: &Collection, id: &str, values: &Map<String, Value>
         }
     }
     Ok(())
+}
+
+/// Every ref in `values` points at a record that exists (ADR 0024 §3).
+fn check_refs(ctx: &Ctx, c: &Collection, values: &Map<String, Value>) -> Result<()> {
+    match dangling(ctx, c, values)?.into_iter().next() {
+        Some(problem) => Err(Error::invalid_params(problem)),
+        None => Ok(()),
+    }
+}
+
+/// What's wrong with the refs in `values`: a target collection that doesn't exist, or a record
+/// that isn't in it.
+fn dangling<'a>(
+    ctx: &Ctx,
+    c: &Collection,
+    values: impl IntoIterator<Item = (&'a String, &'a Value)>,
+) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for (field, target, id) in c.refs_in(values) {
+        if ctx.store.read_string(&collection_path(target))?.is_none() {
+            out.push(format!(
+                "field '{field}' points into collection '{target}', but there is no {}",
+                collection_path(target)
+            ));
+        } else if item::check_id(id).is_err() || ctx.store.read_string(&item_path(target, id))?.is_none() {
+            out.push(format!("field '{field}': no record '{id}' in '{target}'"));
+        }
+    }
+    Ok(out)
+}
+
+/// Every record, in any collection, with a ref to `id` in `target`, with its collection.
+/// Unreadable collections and records are skipped, as in `records.collections` and `list`.
+fn referrers(ctx: &Ctx, target: &str, id: &str) -> Result<Vec<(Collection, Item)>> {
+    let mut out = Vec::new();
+    for c in all_collections(ctx)? {
+        if c.ref_fields_to(target).next().is_none() {
+            continue;
+        }
+        let dir = format!("items/{}", c.id);
+        for path in ctx.store.list(&dir)? {
+            let Some(rid) = path.strip_prefix(&format!("{dir}/")).and_then(|p| p.strip_suffix(".toml")) else {
+                continue;
+            };
+            let Some(Ok(record)) = ctx.store.read_string(&path)?.map(|text| Item::from_toml(rid, &text)) else {
+                continue;
+            };
+            if c.refs_in(&record.fields).iter().any(|(_, t, i)| *t == target && *i == id) {
+                out.push((c.clone(), record));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Every collection that parses.
+fn all_collections(ctx: &Ctx) -> Result<Vec<Collection>> {
+    let mut out = Vec::new();
+    for path in ctx.store.list("collections")? {
+        let Some(id) = path.strip_prefix("collections/").and_then(|p| p.strip_suffix(".toml")) else { continue };
+        if let Ok(c) = load_collection(ctx, id) {
+            out.push(c);
+        }
+    }
+    Ok(out)
 }
 
 /// The current moment in the configured timezone (ADR 0009, ADR 0024 §1). "Today" comes from

@@ -73,9 +73,12 @@ pub struct Field {
     /// No two records share a set value (ADR 0017 §4).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unique: bool,
-    /// What a `list` field holds: `string` or `enum` (ADR 0024 §2).
+    /// What a `list` field holds: `string`, `enum` or `ref` (ADR 0024 §2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub of: Option<FieldType>,
+    /// The collection a `ref` (or list of `ref`) points into (ADR 0024 §3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection: Option<String>,
 }
 
 /// What a field means, so other features can use it without knowing the collection
@@ -101,6 +104,8 @@ pub enum FieldType {
     Datetime,
     /// Several values of the type `of` names (ADR 0024 §2).
     List,
+    /// The id of a record in the collection `collection` names (ADR 0024 §3).
+    Ref,
 }
 
 /// The file as written. `deny_unknown_fields` turns a typo like `value = [...]` into an error
@@ -158,15 +163,28 @@ impl Collection {
                 return Err(bad(format!("field '{}' is defined twice", f.name)));
             }
             match (f.kind, f.of) {
-                (FieldType::List, Some(FieldType::String | FieldType::Enum)) => {}
+                (FieldType::List, Some(FieldType::String | FieldType::Enum | FieldType::Ref)) => {}
                 (FieldType::List, Some(_)) => {
-                    return Err(bad(format!("list field '{}': `of` must be \"string\" or \"enum\"", f.name)));
+                    return Err(bad(format!("list field '{}': `of` must be \"string\", \"enum\" or \"ref\"", f.name)));
                 }
                 (FieldType::List, None) => {
                     return Err(bad(format!("list field '{}' needs `of`: what it holds", f.name)));
                 }
                 (_, Some(_)) => return Err(bad(format!("field '{}': only list fields take `of`", f.name))),
                 (_, None) => {}
+            }
+            match (f.item_kind(), &f.collection) {
+                (FieldType::Ref, None) => {
+                    return Err(bad(format!(
+                        "ref field '{}' needs `collection`: the collection it points into",
+                        f.name
+                    )));
+                }
+                (FieldType::Ref, Some(target)) if !is_valid_name(target) => {
+                    return Err(bad(format!("field '{}': collection '{target}' is not a valid collection id", f.name)));
+                }
+                (FieldType::Ref, Some(_)) | (_, None) => {}
+                (_, Some(_)) => return Err(bad(format!("field '{}': only ref fields take `collection`", f.name))),
             }
             if f.kind == FieldType::List && (f.unique || f.role.is_some()) {
                 return Err(bad(format!("list field '{}' can't be unique or have a role", f.name)));
@@ -320,6 +338,28 @@ impl Collection {
             .collect()
     }
 
+    /// Every record id `values` points at through a ref field (or list of refs), as
+    /// `(field, target collection, id)` (ADR 0024 §3).
+    pub fn refs_in<'v>(&self, values: impl IntoIterator<Item = (&'v String, &'v Value)>) -> Vec<(&str, &str, &'v str)> {
+        let mut out = Vec::new();
+        for (name, value) in values {
+            let Some(f) = self.field(name).filter(|f| f.item_kind() == FieldType::Ref) else { continue };
+            let Some(target) = f.collection.as_deref() else { continue };
+            let ids: Vec<&str> = match value {
+                Value::String(s) => vec![s.as_str()],
+                Value::Array(items) => items.iter().filter_map(Value::as_str).collect(),
+                _ => Vec::new(),
+            };
+            out.extend(ids.into_iter().map(|id| (f.name.as_str(), target, id)));
+        }
+        out
+    }
+
+    /// The fields that point into `target`.
+    pub fn ref_fields_to<'a>(&'a self, target: &'a str) -> impl Iterator<Item = &'a Field> + 'a {
+        self.fields.iter().filter(move |f| f.item_kind() == FieldType::Ref && f.collection.as_deref() == Some(target))
+    }
+
     /// Check values being written. `null` is not a value; callers that allow it as "unset"
     /// remove those keys first.
     pub fn check_values(&self, values: &Map<String, Value>) -> Result<()> {
@@ -391,6 +431,7 @@ impl Field {
             FieldType::Datetime => value.as_str().is_some_and(|s| {
                 NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok() || chrono::DateTime::parse_from_rfc3339(s).is_ok()
             }),
+            FieldType::Ref => value.as_str().is_some_and(|s| crate::item::check_id(s).is_ok()),
             FieldType::List => unreachable!("checked above"),
         };
         if ok {
@@ -403,6 +444,7 @@ impl Field {
             FieldType::Date => "a date like \"2026-09-25\"".to_owned(),
             FieldType::Enum => format!("one of {}", self.values.join(", ")),
             FieldType::Datetime => "a date and time like \"2026-10-20 23:59\", or a date".to_owned(),
+            FieldType::Ref => format!("the id of a record in '{}'", self.collection.as_deref().unwrap_or("?")),
             FieldType::List => unreachable!("checked above"),
         };
         Err(Error::invalid_params(format!("field '{}' must be {want}, got {value}", self.name)))
@@ -635,6 +677,10 @@ mod tests {
             ("title = \"{A B}\"", "is not a field name"),
             ("[extra]\nlead_days = 3", "must be a table"),
             ("[[field]]\nname = \"a\"\ntype = \"list\"", "needs `of`"),
+            ("[[field]]\nname = \"a\"\ntype = \"ref\"", "needs `collection`"),
+            ("[[field]]\nname = \"a\"\ntype = \"ref\"\ncollection = \"Jobs!\"", "not a valid collection id"),
+            ("[[field]]\nname = \"a\"\ntype = \"string\"\ncollection = \"jobs\"", "only ref fields take"),
+            ("[[field]]\nname = \"a\"\ntype = \"list\"\nof = \"ref\"", "needs `collection`"),
             ("[[field]]\nname = \"a\"\ntype = \"list\"\nof = \"int\"", "`of` must be"),
             ("[[field]]\nname = \"a\"\ntype = \"string\"\nof = \"string\"", "only list fields take `of`"),
             ("[[field]]\nname = \"a\"\ntype = \"list\"\nof = \"enum\"", "needs values"),

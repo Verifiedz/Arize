@@ -2,6 +2,7 @@
 //! the collection file that keep the user's comments and layout. Pure: text and values in, text
 //! and reports out (§12 rule 10). The ops in `lib.rs` read, call these, and write the result.
 
+use serde_json::Value;
 use shimmer_core::{Error, Result};
 use toml_edit::DocumentMut;
 
@@ -63,6 +64,44 @@ pub fn rename_field(file_id: &str, text: &str, from: &str, to: &str) -> Result<S
     Ok(doc.to_string())
 }
 
+/// The collection file with every ref field pointing into `from` pointing into `to` instead
+/// (`collection = "…"`, ADR 0024 §3), comments kept, and how many fields changed.
+pub fn retarget_refs(file_id: &str, text: &str, from: &str, to: &str) -> Result<(String, usize)> {
+    let mut doc = parse(file_id, text)?;
+    let mut changed = 0;
+    if let Some(fields) = doc.get_mut("field").and_then(toml_edit::Item::as_array_of_tables_mut) {
+        for t in fields.iter_mut() {
+            if let Some(slot) = t.get_mut("collection") {
+                if slot.as_str() == Some(from) {
+                    set_str(slot, to);
+                    changed += 1;
+                }
+            }
+        }
+    }
+    Ok((doc.to_string(), changed))
+}
+
+/// Point `item`'s references to record `from` in `target` at `to` instead (ADR 0024 §3). How
+/// many values changed.
+pub fn repoint(c: &Collection, item: &mut Item, target: &str, from: &str, to: &str) -> usize {
+    let mut changed = 0;
+    for f in c.ref_fields_to(target) {
+        let slots: Vec<&mut Value> = match item.fields.get_mut(&f.name) {
+            Some(Value::Array(items)) => items.iter_mut().collect(),
+            Some(value) => vec![value],
+            None => continue,
+        };
+        for slot in slots {
+            if slot.as_str() == Some(from) {
+                *slot = Value::String(to.to_owned());
+                changed += 1;
+            }
+        }
+    }
+    changed
+}
+
 /// The collection file with `[collection] id` set to `new_id`, comments kept (ADR 0021 §4).
 pub fn set_id(file_id: &str, text: &str, new_id: &str) -> Result<String> {
     let mut doc = parse(file_id, text)?;
@@ -102,7 +141,7 @@ fn set_str(slot: &mut toml_edit::Item, s: &str) {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{json, Value};
+    use serde_json::json;
 
     use super::*;
 

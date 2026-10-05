@@ -124,7 +124,7 @@ impl Query {
         let searchable = c
             .fields
             .iter()
-            .filter(|f| matches!(f.item_kind(), FieldType::String | FieldType::Enum))
+            .filter(|f| matches!(f.item_kind(), FieldType::String | FieldType::Enum | FieldType::Ref))
             .map(|f| f.name.clone())
             .collect();
         Ok(Self { conditions, search, sort: keys, searchable, tz: now.tz })
@@ -178,9 +178,12 @@ fn kind(c: &Collection, key: &str) -> Option<Kind> {
     match key {
         "id" => Some(Kind::Id),
         "status" => Some(Kind::Status),
-        _ => c.field(key).map(|f| match f.kind {
-            FieldType::List => Kind::List(f.item_kind(), f.values.clone()),
-            k => Kind::Field(k, f.values.clone()),
+        // A ref filters and sorts like the id it holds (ADR 0024 §3).
+        _ => c.field(key).map(|f| match (f.kind, f.item_kind()) {
+            (FieldType::List, FieldType::Ref) => Kind::List(FieldType::String, Vec::new()),
+            (FieldType::List, of) => Kind::List(of, f.values.clone()),
+            (FieldType::Ref, _) => Kind::Field(FieldType::String, Vec::new()),
+            (k, _) => Kind::Field(k, f.values.clone()),
         }),
     }
 }
@@ -320,7 +323,9 @@ fn sort_value(kind: &Kind, v: &Value, tz: &Tz) -> Option<Key> {
         Kind::Field(FieldType::Datetime, _) => Key::Instant(values::instant(v.as_str()?, tz)?),
         Kind::Field(FieldType::Enum, values) => Key::Rank(values.iter().position(|x| Some(x.as_str()) == v.as_str())?),
         Kind::Field(FieldType::Bool, _) => Key::Bool(v.as_bool()?),
-        Kind::Field(FieldType::String, _) | Kind::Id | Kind::Status => Key::Text(v.as_str()?.to_lowercase()),
+        Kind::Field(FieldType::String | FieldType::Ref, _) | Kind::Id | Kind::Status => {
+            Key::Text(v.as_str()?.to_lowercase())
+        }
         Kind::Field(FieldType::List, _) | Kind::List(..) => return None,
     })
 }
