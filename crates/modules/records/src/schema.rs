@@ -80,7 +80,7 @@ pub struct Field {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
-    /// Something is due on this date. `date` fields only.
+    /// Something is due on this date. `date` and `datetime` fields only.
     Deadline,
     /// The record's link. `string` fields only; at most one per collection.
     Url,
@@ -94,6 +94,8 @@ pub enum FieldType {
     Bool,
     Date,
     Enum,
+    /// A moment (stored as UTC RFC 3339) or a plain date (ADR 0024 §1).
+    Datetime,
 }
 
 /// The file as written. `deny_unknown_fields` turns a typo like `value = [...]` into an error
@@ -160,8 +162,11 @@ impl Collection {
                 (_, true) => {}
             }
             match (f.role, f.kind) {
-                (Some(Role::Deadline), k) if k != FieldType::Date => {
-                    return Err(bad(format!("field '{}': role \"deadline\" is only for date fields", f.name)));
+                (Some(Role::Deadline), k) if !k.is_dated() => {
+                    return Err(bad(format!(
+                        "field '{}': role \"deadline\" is only for date and datetime fields",
+                        f.name
+                    )));
                 }
                 (Some(Role::Url), k) if k != FieldType::String => {
                     return Err(bad(format!("field '{}': role \"url\" is only for string fields", f.name)));
@@ -216,13 +221,13 @@ impl Collection {
         }
         if let Some(stamp) = &c.stamp_on_complete {
             match c.field(stamp) {
-                Some(f) if f.kind == FieldType::Date && f.role == Some(Role::Deadline) => {
+                Some(f) if f.kind.is_dated() && f.role == Some(Role::Deadline) => {
                     return Err(bad(format!(
                         "stamp_on_complete '{stamp}' is a deadline; a stamp records something that happened"
                     )));
                 }
-                Some(f) if f.kind == FieldType::Date => {}
-                _ => return Err(bad(format!("stamp_on_complete '{stamp}' must name a date field"))),
+                Some(f) if f.kind.is_dated() => {}
+                _ => return Err(bad(format!("stamp_on_complete '{stamp}' must name a date or datetime field"))),
             }
         }
         Ok(c)
@@ -317,7 +322,15 @@ impl Collection {
     }
 }
 
+impl FieldType {
+    /// `date` or `datetime`: what deadlines and stamps may be.
+    pub fn is_dated(self) -> bool {
+        matches!(self, Self::Date | Self::Datetime)
+    }
+}
+
 impl Field {
+    /// Check a value as stored (after [`crate::values::normalize`]).
     pub fn check(&self, value: &Value) -> Result<()> {
         let ok = match self.kind {
             FieldType::String => value.is_string(),
@@ -325,6 +338,9 @@ impl Field {
             FieldType::Bool => value.is_boolean(),
             FieldType::Date => value.as_str().is_some_and(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()),
             FieldType::Enum => value.as_str().is_some_and(|s| self.values.iter().any(|v| v == s)),
+            FieldType::Datetime => value.as_str().is_some_and(|s| {
+                NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok() || chrono::DateTime::parse_from_rfc3339(s).is_ok()
+            }),
         };
         if ok {
             return Ok(());
@@ -335,6 +351,7 @@ impl Field {
             FieldType::Bool => "true or false".to_owned(),
             FieldType::Date => "a date like \"2026-09-25\"".to_owned(),
             FieldType::Enum => format!("one of {}", self.values.join(", ")),
+            FieldType::Datetime => "a date and time like \"2026-10-20 23:59\", or a date".to_owned(),
         };
         Err(Error::invalid_params(format!("field '{}' must be {want}, got {value}", self.name)))
     }
@@ -423,7 +440,7 @@ mod tests {
             "[collection]\nid = \"c\"\nlabel = \"C\"\nstamp_on_complete = \"a\"\n[[field]]\nname = \"a\"\ntype = \"string\"",
         )
         .unwrap_err();
-        assert!(e.message.contains("must name a date field"));
+        assert!(e.message.contains("must name a date or datetime field"));
         // ADR 0016 §3: only the two values; anything else names the file.
         let e =
             Collection::parse("c", "[collection]\nid = \"c\"\nlabel = \"C\"\nrepeat_complete = \"twice\"").unwrap_err();
@@ -536,7 +553,7 @@ mod tests {
     #[test]
     fn bad_integration_keys_name_the_file() {
         let cases = [
-            ("[[field]]\nname = \"a\"\ntype = \"string\"\nrole = \"deadline\"", "only for date fields"),
+            ("[[field]]\nname = \"a\"\ntype = \"string\"\nrole = \"deadline\"", "only for date and datetime fields"),
             ("[[field]]\nname = \"a\"\ntype = \"date\"\nrole = \"url\"", "only for string fields"),
             ("[[field]]\nname = \"a\"\ntype = \"date\"\nrole = \"birthday\"", "unknown variant"),
             (

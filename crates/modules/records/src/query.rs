@@ -4,11 +4,13 @@
 
 use std::cmp::Ordering;
 
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
+use chrono_tz::Tz;
 use serde_json::{Map, Value};
 use shimmer_core::{Error, Result};
 
 use crate::schema::{Collection, FieldType};
+use crate::values::{self, Now};
 
 /// At most this many sort keys: enough for any real ordering, and a cap on silly requests.
 const MAX_SORT_KEYS: usize = 5;
@@ -21,6 +23,8 @@ pub struct Query {
     sort: Vec<(String, Kind, Direction)>,
     /// The string and enum fields `search` looks in.
     searchable: Vec<String>,
+    /// For comparing `datetime` values and plain dates as moments (ADR 0024 §1).
+    tz: Tz,
 }
 
 /// What a key is, which decides the operators it takes and how its values compare.
@@ -53,7 +57,13 @@ enum Direction {
 impl Query {
     /// Check `filter`, `search` and `sort` against `c`. Every mistake is `invalid_params` naming
     /// the key, so a typo is never a filter that silently matches nothing.
-    pub fn new(c: &Collection, filter: &Map<String, Value>, search: Option<&str>, sort: &[String]) -> Result<Self> {
+    pub fn new(
+        c: &Collection,
+        filter: &Map<String, Value>,
+        search: Option<&str>,
+        sort: &[String],
+        now: &Now,
+    ) -> Result<Self> {
         let mut conditions = Vec::new();
         for (key, value) in filter {
             no_status(c, key)?;
@@ -66,10 +76,10 @@ impl Query {
                         return Err(bad(key, "an operator object needs at least one operator"));
                     }
                     for (name, arg) in ops {
-                        conditions.push((key.clone(), kind.clone(), op(c, key, &kind, name, arg)?));
+                        conditions.push((key.clone(), kind.clone(), op(c, key, &kind, name, arg, now)?));
                     }
                 }
-                plain => conditions.push((key.clone(), kind, Op::Eq(plain.clone()))),
+                plain => conditions.push((key.clone(), kind.clone(), Op::Eq(stored(key, &kind, plain, now)?))),
             }
         }
 
@@ -103,13 +113,13 @@ impl Query {
             .filter(|f| matches!(f.kind, FieldType::String | FieldType::Enum))
             .map(|f| f.name.clone())
             .collect();
-        Ok(Self { conditions, search, sort: keys, searchable })
+        Ok(Self { conditions, search, sort: keys, searchable, tz: now.tz })
     }
 
     /// Does this record (its wire shape) match every condition and the search?
     pub fn matches(&self, wire: &Value) -> bool {
         let got = |key: &str| wire.get(key).unwrap_or(&Value::Null);
-        let conditions = self.conditions.iter().all(|(key, kind, op)| holds(kind, op, got(key)));
+        let conditions = self.conditions.iter().all(|(key, kind, op)| holds(kind, op, got(key), &self.tz));
         let search = self.search.as_deref().is_none_or(|needle| {
             std::iter::once("id")
                 .chain(self.searchable.iter().map(String::as_str))
@@ -122,7 +132,8 @@ impl Query {
     pub fn sort(&self, items: &mut [Value]) {
         items.sort_by(|a, b| {
             for (key, kind, direction) in &self.sort {
-                let (x, y) = (sort_value(kind, &a[key.as_str()]), sort_value(kind, &b[key.as_str()]));
+                let (x, y) =
+                    (sort_value(kind, &a[key.as_str()], &self.tz), sort_value(kind, &b[key.as_str()], &self.tz));
                 let order = match (x, y) {
                     (None, None) => Ordering::Equal,
                     (None, Some(_)) => Ordering::Greater,
@@ -162,9 +173,9 @@ fn bad(key: &str, msg: &str) -> Error {
 }
 
 /// One operator, checked: allowed for the key's kind (ADR 0019 §1), with a value that fits.
-fn op(c: &Collection, key: &str, kind: &Kind, name: &str, arg: &Value) -> Result<Op> {
+fn op(c: &Collection, key: &str, kind: &Kind, name: &str, arg: &Value, now: &Now) -> Result<Op> {
     let ordered = match kind {
-        Kind::Field(t, _) => matches!(t, FieldType::Int | FieldType::Date | FieldType::Enum),
+        Kind::Field(t, _) => matches!(t, FieldType::Int | FieldType::Date | FieldType::Datetime | FieldType::Enum),
         _ => false,
     };
     let allowed = match name {
@@ -178,8 +189,9 @@ fn op(c: &Collection, key: &str, kind: &Kind, name: &str, arg: &Value) -> Result
         return Err(bad(key, &format!("'{name}' doesn't apply to {}", describe(kind))));
     }
     let value = |v: &Value| -> Result<Value> {
-        check_value(c, key, kind, v)?;
-        Ok(v.clone())
+        let v = stored(key, kind, v, now)?;
+        check_value(c, key, kind, &v)?;
+        Ok(v)
     };
     Ok(match name {
         "eq" => Op::Eq(value(arg)?),
@@ -223,13 +235,24 @@ fn check_value(c: &Collection, key: &str, kind: &Kind, v: &Value) -> Result<()> 
     }
 }
 
+/// A value someone typed for `key`, as it's stored: a `datetime` read in the configured timezone
+/// (ADR 0024 §1). Everything else as given.
+fn stored(key: &str, kind: &Kind, v: &Value, now: &Now) -> Result<Value> {
+    match (kind, v) {
+        (Kind::Field(FieldType::Datetime, _), Value::String(s)) => {
+            values::datetime(s, &now.tz).map(Value::String).map_err(|want| bad(key, &format!("expected {want}")))
+        }
+        _ => Ok(v.clone()),
+    }
+}
+
 /// Set means a value other than `null` or `""` (ADR 0017's rule).
 fn is_set(v: &Value) -> bool {
     !v.is_null() && v.as_str() != Some("")
 }
 
-fn holds(kind: &Kind, op: &Op, got: &Value) -> bool {
-    let cmp = |want: &Value| -> Option<Ordering> { Some(sort_value(kind, got)?.cmp(&sort_value(kind, want)?)) };
+fn holds(kind: &Kind, op: &Op, got: &Value, tz: &Tz) -> bool {
+    let cmp = |want: &Value| -> Option<Ordering> { Some(sort_value(kind, got, tz)?.cmp(&sort_value(kind, want, tz)?)) };
     match op {
         Op::Eq(want) => got == want,
         // Unset matches: "stage is not rejected" includes records with no stage yet.
@@ -251,18 +274,20 @@ fn holds(kind: &Kind, op: &Op, got: &Value) -> bool {
 enum Key {
     Int(i64),
     Date(NaiveDate),
+    Instant(DateTime<Utc>),
     Rank(usize),
     Text(String),
     Bool(bool),
 }
 
-fn sort_value(kind: &Kind, v: &Value) -> Option<Key> {
+fn sort_value(kind: &Kind, v: &Value, tz: &Tz) -> Option<Key> {
     if !is_set(v) {
         return None;
     }
     Some(match kind {
         Kind::Field(FieldType::Int, _) => Key::Int(v.as_i64()?),
         Kind::Field(FieldType::Date, _) => Key::Date(NaiveDate::parse_from_str(v.as_str()?, "%Y-%m-%d").ok()?),
+        Kind::Field(FieldType::Datetime, _) => Key::Instant(values::instant(v.as_str()?, tz)?),
         Kind::Field(FieldType::Enum, values) => Key::Rank(values.iter().position(|x| Some(x.as_str()) == v.as_str())?),
         Kind::Field(FieldType::Bool, _) => Key::Bool(v.as_bool()?),
         Kind::Field(FieldType::String, _) | Kind::Id | Kind::Status => Key::Text(v.as_str()?.to_lowercase()),
@@ -275,6 +300,13 @@ mod tests {
     use shimmer_core::ErrorCode;
 
     use super::*;
+
+    fn now() -> Now {
+        Now {
+            at: chrono::DateTime::parse_from_rfc3339("2026-10-05T12:00:00Z").unwrap().into(),
+            tz: chrono_tz::America::Toronto,
+        }
+    }
 
     fn jobs() -> Collection {
         Collection::parse(
@@ -317,7 +349,7 @@ mod tests {
     }
 
     fn query(filter: Value) -> Result<Query> {
-        Query::new(&jobs(), filter.as_object().unwrap(), None, &[])
+        Query::new(&jobs(), filter.as_object().unwrap(), None, &[], &now())
     }
 
     fn sample() -> Vec<Value> {
@@ -366,10 +398,13 @@ mod tests {
         assert_eq!(ids(&query(json!({"company": {"contains": "GOO"}})).unwrap()), ["google"], "ignores case");
         assert_eq!(ids(&query(json!({"id": {"contains": "tech"}})).unwrap()), ["initech"]);
 
-        let search = |text: &str| Query::new(&jobs(), &Map::new(), Some(text), &[]).unwrap();
+        let search = |text: &str| Query::new(&jobs(), &Map::new(), Some(text), &[], &now()).unwrap();
         assert_eq!(ids(&search("ACME")), ["acme"]);
         assert_eq!(ids(&search("reject")), ["initech"], "enum values are searched too");
-        assert_eq!(Query::new(&jobs(), &Map::new(), Some(" "), &[]).unwrap_err().code, ErrorCode::InvalidParams);
+        assert_eq!(
+            Query::new(&jobs(), &Map::new(), Some(" "), &[], &now()).unwrap_err().code,
+            ErrorCode::InvalidParams
+        );
     }
 
     #[test]
@@ -397,7 +432,7 @@ mod tests {
     fn sorting_puts_unset_last_in_either_direction() {
         let sorted = |keys: &[&str]| {
             let keys: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
-            let q = Query::new(&jobs(), &Map::new(), None, &keys).unwrap();
+            let q = Query::new(&jobs(), &Map::new(), None, &keys, &now()).unwrap();
             let mut items = sample();
             q.sort(&mut items);
             items.iter().map(|w| w["id"].as_str().unwrap().to_owned()).collect::<Vec<_>>()
@@ -412,7 +447,7 @@ mod tests {
     #[test]
     fn without_sort_ids_order_properly() {
         // `two-sum-again.toml` sorts before `two-sum.toml` as a path ('-' < '.'), not as an id.
-        let q = Query::new(&jobs(), &Map::new(), None, &[]).unwrap();
+        let q = Query::new(&jobs(), &Map::new(), None, &[], &now()).unwrap();
         let mut items = vec![job("two-sum-again", json!({})), job("two-sum", json!({}))];
         q.sort(&mut items);
         assert_eq!(items[0]["id"], "two-sum");
@@ -426,7 +461,7 @@ mod tests {
             (keys(&["stage", "-stage"]), "twice"),
             (keys(&["id", "status", "stage", "salary", "company", "remote"]), "at most 5"),
         ] {
-            let e = Query::new(&jobs(), &Map::new(), None, &sort).unwrap_err();
+            let e = Query::new(&jobs(), &Map::new(), None, &sort, &now()).unwrap_err();
             assert!(e.message.contains(says), "{sort:?}: {}", e.message);
         }
     }

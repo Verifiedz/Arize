@@ -1507,3 +1507,60 @@ async fn documents_warn_before_they_expire() {
     .unwrap();
     assert_eq!((soon["total"].clone(), soon["items"][0]["id"].clone()), (json!(1), json!("study-permit")));
 }
+
+fn add_rounds_collection(env: &TestEnv) {
+    env.ctx
+        .store
+        .write(
+            "collections/rounds.toml",
+            r#"
+            [collection]
+            id = "rounds"
+            label = "Rounds"
+            stamp_on_complete = "done_at"
+
+            [[field]]
+            name = "at"
+            type = "datetime"
+            role = "deadline"
+
+            [[field]]
+            name = "done_at"
+            type = "datetime"
+            "#,
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn datetimes_are_read_in_the_local_timezone_and_stored_as_utc() {
+    // ADR 0024 §1.
+    let (r, mut env) = setup().await;
+    add_rounds_collection(&env);
+    env.ctx.local_tz = shimmer_core::LocalTimezone::parse("America/Los_Angeles").unwrap();
+    let add = |id: &str, at: &str| json!({"collection": "rounds", "id": id, "fields": {"at": at}});
+
+    let item = call(&r, &env, "records.add", add("oa", "2026-10-20 23:59")).await.unwrap();
+    assert_eq!(item["at"], "2026-10-21T06:59:00Z", "PDT is UTC-7");
+    assert!(file(&env, "items/rounds/oa.toml").unwrap().contains("at = \"2026-10-21T06:59:00Z\""));
+    let ev = env.backend.events().pop().unwrap();
+    assert_eq!(ev.payload["deadlines"], json!({"at": "2026-10-21T06:59:00Z"}));
+
+    call(&r, &env, "records.add", add("screen", "2026-10-20")).await.unwrap();
+    call(&r, &env, "records.add", add("onsite", "2026-10-20T09:00:00-04:00")).await.unwrap();
+    let e = call(&r, &env, "records.add", add("bad", "tomorrow at 5")).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::InvalidParams);
+    let e = call(&r, &env, "records.add", add("gap", "2026-03-08 02:30")).await.unwrap_err();
+    assert!(e.message.contains("doesn't exist"), "{}", e.message);
+
+    // A plain date is the start of its local day; the sort uses instants, not text.
+    let list = call(&r, &env, "records.list", json!({"collection": "rounds", "sort": ["at"]})).await.unwrap();
+    let ids: Vec<_> = list["items"].as_array().unwrap().iter().map(|i| i["id"].clone()).collect();
+    assert_eq!(ids, [json!("screen"), json!("onsite"), json!("oa")]);
+    let filter = json!({"collection": "rounds", "filter": {"at": {"gt": "2026-10-20 12:00"}}});
+    let list = call(&r, &env, "records.list", filter).await.unwrap();
+    assert_eq!(list["items"].as_array().unwrap().len(), 1, "only the OA is after local noon");
+
+    let item = call(&r, &env, "records.complete", json!({"collection": "rounds", "id": "oa"})).await.unwrap();
+    assert_eq!(item["done_at"], json!(env.clock.now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)));
+}

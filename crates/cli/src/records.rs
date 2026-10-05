@@ -768,7 +768,7 @@ fn item(collection: &str, id: &str, data: &Value, schema: &Value) -> String {
     let keys = columns(data, schema);
     let width = keys.iter().map(|k| k.chars().count()).max().unwrap_or(0);
     for key in keys {
-        let _ = write!(out, "\n  {key:width$}  {}", cell(&data[key.as_str()]));
+        let _ = write!(out, "\n  {key:width$}  {}", shown(schema, &key, &data[key.as_str()]));
     }
     out
 }
@@ -799,7 +799,7 @@ fn list(data: &Value, schema: &Value) -> String {
                 if status {
                     row.push(cell(&i["status"]));
                 }
-                row.extend(keys.iter().map(|k| cell(&i[k.as_str()])));
+                row.extend(keys.iter().map(|k| shown(schema, k, &i[k.as_str()])));
                 row
             })
             .collect();
@@ -816,6 +816,16 @@ fn list(data: &Value, schema: &Value) -> String {
         let _ = write!(out, "\nskipped: {}", cell(skipped));
     }
     out
+}
+
+/// A value as a person reads it: a `datetime` in this machine's local time (ADR 0024 §1), the rest
+/// as `cell` shows them. `--json` keeps the stored value.
+fn shown(schema: &Value, key: &str, v: &Value) -> String {
+    let datetime = field(schema, key).is_some_and(|f| f["type"] == "datetime");
+    match v.as_str().map(chrono::DateTime::parse_from_rfc3339) {
+        Some(Ok(at)) if datetime => at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string(),
+        _ => cell(v),
+    }
 }
 
 /// Field columns in schema order, then any extra keys the item carries.
@@ -1250,6 +1260,16 @@ lru-cache  todo    LRU Cache  medium      -            2         true
 
         let empty = json!({"items": [], "total": 0, "skipped": ["record file 'x.toml': bad"]});
         assert_eq!(show(&cmd, &empty, &leetcode()), "no records\nskipped: record file 'x.toml': bad");
+    }
+
+    #[test]
+    fn datetimes_show_in_local_time() {
+        let schema = json!({"fields": [{"name": "at", "type": "datetime"}, {"name": "note", "type": "string"}]});
+        let at = chrono::DateTime::parse_from_rfc3339("2026-10-21T06:59:00Z").unwrap();
+        let local = at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string();
+        assert_eq!(shown(&schema, "at", &json!("2026-10-21T06:59:00Z")), local);
+        assert_eq!(shown(&schema, "at", &json!("2026-10-20")), "2026-10-20", "a plain date stays");
+        assert_eq!(shown(&schema, "note", &json!("2026-10-21T06:59:00Z")), "2026-10-21T06:59:00Z", "only datetimes");
     }
 
     #[test]

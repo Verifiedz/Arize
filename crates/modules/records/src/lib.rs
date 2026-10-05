@@ -10,6 +10,7 @@ mod item;
 mod lifecycle;
 mod query;
 mod schema;
+mod values;
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -331,8 +332,9 @@ impl Records {
         Ok(data)
     }
 
-    fn add(&self, ctx: &Ctx, p: Add) -> Result<Value> {
+    fn add(&self, ctx: &Ctx, mut p: Add) -> Result<Value> {
         let c = load_collection(ctx, &p.collection)?;
+        values::normalize(&c, &mut p.fields, &now(ctx))?;
         if let Some(id) = &p.id {
             item::check_id(id)?;
         }
@@ -355,7 +357,7 @@ impl Records {
                 let fields = p.fields.clone().into_iter().collect();
                 match c.render_title(&fields).map(|t| item::slug(&t)).filter(|s| !s.is_empty()) {
                     Some(base) => item::first_free(&base, false, exists)?,
-                    None => item::first_free(&today(ctx), true, exists)?,
+                    None => item::first_free(&now(ctx).today().format("%Y-%m-%d").to_string(), true, exists)?,
                 }
             }
         };
@@ -373,7 +375,7 @@ impl Records {
 
     fn list(&self, ctx: &Ctx, p: ListParams) -> Result<Value> {
         let c = load_collection(ctx, &p.collection)?;
-        let query = query::Query::new(&c, &p.filter, p.search.as_deref(), &p.sort)?;
+        let query = query::Query::new(&c, &p.filter, p.search.as_deref(), &p.sort, &now(ctx))?;
         let limit = p.limit.unwrap_or(DEFAULT_LIMIT);
         if !(1..=MAX_LIMIT).contains(&limit) {
             return Err(Error::invalid_params(format!("limit must be between 1 and {MAX_LIMIT}")));
@@ -409,8 +411,9 @@ impl Records {
         Ok(out)
     }
 
-    fn update(&self, ctx: &Ctx, p: WithFields) -> Result<Value> {
+    fn update(&self, ctx: &Ctx, mut p: WithFields) -> Result<Value> {
         let c = load_collection(ctx, &p.collection)?;
+        values::normalize(&c, &mut p.fields, &now(ctx))?;
         c.check_changes(&p.fields)?;
 
         let _g = self.write.lock();
@@ -431,14 +434,15 @@ impl Records {
     }
 
     /// Done, stamped, and any `fields` set, in one transaction with one event (ADR 0016 §2).
-    fn complete(&self, ctx: &Ctx, p: WithFields) -> Result<Value> {
+    fn complete(&self, ctx: &Ctx, mut p: WithFields) -> Result<Value> {
         let c = load_collection(ctx, &p.collection)?;
-        let today = today(ctx);
+        let now = now(ctx);
+        values::normalize(&c, &mut p.fields, &now)?;
 
         let _g = self.write.lock();
         let current = load_item(ctx, &c, &p.id)?;
         check_unique(ctx, &c, &p.id, &p.fields)?;
-        let item = lifecycle::complete(&c, &current, p.fields, &today)?;
+        let item = lifecycle::complete(&c, &current, p.fields, &now)?;
         self.save(ctx, &c, &item, "records.item.completed")
     }
 
@@ -786,10 +790,12 @@ fn check_unique(ctx: &Ctx, c: &Collection, id: &str, values: &Map<String, Value>
     Ok(())
 }
 
-/// Today's local date (ADR 0009), `YYYY-MM-DD`: a late-evening action west of UTC must not
-/// count as tomorrow.
-fn today(ctx: &Ctx) -> String {
-    shimmer_core::local_date(ctx.clock.now(), &ctx.local_tz).format("%Y-%m-%d").to_string()
+/// The current moment in the configured timezone (ADR 0009, ADR 0024 §1). "Today" comes from
+/// here, so a late-evening action west of UTC never counts as tomorrow. The zone is looked up by
+/// the name `core` already parsed, so it can't fail; UTC is only a formality.
+fn now(ctx: &Ctx) -> values::Now {
+    let tz = ctx.local_tz.name().parse().unwrap_or(chrono_tz::UTC);
+    values::Now { at: ctx.clock.now(), tz }
 }
 
 fn load_collection(ctx: &Ctx, id: &str) -> Result<Collection> {
