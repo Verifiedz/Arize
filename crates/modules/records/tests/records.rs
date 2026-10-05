@@ -1022,7 +1022,10 @@ async fn every_template_is_listed_and_creates_a_valid_collection() {
     let data = call(&r, &env, "records.templates", json!({})).await.unwrap();
     let ids: Vec<String> =
         data["templates"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap().to_owned()).collect();
-    assert_eq!(ids, ["interview-questions", "interviews", "job-applications", "leetcode"]);
+    assert_eq!(
+        ids,
+        ["addresses", "education", "employment", "interview-questions", "interviews", "job-applications", "leetcode"]
+    );
 
     for template in &ids {
         let id = format!("my-{template}");
@@ -1055,7 +1058,7 @@ async fn create_collection_never_overwrites_and_says_what_exists() {
         (
             json!({"id": "jobs", "template": "jobs"}),
             ErrorCode::NotFound,
-            "there are: interview-questions, interviews, job-applications, leetcode",
+            "there are: addresses, education, employment, interview-questions, interviews, job-applications, leetcode",
         ),
         (json!({"id": "Jobs!", "template": "job-applications"}), ErrorCode::InvalidParams, "not a valid collection id"),
         (json!({"id": "jobs", "template": "job-applications", "label": " "}), ErrorCode::InvalidParams, "label"),
@@ -1173,4 +1176,28 @@ async fn practising_a_question_counts_every_time() {
     env.clock.advance(Duration::from_secs(86_400));
     let again = call(&r, &env, "records.complete", target).await.unwrap();
     assert_ne!(again["last_practiced"], first["last_practiced"], "practising again is another practice");
+}
+
+#[tokio::test]
+async fn background_history_is_a_reference_list() {
+    let (r, env) = setup().await;
+    call(&r, &env, "records.create_collection", json!({"id": "jobs-held", "template": "employment"})).await.unwrap();
+    let job = call(&r, &env, "records.add", json!({"collection": "jobs-held", "fields": {
+        "company": "Acme", "job_title": "SWE Intern", "start_on": "2025-05-12", "end_on": "2025-08-15", "may_contact": true}}))
+        .await
+        .unwrap();
+    assert_eq!(job["id"], "acme-swe-intern");
+    assert!(job.get("status").is_none(), "history has no status");
+    let e = call(&r, &env, "records.complete", json!({"collection": "jobs-held", "id": "acme-swe-intern"}))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::InvalidParams);
+    call(&r, &env, "records.add", json!({"collection": "jobs-held", "fields": {"company": "Initech", "job_title": "Engineer", "start_on": "2025-09-01"}}))
+        .await
+        .unwrap();
+    let current =
+        call(&r, &env, "records.list", json!({"collection": "jobs-held", "filter": {"end_on": {"set": false}}}))
+            .await
+            .unwrap();
+    assert_eq!(current["items"][0]["id"], "initech-engineer", "no end date = your current job");
 }

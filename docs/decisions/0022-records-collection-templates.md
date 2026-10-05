@@ -153,9 +153,10 @@ it moves into `core` then, with an ADR, as ADR 0014 did for other helpers.
 
 ## Not done here
 
-- **More templates**: background info (`education`, `employment`, `addresses`, reference lists
-  via ADR 0021) and the rest of §8's list (`oss-contributions`, `outreach`, `career-fairs`,
+- **More templates**: the rest of §8's list (`oss-contributions`, `outreach`, `career-fairs`,
   `reading-list`, `saved-links`). Each is a new file in `templates/`, no code (roadmap item 14).
+  The background-info templates (`education`, `employment`, `addresses`: reference lists with
+  `completable = false`, ADR 0021) followed in their own PR, as data files only.
 - **User templates** in `$SHIMMER_HOME`, and a community template repository.
 - **Kits** that create several collections and a workspace together (#79).
 - **Reference fields** so `interviews.application` is a real link (#80).

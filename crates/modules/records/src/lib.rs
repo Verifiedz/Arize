@@ -25,6 +25,9 @@ use crate::schema::Collection;
 /// `[collection] id` is the template's id; creating one copies it with only the id (and label)
 /// changed.
 const TEMPLATES: &[(&str, &str)] = &[
+    ("addresses", include_str!("../templates/addresses.toml")),
+    ("education", include_str!("../templates/education.toml")),
+    ("employment", include_str!("../templates/employment.toml")),
     ("interview-questions", include_str!("../templates/interview-questions.toml")),
     ("interviews", include_str!("../templates/interviews.toml")),
     ("job-applications", include_str!("../templates/job-applications.toml")),
