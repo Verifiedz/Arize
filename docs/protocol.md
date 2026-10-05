@@ -390,7 +390,7 @@ after a step has run leaves it `dirty`.
 | `records.collections` | inline | `{}` | `{"collections":[...]}`, each collection definition as JSON (+ `"skipped"` naming each malformed collection file). |
 | `records.add` | inline | `{"collection","id"?,"fields"?}` | The new item, which carries its `id`. Without an `id`, one is made from the collection's `title` (`"Two Sum"` → `two-sum`, then `two-sum-2`, …), or from today's date (`2026-10-05-1`) when there's no title to use. An explicit `id` that exists is `conflict`. ADR 0018. |
 | `records.get` | inline | `{"collection","id"}` | The item. |
-| `records.list` | inline | `{"collection","filter"?,"limit"?,"offset"?}` | `{"items","total"}` (+ `"skipped"` if a hand-edited file was unreadable). |
+| `records.list` | inline | `{"collection","filter"?,"search"?,"sort"?,"limit"?,"offset"?}` | `{"items","total"}` (+ `"skipped"` if a hand-edited file was unreadable). Ordered by `sort`, then by id. See below. |
 | `records.update` | inline | `{"collection","id","fields"}` | The item. A `null` field value unsets it. Setting a `unique` field to a value another record has is `conflict`, naming that record. |
 | `records.complete` | inline | `{"collection","id","fields"?}` | The item, now `done`, with its `stamp_on_complete` field set. `fields` are applied first, with `records.update`'s rules; an explicit value for the stamp field wins over today (back-dating). One `records.item.completed`. When the record is already `done`: re-stamped again, unless the collection says `repeat_complete = "refuse"`, then `conflict`. |
 | `records.rename` | inline | `{"collection","id","new_id"}` | The item under its new id. One transaction moves the file and emits `records.item.renamed`. `conflict` if `new_id` exists; `not_found` if `id` doesn't. ADR 0018. |
@@ -399,8 +399,14 @@ after a step has run leaves it `dirty`.
 
 All inline — nothing here is slow enough to queue. Items on the wire are flat:
 `{"id","status",<every schema field>}`, with unset fields as `null`. `filter` on
-`records.list` is exact equality (`null` matches unset); an unknown filter key is
-`invalid_params`, so a typo never silently matches everything. Each collection in
+`records.list` maps each key (a field, `id` or `status`) to either a plain value, exact equality
+(`null` matches unset), or an object of operators that must all hold: `eq`, `ne` (unset
+matches), `lt`/`lte`/`gt`/`gte` (int, date, and enum by listed order), `in` (a non-empty list),
+`set` (`true`/`false`; `""` counts as unset) and `contains` (text, ignoring case). An unknown key
+or operator, an operator the field's type doesn't take, or a value that doesn't fit is
+`invalid_params`, so a typo never silently matches everything or nothing. `search` matches text
+in the id or any string or enum field, ignoring case. `sort` is a list of up to 5 keys, `-` for
+descending; unset values come last in either direction, and ties fall back to the id. ADR 0019. Each collection in
 `records.collections` carries `repeat_complete` (`"restamp"`, the default, or `"refuse"`), and,
 when set, `description`, `title` (e.g. `"{company}: {position}"`), `related` (collection ids),
 `extra` (`[extra.<name>]` tables, passed through untouched) and per field `role` (`"deadline"`

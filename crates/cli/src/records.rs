@@ -21,6 +21,10 @@ commands:
                                        without an ID, one is made from its title (two-sum)
   list COLLECTION [--FIELD VALUE]…     list records; each --FIELD filters on an exact value
        [--status todo|done] [--limit N] [--offset N]
+       [--filter \"FIELD OP VALUE\"]…        OP: = != < <= > >= ~ (contains); a|b|c after = is one-of
+       [--has FIELD] [--missing FIELD]     has a value / has none
+       [--search TEXT]                     text in the id or any text field
+       [--sort FIELD]… [--sort -FIELD]     order, e.g. --sort oa_deadline --sort -applied_on
   get COLLECTION/ID                    show one record
   update COLLECTION/ID [--FIELD VALUE]… [--unset FIELD]…
   complete COLLECTION/ID [--FIELD VALUE]… [--unset FIELD]…
@@ -56,6 +60,7 @@ pub enum RecordsCmd {
         filter: Flags,
         limit: Option<usize>,
         offset: Option<usize>,
+        refine: Refine,
     },
     Get {
         collection: String,
@@ -82,6 +87,18 @@ pub enum RecordsCmd {
         collection: String,
         id: String,
     },
+}
+
+/// What `records list` asks beyond exact `--FIELD VALUE` matches (ADR 0019).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Refine {
+    /// `--filter "FIELD OP VALUE"`, as written.
+    pub conditions: Vec<String>,
+    pub has: Vec<String>,
+    pub missing: Vec<String>,
+    pub search: Option<String>,
+    /// `--sort FIELD` / `--sort -FIELD`, in order.
+    pub sort: Vec<String>,
 }
 
 // ---------------------------------------------------------------- parsing
@@ -131,15 +148,20 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
         "list" => {
             let [collection]: [String; 1] =
                 positional.try_into().map_err(|_| "usage: shimmer records list COLLECTION [--FIELD VALUE]…")?;
-            let (mut filter, mut limit, mut offset) = (Vec::new(), None, None);
+            let (mut filter, mut limit, mut offset, mut refine) = (Vec::new(), None, None, Refine::default());
             for (name, value) in flags {
                 match name.as_str() {
                     "limit" => limit = Some(number("--limit", &value)?),
                     "offset" => offset = Some(number("--offset", &value)?),
+                    "filter" => refine.conditions.push(value),
+                    "has" => refine.has.push(value),
+                    "missing" => refine.missing.push(value),
+                    "search" => refine.search = Some(value),
+                    "sort" => refine.sort.push(value),
                     _ => filter.push((name, value)),
                 }
             }
-            Ok(RecordsCmd::List { collection, filter, limit, offset })
+            Ok(RecordsCmd::List { collection, filter, limit, offset, refine })
         }
         "update" | "complete" => {
             let (collection, id) = target(&sub, positional)?;
@@ -254,8 +276,23 @@ pub fn request(cmd: &RecordsCmd, schema: &Value) -> Result<(&'static str, Value)
         RecordsCmd::Rename { collection, id, new_id } => {
             ("records.rename", json!({"collection": collection, "id": id, "new_id": new_id}))
         }
-        RecordsCmd::List { collection, filter, limit, offset } => {
-            let mut params = json!({"collection": collection, "filter": fields(filter)?});
+        RecordsCmd::List { collection, filter, limit, offset, refine } => {
+            let mut params =
+                json!({"collection": collection, "filter": query_filter(schema, &fields(filter)?, refine)?});
+            if let Some(text) = &refine.search {
+                params["search"] = json!(text);
+            }
+            if !refine.sort.is_empty() {
+                let keys: Vec<String> = refine
+                    .sort
+                    .iter()
+                    .map(|k| match k.strip_prefix('-') {
+                        Some(name) => format!("-{}", field_name(schema, name)),
+                        None => field_name(schema, k),
+                    })
+                    .collect();
+                params["sort"] = json!(keys);
+            }
             if let Some(n) = limit {
                 params["limit"] = json!(n);
             }
@@ -285,6 +322,61 @@ pub fn request(cmd: &RecordsCmd, schema: &Value) -> Result<(&'static str, Value)
         }
         RecordsCmd::Remove { collection, id } => ("records.remove", json!({"collection": collection, "id": id})),
     })
+}
+
+/// The `filter` param for `records list` (ADR 0019): exact `--FIELD VALUE` matches, then each
+/// `--filter`, `--has` and `--missing` as operators. Two conditions on one field combine into one
+/// operator object (`>=` and `<=` make a range).
+fn query_filter(schema: &Value, exact: &Map<String, Value>, refine: &Refine) -> Result<Map<String, Value>> {
+    let mut out = exact.clone();
+    let mut add = |name: String, op: &str, value: Value| {
+        let entry = out.entry(name).or_insert_with(|| json!({}));
+        if !entry.is_object() {
+            *entry = json!({"eq": entry.take()});
+        }
+        entry[op] = value;
+    };
+    for raw in &refine.conditions {
+        let (name, op, value) = condition(schema, raw)?;
+        add(name, op, value);
+    }
+    for name in &refine.has {
+        add(field_name(schema, name), "set", json!(true));
+    }
+    for name in &refine.missing {
+        add(field_name(schema, name), "set", json!(false));
+    }
+    Ok(out)
+}
+
+/// `oa_deadline<=2026-10-10` → (`oa_deadline`, `lte`, `"2026-10-10"`). `stage=oa|interview` is
+/// `in`; `company~goog` is `contains`. The value is typed from the field, like `--FIELD VALUE`.
+fn condition(schema: &Value, raw: &str) -> Result<(String, &'static str, Value)> {
+    const OPS: [(&str, &str); 7] =
+        [("<=", "lte"), (">=", "gte"), ("!=", "ne"), ("<", "lt"), (">", "gt"), ("=", "eq"), ("~", "contains")];
+    let bad = || {
+        Error::invalid_params(format!(
+            "--filter '{raw}': write FIELD OP VALUE with OP one of = != < <= > >= ~, e.g. --filter \"oa_deadline<=2026-10-10\""
+        ))
+    };
+    let at = raw.find(['<', '>', '!', '=', '~']).ok_or_else(bad)?;
+    let (flag, rest) = (raw[..at].trim(), &raw[at..]);
+    let (symbol, op) = OPS.iter().find(|(symbol, _)| rest.starts_with(symbol)).ok_or_else(bad)?;
+    let value = rest[symbol.len()..].trim();
+    if flag.is_empty() || value.is_empty() {
+        return Err(bad());
+    }
+    if *op == "eq" && value.contains('|') {
+        let items =
+            value.split('|').map(|v| typed(schema, flag, v.trim()).map(|(_, v)| v)).collect::<Result<Vec<_>>>()?;
+        return Ok((field_name(schema, flag), "in", json!(items)));
+    }
+    // `contains` always takes text, whatever the field's type.
+    let (name, value) = match *op {
+        "contains" => (field_name(schema, flag), json!(value)),
+        _ => typed(schema, flag, value)?,
+    };
+    Ok((name, op, value))
 }
 
 /// `--last-solved` finds a field named `last_solved`; an exact match wins.
@@ -561,7 +653,8 @@ mod tests {
                 collection: "leetcode".into(),
                 filter: pairs(&[("status", "todo"), ("difficulty", "hard")]),
                 limit: Some(5),
-                offset: None
+                offset: None,
+                refine: Refine::default()
             }
         );
         assert!(parse_words(&["list"]).is_err());
@@ -643,6 +736,63 @@ mod tests {
         assert_eq!(show(&want, &json!({}), &Value::Null), "✓ jobs/amzon renamed to jobs/amazon");
         for bad in [&["rename"][..], &["rename", "jobs/amzon"], &["rename", "jobs", "a", "b", "c"]] {
             assert!(parse_words(bad).unwrap_err().contains("NEW_ID"), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn list_builds_operator_filters_search_and_sort() {
+        let cmd = parse_words(&[
+            "list",
+            "leetcode",
+            "--filter",
+            "last-solved>=2026-10-01",
+            "--filter",
+            "last_solved <= 2026-10-10",
+            "--filter",
+            "difficulty=easy|medium",
+            "--filter",
+            "title~two",
+            "--filter",
+            "attempts!=3",
+            "--has",
+            "url",
+            "--missing",
+            "starred",
+            "--search",
+            "sum",
+            "--sort",
+            "-last-solved",
+            "--sort",
+            "title",
+        ])
+        .unwrap();
+        let (op, params) = request(&cmd, &leetcode()).unwrap();
+        assert_eq!(op, "records.list");
+        assert_eq!(
+            params,
+            json!({"collection": "leetcode",
+                "filter": {
+                    "last_solved": {"gte": "2026-10-01", "lte": "2026-10-10"},
+                    "difficulty": {"in": ["easy", "medium"]},
+                    "title": {"contains": "two"},
+                    "attempts": {"ne": 3},
+                    "url": {"set": true},
+                    "starred": {"set": false}},
+                "search": "sum",
+                "sort": ["-last_solved", "title"]})
+        );
+
+        // An exact --FIELD and an operator on the same field combine.
+        let both = parse_words(&["list", "leetcode", "--difficulty", "easy", "--has", "difficulty"]).unwrap();
+        assert_eq!(
+            request(&both, &leetcode()).unwrap().1["filter"],
+            json!({"difficulty": {"eq": "easy", "set": true}})
+        );
+
+        for bad in ["title", "=x", "title=", "title!"] {
+            let cmd = parse_words(&["list", "leetcode", "--filter", bad]).unwrap();
+            let e = request(&cmd, &leetcode()).unwrap_err();
+            assert!(e.message.contains("FIELD OP VALUE") || e.message.contains("expects"), "{bad}: {}", e.message);
         }
     }
 

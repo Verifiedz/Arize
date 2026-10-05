@@ -161,11 +161,6 @@ pub fn changed(before: &BTreeMap<String, Value>, after: &BTreeMap<String, Value>
     keys.into_iter().filter(|k| before.get(*k) != after.get(*k)).cloned().collect()
 }
 
-/// Exact equality on every key of `filter`, against the wire shape; `null` matches unset.
-pub fn matches(wire: &Value, filter: &Map<String, Value>) -> bool {
-    filter.iter().all(|(k, want)| wire.get(k).unwrap_or(&Value::Null) == want)
-}
-
 /// TOML to JSON. Dates become `"YYYY-MM-DD"`-style strings, the form the schema checks.
 pub fn toml_to_json(v: toml::Value) -> Value {
     match v {
@@ -296,14 +291,5 @@ mod tests {
         let after: BTreeMap<String, Value> = obj(json!({"a": 1, "b": "y", "d": 2})).into_iter().collect();
         assert_eq!(changed(&before, &after), ["b", "c", "d"], "changed, unset and set; 'a' is the same");
         assert!(changed(&before, &before).is_empty());
-    }
-
-    #[test]
-    fn filters_are_exact_and_null_means_unset() {
-        let wire = Item::new("a", obj(json!({"title": "A", "difficulty": "easy"}))).to_wire(&leetcode());
-        assert!(matches(&wire, &obj(json!({"status": "todo", "difficulty": "easy"}))));
-        assert!(matches(&wire, &obj(json!({"last_solved": null}))));
-        assert!(!matches(&wire, &obj(json!({"difficulty": "hard"}))));
-        assert!(matches(&wire, &Map::new()));
     }
 }

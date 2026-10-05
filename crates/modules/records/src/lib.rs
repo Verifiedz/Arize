@@ -7,6 +7,7 @@
 
 mod item;
 mod lifecycle;
+mod query;
 mod schema;
 
 use async_trait::async_trait;
@@ -87,6 +88,7 @@ impl Module for Records {
                 "List records in a collection",
                 json!({"type": "object", "required": ["collection"], "properties": {
                     "collection": {"type": "string"}, "filter": {"type": "object"},
+                    "search": {"type": "string"}, "sort": {"type": "array", "items": {"type": "string"}},
                     "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIMIT},
                     "offset": {"type": "integer", "minimum": 0}}}),
             ),
@@ -184,6 +186,10 @@ struct ListParams {
     #[serde(default)]
     filter: Map<String, Value>,
     #[serde(default)]
+    search: Option<String>,
+    #[serde(default)]
+    sort: Vec<String>,
+    #[serde(default)]
     limit: Option<usize>,
     #[serde(default)]
     offset: usize,
@@ -255,7 +261,7 @@ impl Records {
 
     fn list(&self, ctx: &Ctx, p: ListParams) -> Result<Value> {
         let c = load_collection(ctx, &p.collection)?;
-        c.check_filter(&p.filter)?;
+        let query = query::Query::new(&c, &p.filter, p.search.as_deref(), &p.sort)?;
         let limit = p.limit.unwrap_or(DEFAULT_LIMIT);
         if !(1..=MAX_LIMIT).contains(&limit) {
             return Err(Error::invalid_params(format!("limit must be between 1 and {MAX_LIMIT}")));
@@ -263,7 +269,6 @@ impl Records {
 
         let (mut matching, mut skipped) = (Vec::new(), Vec::new());
         let dir = format!("items/{}", c.id);
-        // Sorted by path, so by id.
         for path in ctx.store.list(&dir)? {
             let Some(id) = path.strip_prefix(&format!("{dir}/")).and_then(|p| p.strip_suffix(".toml")) else {
                 continue;
@@ -272,7 +277,7 @@ impl Records {
             match ctx.store.read_string(&path)?.map(|text| Item::from_toml(id, &text)) {
                 Some(Ok(item)) => {
                     let wire = item.to_wire(&c);
-                    if item::matches(&wire, &p.filter) {
+                    if query.matches(&wire) {
                         matching.push(wire);
                     }
                 }
@@ -280,6 +285,9 @@ impl Records {
                 None => {}
             }
         }
+        // By the requested keys, then by id. Never by path: `two-sum-again.toml` sorts before
+        // `two-sum.toml` ('-' < '.'), which is not id order (ADR 0019 §3).
+        query.sort(&mut matching);
         let total = matching.len();
         let items: Vec<Value> = matching.into_iter().skip(p.offset).take(limit).collect();
         let mut out = json!({"items": items, "total": total});

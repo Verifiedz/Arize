@@ -302,14 +302,6 @@ impl Collection {
             None => Ok(()),
         }
     }
-
-    /// A filter may name `id`, `status` or any field; anything else is a typo, not a wildcard.
-    pub fn check_filter(&self, filter: &Map<String, Value>) -> Result<()> {
-        match filter.keys().find(|k| !RESERVED.contains(&k.as_str()) && self.field(k).is_none()) {
-            Some(k) => Err(Error::invalid_params(format!("cannot filter '{}' on unknown field '{k}'", self.id))),
-            None => Ok(()),
-        }
-    }
 }
 
 impl Field {
@@ -582,15 +574,10 @@ mod tests {
     }
 
     #[test]
-    fn required_fields_and_filters() {
+    fn required_fields() {
         let c = leetcode();
         assert!(c.check_required(json!({"title": "x"}).as_object().unwrap()).is_ok());
         assert!(c.check_required(json!({"title": null}).as_object().unwrap()).is_err());
         assert!(c.check_required(&Map::new()).unwrap_err().message.contains("'title' is required"));
-
-        assert!(c
-            .check_filter(json!({"status": "todo", "id": "x", "difficulty": "easy"}).as_object().unwrap())
-            .is_ok());
-        assert!(c.check_filter(json!({"dificulty": "easy"}).as_object().unwrap()).is_err());
     }
 }

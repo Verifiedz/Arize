@@ -743,3 +743,47 @@ async fn rename_refuses_bad_or_taken_ids_and_changes_nothing() {
     assert_eq!(topics(&env).len(), before);
     assert!(file(&env, "items/leetcode/two-sum.toml").is_some());
 }
+
+// ---------------------------------------------------------------- ADR 0019: queries
+
+#[tokio::test]
+async fn list_filters_searches_and_sorts_through_the_op() {
+    let (r, env) = setup().await;
+    for (id, title, difficulty) in [
+        ("two-sum", "Two Sum", "easy"),
+        ("two-sum-again", "Two Sum Again", "hard"),
+        ("lru-cache", "LRU Cache", "medium"),
+    ] {
+        call(
+            &r,
+            &env,
+            "records.add",
+            json!({"collection": "leetcode", "id": id, "fields": {"title": title, "difficulty": difficulty}}),
+        )
+        .await
+        .unwrap();
+    }
+    let list = |params: Value| {
+        let mut p = json!({"collection": "leetcode"});
+        p.as_object_mut().unwrap().extend(params.as_object().unwrap().clone());
+        call(&r, &env, "records.list", p)
+    };
+    let ids = |v: &Value| {
+        v["items"].as_array().unwrap().iter().map(|i| i["id"].as_str().unwrap().to_owned()).collect::<Vec<_>>()
+    };
+
+    // By id, truly: not by file path ('-' < '.').
+    assert_eq!(ids(&list(json!({})).await.unwrap()), ["lru-cache", "two-sum", "two-sum-again"]);
+    // Enum order easy < medium < hard, descending.
+    assert_eq!(ids(&list(json!({"sort": ["-difficulty"]})).await.unwrap()), ["two-sum-again", "lru-cache", "two-sum"]);
+    assert_eq!(ids(&list(json!({"filter": {"difficulty": {"ne": "hard"}}})).await.unwrap()), ["lru-cache", "two-sum"]);
+    let found = list(json!({"search": "two", "limit": 1})).await.unwrap();
+    assert_eq!(
+        (ids(&found), found["total"].clone()),
+        (vec!["two-sum".to_owned()], json!(2)),
+        "total counts before paging"
+    );
+
+    let e = list(json!({"filter": {"difficulty": {"lt": "hard"}}, "sort": ["nope"]})).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::InvalidParams);
+}
