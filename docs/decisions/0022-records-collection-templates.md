@@ -68,7 +68,7 @@ uses it from there and behaves exactly as before.
   that order, so `--filter "stage>=interviewing"` and `--sort stage` follow the pipeline (ADR
   0019). Whether you applied is `status`, not a stage.
 - A heatmap view on `applied_on`.
-- `related = ["interviews"]`.
+- `related = ["interviews", "interview-questions"]`.
 
 **`interviews`**: one record per round, any number of rounds of any kind.
 
@@ -77,9 +77,29 @@ uses it from there and behaves exactly as before.
 - Fields: `application`* (the job record's id: plain text until reference fields exist, roadmap
   item 13), `kind`* (`recruiter-screen`, `oa`, `take-home`, `case-study`, `technical`,
   `system-design`, `behavioral`, `hiring-manager`, `team-match`, `other`), `round`,
-  `scheduled_on` (role `deadline`), `format`, `interviewer`, `prep`, `outcome` (`waiting`,
-  `passed`, `failed`), `done_on`, `notes`.
-- `related = ["job-applications"]`.
+  `scheduled_on` (role `deadline`), `format`, `interviewer`, `prep`, `duration_min`,
+  `questions_asked` (what came up, as text), `went` (your read: `great` … `poor`),
+  `difficulty`, `outcome` (their decision: `waiting`, `passed`, `failed`), `feedback`,
+  `thank_you_sent`, `next_step`, `done_on`, `notes`.
+- `related = ["job-applications", "interview-questions"]`.
+
+**`interview-questions`**: a question bank to practise from, one record per question.
+
+- `title = "{question}"`. `records complete` = "practised it today" (stamps `last_practiced`)
+  and `repeat_complete = "restamp"`: every practice counts, like solving a problem again, and a
+  heatmap shows practice days.
+- Fields: `question`*, `kind`* (`behavioral`, `coding`, `system-design`, `technical`, `resume`,
+  `hiring-manager`, `other`), `difficulty`, `topic`, `company`, `asked_in` (the round's id, when
+  you were asked it), `asked_on`, `source` (`asked-me`, `glassdoor`, `leetcode-discuss`, …),
+  `url`, `answer` (your outline or STAR answer), `story` (which of your stories you'd tell),
+  `went` (how it went when asked), `confidence` (`shaky`, `okay`, `solid`), `next_review` (role
+  `deadline`: when to practise again), `last_practiced`, `notes`.
+- `related = ["interviews", "job-applications"]`.
+
+A round (`interviews`) and a question (`interview-questions`) are kept apart on purpose: one
+round asks several questions, and the same question comes up at many companies, so a question
+is practised, filtered and timed on its own. `questions_asked` on a round is the quick record;
+the question bank is where the ones worth practising live.
 
 Each template's comments explain its fields and how completing works, since the file is the only
 documentation the user will open.
@@ -88,8 +108,9 @@ documentation the user will open.
 
 ```
 $ shimmer records templates
-ID                LABEL             DESCRIPTION
-interviews        Interviews        One record per interview round, linked to a job application
+ID                   LABEL                DESCRIPTION
+interview-questions  Interview questions  A question bank to practise from: kind, topic, your answer, …
+interviews           Interviews           One record per interview round, linked to a job application
 job-applications  Job applications  Position, company, stage, deadlines and the date you applied
 leetcode          LeetCode          Problems by difficulty, with a heatmap of solves
 
@@ -97,6 +118,7 @@ $ shimmer records new jobs --from job-applications
 ✓ created collection jobs from job-applications
   add one: shimmer records add jobs --position … --company …
   goes with: interviews (shimmer records new interviews --from interviews)
+  goes with: interview-questions (shimmer records new interview-questions --from interview-questions)
 ```
 
 - `records new ID --from TEMPLATE [--label TEXT]`. `--from` is required: a collection with no

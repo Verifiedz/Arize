@@ -1017,7 +1017,7 @@ async fn every_template_is_listed_and_creates_a_valid_collection() {
     let data = call(&r, &env, "records.templates", json!({})).await.unwrap();
     let ids: Vec<String> =
         data["templates"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap().to_owned()).collect();
-    assert_eq!(ids, ["interviews", "job-applications", "leetcode"]);
+    assert_eq!(ids, ["interview-questions", "interviews", "job-applications", "leetcode"]);
 
     for template in &ids {
         let id = format!("my-{template}");
@@ -1050,7 +1050,7 @@ async fn create_collection_never_overwrites_and_says_what_exists() {
         (
             json!({"id": "jobs", "template": "jobs"}),
             ErrorCode::NotFound,
-            "there are: interviews, job-applications, leetcode",
+            "there are: interview-questions, interviews, job-applications, leetcode",
         ),
         (json!({"id": "Jobs!", "template": "job-applications"}), ErrorCode::InvalidParams, "not a valid collection id"),
         (json!({"id": "jobs", "template": "job-applications", "label": " "}), ErrorCode::InvalidParams, "label"),
@@ -1139,4 +1139,33 @@ async fn a_job_hunt_with_the_templates() {
             .await
             .unwrap();
     assert_eq!(active["total"], 1);
+}
+
+#[tokio::test]
+async fn practising_a_question_counts_every_time() {
+    let (r, env) = setup().await;
+    call(&r, &env, "records.create_collection", json!({"id": "questions", "template": "interview-questions"}))
+        .await
+        .unwrap();
+    let q = call(
+        &r,
+        &env,
+        "records.add",
+        json!({"collection": "questions", "fields": {
+        "question": "Tell me about a conflict", "kind": "behavioral", "confidence": "shaky"}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(q["id"], "tell-me-about-a-conflict");
+    let target = json!({"collection": "questions", "id": "tell-me-about-a-conflict"});
+    let mut params = target.clone();
+    params["fields"] = json!({"confidence": "okay", "next_review": "2026-10-12"});
+    let first = call(&r, &env, "records.complete", params).await.unwrap();
+    assert_eq!((first["confidence"].clone(), first["next_review"].clone()), (json!("okay"), json!("2026-10-12")));
+    let ev = env.backend.events().pop().unwrap();
+    assert_eq!(ev.payload["deadlines"], json!({"next_review": "2026-10-12"}), "the calendar can remind you");
+
+    env.clock.advance(Duration::from_secs(86_400));
+    let again = call(&r, &env, "records.complete", target).await.unwrap();
+    assert_ne!(again["last_practiced"], first["last_practiced"], "practising again is another practice");
 }

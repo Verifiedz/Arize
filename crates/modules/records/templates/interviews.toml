@@ -6,6 +6,10 @@
 #   shimmer records complete <collection>/<id> --outcome passed      the round happened
 #   shimmer records list <collection> --application google-swe-ng --sort round
 #   shimmer records list <collection> --filter "scheduled_on>=2026-10-05" --sort scheduled_on
+#   shimmer records list <collection> --filter "thank_you_sent!=true"     who you still owe a note
+#
+# Questions worth practising go in an interview-questions collection too, with asked_in set to
+# the round's id.
 
 [collection]
 id = "interviews"
@@ -15,7 +19,7 @@ title = "{application}: {kind}"
 # Completing a round means it happened: it stamps today's date in done_on.
 stamp_on_complete = "done_on"
 repeat_complete = "refuse"
-related = ["job-applications"]
+related = ["job-applications", "interview-questions"]
 
 [[field]]
 name = "application"     # the id of the job in your job-applications collection
@@ -51,9 +55,39 @@ name = "prep"            # what to study for it
 type = "string"
 
 [[field]]
-name = "outcome"
+name = "duration_min"    # 45 for a screen, 240 for an onsite
+type = "int"
+
+[[field]]
+name = "questions_asked" # what came up, as you remember it
+type = "string"
+
+[[field]]
+name = "went"            # your read of how it went
+type = "enum"
+values = ["great", "good", "mixed", "poor"]
+
+[[field]]
+name = "difficulty"      # how hard the round was
+type = "enum"
+values = ["easy", "medium", "hard"]
+
+[[field]]
+name = "outcome"         # their decision, which can take weeks
 type = "enum"
 values = ["waiting", "passed", "failed"]
+
+[[field]]
+name = "feedback"        # what the recruiter told you
+type = "string"
+
+[[field]]
+name = "thank_you_sent"
+type = "bool"
+
+[[field]]
+name = "next_step"       # e.g. "recruiter will email by Friday"
+type = "string"
 
 [[field]]
 name = "done_on"         # stamped by records complete

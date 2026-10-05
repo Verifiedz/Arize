@@ -27,6 +27,7 @@ const LEETCODE: &str = include_str!("../templates/leetcode.toml");
 /// `[collection] id` is the template's id; creating one copies it with only the id (and label)
 /// changed.
 const TEMPLATES: &[(&str, &str)] = &[
+    ("interview-questions", include_str!("../templates/interview-questions.toml")),
     ("interviews", include_str!("../templates/interviews.toml")),
     ("job-applications", include_str!("../templates/job-applications.toml")),
     ("leetcode", LEETCODE),
