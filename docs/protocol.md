@@ -282,8 +282,8 @@ Clients should offer: run cleanup, force relaunch, or open the log. Never auto-f
   ]}}
 ```
 
-Illustrative excerpt — `records` actually registers seven ops (`records.collections`,
-`.add`, `.get`, `.list`, `.update`, `.complete`, `.remove`) and five topics; see "Records
+Illustrative excerpt — `records` actually registers eight ops (`records.collections`,
+`.add`, `.get`, `.list`, `.update`, `.complete`, `.reopen`, `.remove`) and six topics; see "Records
 ops" below and `docs/decisions/0008-records-collections-and-storage.md` for the full list.
 This example only shows two commands to keep the shape readable.
 
@@ -392,14 +392,17 @@ after a step has run leaves it `dirty`.
 | `records.get` | inline | `{"collection","id"}` | The item. |
 | `records.list` | inline | `{"collection","filter"?,"limit"?,"offset"?}` | `{"items","total"}` (+ `"skipped"` if a hand-edited file was unreadable). |
 | `records.update` | inline | `{"collection","id","fields"}` | The item. A `null` field value unsets it. |
-| `records.complete` | inline | `{"collection","id"}` | The item, now `done`, with its `stamp_on_complete` field set. |
+| `records.complete` | inline | `{"collection","id","fields"?}` | The item, now `done`, with its `stamp_on_complete` field set. `fields` are applied first, with `records.update`'s rules; an explicit value for the stamp field wins over today (back-dating). One `records.item.completed`. When the record is already `done`: re-stamped again, unless the collection says `repeat_complete = "refuse"`, then `conflict`. |
+| `records.reopen` | inline | `{"collection","id","clear_stamp"?}` | The item, now `todo`. The stamp is kept unless `clear_stamp`. `conflict` if it isn't `done`. ADR 0016. |
 | `records.remove` | inline | `{"collection","id"}` | `{"removed":true}` |
 
 All inline — nothing here is slow enough to queue. Items on the wire are flat:
 `{"id","status",<every schema field>}`, with unset fields as `null`. `filter` on
 `records.list` is exact equality (`null` matches unset); an unknown filter key is
-`invalid_params`, so a typo never silently matches everything. See
-`docs/decisions/0008-records-collections-and-storage.md`.
+`invalid_params`, so a typo never silently matches everything. Each collection in
+`records.collections` carries `repeat_complete` (`"restamp"`, the default, or `"refuse"`). See
+`docs/decisions/0008-records-collections-and-storage.md` and
+`docs/decisions/0016-records-completion-lifecycle.md`.
 
 Module ops are namespaced `<module>.<verb>`. The daemon routes on the prefix; a collision
 between two modules is a startup failure, not a runtime surprise.
@@ -437,7 +440,7 @@ tolerate unknown topics.
 | `workspaces.session.cleaned` | Cleanup script succeeded; state back to `ready`. Payload `{workspace, log}`. |
 | `workspaces.session.abandoned` | A launch (forced or not) was claimed but no step ran: cancelled first, or step 1 couldn't start. The workspace is back to the state it had. Payload `{workspace, reason, forced, back_to}`. |
 | `workspaces.workspace.reset` | `workspaces.reset` cleared `dirty` without cleanup. Payload `{workspace, prior}`. |
-| `records.item.created` / `.updated` / `.completed` / `.removed` | Record mutations. |
+| `records.item.created` / `.updated` / `.completed` / `.reopened` / `.removed` | Record mutations. All but `.removed` carry `{collection, id, item}` with the full wire item; `.removed` carries `{collection, id}`. |
 | `records.collection.created` | The built-in collection was seeded on first start. |
 | `fetchers.item.found` | A source returned a new, deduplicated item. |
 | `fetchers.fetch.finished` / `.failed` | A fetch run ended. |

@@ -22,7 +22,10 @@ commands:
        [--status todo|done] [--limit N] [--offset N]
   get COLLECTION/ID                    show one record
   update COLLECTION/ID [--FIELD VALUE]… [--unset FIELD]…
-  complete COLLECTION/ID               mark done and stamp the collection's date field
+  complete COLLECTION/ID [--FIELD VALUE]… [--unset FIELD]…
+                                       mark done and stamp the collection's date field;
+                                       a value for the date field back-dates it
+  reopen COLLECTION/ID [--clear-stamp] mark a done record todo again
   remove COLLECTION/ID                 delete a record
 
 A record can be written COLLECTION/ID or COLLECTION ID. Field names come from the
@@ -39,7 +42,8 @@ pub enum RecordsCmd {
     List { collection: String, filter: Flags, limit: Option<usize>, offset: Option<usize> },
     Get { collection: String, id: String },
     Update { collection: String, id: String, set: Flags, unset: Vec<String> },
-    Complete { collection: String, id: String },
+    Complete { collection: String, id: String, set: Flags, unset: Vec<String> },
+    Reopen { collection: String, id: String, clear_stamp: bool },
     Remove { collection: String, id: String },
 }
 
@@ -49,7 +53,13 @@ pub enum RecordsCmd {
 pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
     let mut words = words.into_iter();
     let Some(sub) = words.next() else { return Ok(RecordsCmd::Help) };
-    let (positional, flags) = split(words.collect())?;
+    let mut rest: Vec<String> = words.collect();
+    // `--clear-stamp` is the one flag here that takes no value.
+    let clear_stamp = sub == "reopen" && rest.iter().any(|w| w == "--clear-stamp");
+    if clear_stamp {
+        rest.retain(|w| w != "--clear-stamp");
+    }
+    let (positional, flags) = split(rest)?;
     let no_flags = || match flags.first() {
         Some((f, _)) => Err(format!("'records {sub}' takes no options, got '--{f}'")),
         None => Ok(()),
@@ -80,21 +90,24 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
             }
             Ok(RecordsCmd::List { collection, filter, limit, offset })
         }
-        "update" => {
+        "update" | "complete" => {
             let (collection, id) = target(&sub, positional)?;
             let (unset, set) = flags.into_iter().partition::<Vec<_>, _>(|(name, _)| name == "unset");
             let unset: Vec<String> = unset.into_iter().map(|(_, field)| field).collect();
+            if sub == "complete" {
+                return Ok(RecordsCmd::Complete { collection, id, set, unset });
+            }
             if set.is_empty() && unset.is_empty() {
                 return Err("nothing to update: give --FIELD VALUE or --unset FIELD".into());
             }
             Ok(RecordsCmd::Update { collection, id, set, unset })
         }
-        "get" | "complete" | "remove" => {
+        "get" | "remove" | "reopen" => {
             no_flags()?;
             let (collection, id) = target(&sub, positional)?;
             Ok(match sub.as_str() {
                 "get" => RecordsCmd::Get { collection, id },
-                "complete" => RecordsCmd::Complete { collection, id },
+                "reopen" => RecordsCmd::Reopen { collection, id, clear_stamp },
                 _ => RecordsCmd::Remove { collection, id },
             })
         }
@@ -155,6 +168,7 @@ impl RecordsCmd {
             | Self::Get { collection, .. }
             | Self::Update { collection, .. }
             | Self::Complete { collection, .. }
+            | Self::Reopen { collection, .. }
             | Self::Remove { collection, .. } => Some(collection),
         }
     }
@@ -166,6 +180,14 @@ impl RecordsCmd {
 pub fn request(cmd: &RecordsCmd, schema: &Value) -> Result<(&'static str, Value)> {
     let fields = |pairs: &[(String, String)]| -> Result<Map<String, Value>> {
         pairs.iter().map(|(name, raw)| typed(schema, name, raw)).collect()
+    };
+    // `--FIELD VALUE` sets, `--unset FIELD` sends `null`.
+    let changes = |set: &[(String, String)], unset: &[String]| -> Result<Map<String, Value>> {
+        let mut changes = fields(set)?;
+        for name in unset {
+            changes.insert(field_name(schema, name), Value::Null);
+        }
+        Ok(changes)
     };
     Ok(match cmd {
         RecordsCmd::Help => return Err(Error::internal("help is not a request")),
@@ -185,13 +207,23 @@ pub fn request(cmd: &RecordsCmd, schema: &Value) -> Result<(&'static str, Value)
         }
         RecordsCmd::Get { collection, id } => ("records.get", json!({"collection": collection, "id": id})),
         RecordsCmd::Update { collection, id, set, unset } => {
-            let mut changes = fields(set)?;
-            for name in unset {
-                changes.insert(field_name(schema, name), Value::Null);
-            }
-            ("records.update", json!({"collection": collection, "id": id, "fields": changes}))
+            ("records.update", json!({"collection": collection, "id": id, "fields": changes(set, unset)?}))
         }
-        RecordsCmd::Complete { collection, id } => ("records.complete", json!({"collection": collection, "id": id})),
+        RecordsCmd::Complete { collection, id, set, unset } => {
+            let mut params = json!({"collection": collection, "id": id});
+            let changes = changes(set, unset)?;
+            if !changes.is_empty() {
+                params["fields"] = Value::Object(changes);
+            }
+            ("records.complete", params)
+        }
+        RecordsCmd::Reopen { collection, id, clear_stamp } => {
+            let mut params = json!({"collection": collection, "id": id});
+            if *clear_stamp {
+                params["clear_stamp"] = json!(true);
+            }
+            ("records.reopen", params)
+        }
         RecordsCmd::Remove { collection, id } => ("records.remove", json!({"collection": collection, "id": id})),
     })
 }
@@ -261,10 +293,17 @@ pub fn show(cmd: &RecordsCmd, data: &Value, schema: &Value) -> String {
         RecordsCmd::Add { collection, id, .. } => format!("added {collection}/{id}"),
         RecordsCmd::Update { collection, id, .. } => format!("updated {collection}/{id}"),
         RecordsCmd::Remove { collection, id } => format!("removed {collection}/{id}"),
-        RecordsCmd::Complete { collection, id } => {
+        RecordsCmd::Complete { collection, id, .. } => {
             let mut out = format!("✓ {collection}/{id} done");
             if let Some(stamp) = schema["stamp_on_complete"].as_str() {
                 let _ = write!(out, " ({stamp} {})", cell(&data[stamp]));
+            }
+            out
+        }
+        RecordsCmd::Reopen { collection, id, clear_stamp } => {
+            let mut out = format!("✓ {collection}/{id} reopened (todo)");
+            if let (true, Some(stamp)) = (*clear_stamp, schema["stamp_on_complete"].as_str()) {
+                let _ = write!(out, "; cleared {stamp}");
             }
             out
         }
@@ -406,7 +445,8 @@ mod tests {
 
     #[test]
     fn targets_both_spellings() {
-        let want = RecordsCmd::Complete { collection: "leetcode".into(), id: "two-sum".into() };
+        let want =
+            RecordsCmd::Complete { collection: "leetcode".into(), id: "two-sum".into(), set: vec![], unset: vec![] };
         assert_eq!(parse_words(&["complete", "leetcode/two-sum"]).unwrap(), want);
         assert_eq!(parse_words(&["complete", "leetcode", "two-sum"]).unwrap(), want);
         for bad in [&["complete"][..], &["complete", "leetcode"], &["complete", "/x"], &["complete", "a", "b", "c"]] {
@@ -455,6 +495,56 @@ mod tests {
         );
         assert!(parse_words(&["list"]).is_err());
         assert!(parse_words(&["list", "leetcode", "--limit", "lots"]).unwrap_err().contains("whole number"));
+    }
+
+    #[test]
+    fn complete_takes_field_flags_and_reopen_takes_clear_stamp() {
+        let complete =
+            parse_words(&["complete", "leetcode/x", "--last-solved", "2026-10-03", "--unset", "url"]).unwrap();
+        assert_eq!(
+            complete,
+            RecordsCmd::Complete {
+                collection: "leetcode".into(),
+                id: "x".into(),
+                set: pairs(&[("last-solved", "2026-10-03")]),
+                unset: vec!["url".into()]
+            }
+        );
+        let (op, params) = request(&complete, &leetcode()).unwrap();
+        assert_eq!(
+            (op, params),
+            (
+                "records.complete",
+                json!({"collection": "leetcode", "id": "x", "fields": {"last_solved": "2026-10-03", "url": null}})
+            )
+        );
+        // No flags: the same request as before ADR 0016.
+        let (_, params) = request(&parse_words(&["complete", "leetcode/x"]).unwrap(), &leetcode()).unwrap();
+        assert_eq!(params, json!({"collection": "leetcode", "id": "x"}));
+
+        for words in [&["reopen", "leetcode/x", "--clear-stamp"][..], &["reopen", "--clear-stamp", "leetcode", "x"]] {
+            let reopen = parse_words(words).unwrap();
+            assert_eq!(reopen, RecordsCmd::Reopen { collection: "leetcode".into(), id: "x".into(), clear_stamp: true });
+            let (op, params) = request(&reopen, &leetcode()).unwrap();
+            assert_eq!(
+                (op, params),
+                ("records.reopen", json!({"collection": "leetcode", "id": "x", "clear_stamp": true}))
+            );
+        }
+        let (_, params) = request(&parse_words(&["reopen", "leetcode/x"]).unwrap(), &leetcode()).unwrap();
+        assert_eq!(params, json!({"collection": "leetcode", "id": "x"}));
+        assert!(parse_words(&["reopen", "leetcode/x", "--title", "t"]).unwrap_err().contains("takes no options"));
+        // `--clear-stamp` means nothing to other commands.
+        assert!(parse_words(&["get", "leetcode/x", "--clear-stamp"]).unwrap_err().contains("needs a value"));
+    }
+
+    #[test]
+    fn reopen_output_says_what_it_cleared() {
+        let item = json!({"id": "x", "status": "todo"});
+        let keep = RecordsCmd::Reopen { collection: "leetcode".into(), id: "x".into(), clear_stamp: false };
+        assert_eq!(show(&keep, &item, &leetcode()), "✓ leetcode/x reopened (todo)");
+        let clear = RecordsCmd::Reopen { collection: "leetcode".into(), id: "x".into(), clear_stamp: true };
+        assert_eq!(show(&clear, &item, &leetcode()), "✓ leetcode/x reopened (todo); cleared last_solved");
     }
 
     #[test]
@@ -536,7 +626,8 @@ lru-cache  todo    LRU Cache  medium      -    -            2         true
     fn single_item_output() {
         let item = json!({"id": "two-sum", "status": "done", "title": "Two Sum", "difficulty": "easy",
             "url": null, "last_solved": "2026-09-25", "attempts": null, "starred": null});
-        let complete = RecordsCmd::Complete { collection: "leetcode".into(), id: "two-sum".into() };
+        let complete =
+            RecordsCmd::Complete { collection: "leetcode".into(), id: "two-sum".into(), set: vec![], unset: vec![] };
         assert_eq!(show(&complete, &item, &leetcode()), "✓ leetcode/two-sum done (last_solved 2026-09-25)");
 
         let get = RecordsCmd::Get { collection: "leetcode".into(), id: "two-sum".into() };

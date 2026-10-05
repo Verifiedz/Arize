@@ -65,7 +65,7 @@ records created before this ADR keep working as they do.
 - Order: apply `fields`, then set `status = "done"`, then stamp. One transaction, **one**
   `records.item.completed` event whose `item` already holds the new values.
 - **An explicit value for the stamp field wins over today's date.**
-  `records complete jobs amazon-sde-intern --set applied_on=2026-10-03` records that you applied
+  `records complete jobs/amazon-sde-intern --applied-on 2026-10-03` records that you applied
   yesterday. This is the one way to back-date a completion without a second request.
 - `fields` absent or `{}` behaves exactly as today.
 
@@ -96,23 +96,23 @@ repeat_complete = "refuse"     # or "restamp" (the default)
 
 ```
 $ shimmer records reopen leetcode/two-sum
-✓ reopened leetcode/two-sum (todo)
+✓ leetcode/two-sum reopened (todo)
 
 $ shimmer records reopen jobs/amazon-sde-intern --clear-stamp
-✓ reopened jobs/amazon-sde-intern (todo); cleared applied_on
+✓ jobs/amazon-sde-intern reopened (todo); cleared applied_on
 
-$ shimmer records complete interviews/g-phone-1 --set outcome=passed
-✓ completed interviews/g-phone-1
+$ shimmer records complete interviews/g-phone-1 --outcome passed
+✓ interviews/g-phone-1 done (done_on 2026-11-04)
 
-$ shimmer records complete jobs/amazon-sde-intern --set applied_on=2026-10-03
-✓ completed jobs/amazon-sde-intern (applied_on 2026-10-03)
+$ shimmer records complete jobs/amazon-sde-intern --applied-on 2026-10-03
+✓ jobs/amazon-sde-intern done (applied_on 2026-10-03)
 
 $ shimmer records complete jobs/amazon-sde-intern
-✗ conflict: 'amazon-sde-intern' in 'jobs' was already completed on 2026-10-03
-  to complete it again: shimmer records reopen jobs/amazon-sde-intern
+shimmer: conflict: 'amazon-sde-intern' in 'jobs' was already completed on 2026-10-03
 ```
 
-- `records complete` accepts `--set` and `--unset` exactly as `records update` does.
+- `records complete` takes field flags and `--unset FIELD` exactly as `records update` does
+  (`--FIELD VALUE`; `--last-solved` finds `last_solved`).
 - `records reopen` takes the same `<collection>/<id>` or `<collection> <id>` forms as
   `complete`, plus `--clear-stamp`.
 - **Command packs.** `records reopen` is a new canonical command, so each of the four built-in
@@ -133,7 +133,7 @@ $ shimmer records complete jobs/amazon-sde-intern
   in `schema.rs`; the new topic in the manifest. The decisions (may this be completed? reopened?
   what does the record look like after?) are plain functions over `Item` and `Collection`, tested
   without a runtime (§12 rule 10); the ops are tested against the in-memory `Ctx` (§12 rule 13).
-- `crates/cli`: `records reopen`, `--set`/`--unset` on `records complete`, one alias per built-in
+- `crates/cli`: `records reopen`, field flags and `--unset` on `records complete`, one alias per built-in
   pack.
 - `docs/protocol.md`: the records ops table gains `records.reopen` and the `fields` param; the
   topics table gains `records.item.reopened`; the collection format notes `repeat_complete`.

@@ -64,7 +64,13 @@
               },
               {
                 "op": "records.complete",
-                "summary": "Mark a record done and stamp its completion date",
+                "summary": "Mark a record done and stamp its completion date, optionally setting fields",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "records.reopen",
+                "summary": "Mark a done record todo again (the stamp is kept unless clear_stamp)",
                 "params_schema": {},
                 "execution": "inline"
               },
@@ -79,6 +85,7 @@
               "records.item.created",
               "records.item.updated",
               "records.item.completed",
+              "records.item.reopened",
               "records.item.removed",
               "records.collection.created"
             ]

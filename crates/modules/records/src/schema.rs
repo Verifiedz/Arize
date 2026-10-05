@@ -22,8 +22,22 @@ pub struct Collection {
     /// The date field `records.complete` sets to today.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stamp_on_complete: Option<String>,
+    /// What completing an already-`done` record does (ADR 0016 §3). Always serialised, with
+    /// the default filled in, so clients never need to know the default.
+    pub repeat_complete: RepeatComplete,
     /// Opaque here, passed through for clients. There is no view type yet (§5).
     pub views: Vec<Value>,
+}
+
+/// `[collection] repeat_complete` (ADR 0016 §3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepeatComplete {
+    /// Complete it again: re-stamp and emit another completion. Right for things you repeat.
+    #[default]
+    Restamp,
+    /// `conflict` until the record is reopened. Right for things that happen once.
+    Refuse,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -68,6 +82,8 @@ struct Header {
     label: String,
     #[serde(default)]
     stamp_on_complete: Option<String>,
+    #[serde(default)]
+    repeat_complete: RepeatComplete,
 }
 
 impl Collection {
@@ -103,6 +119,7 @@ impl Collection {
             label: file.collection.label,
             fields: file.field,
             stamp_on_complete: file.collection.stamp_on_complete,
+            repeat_complete: file.collection.repeat_complete,
             views: file.view.into_iter().map(toml_to_json).collect(),
         };
         if let Some(stamp) = &c.stamp_on_complete {
@@ -127,6 +144,17 @@ impl Collection {
             field.check(value)?;
         }
         Ok(())
+    }
+
+    /// Check a set of changes as `records.update` and `records.complete` take them: every key a
+    /// field of the collection, every non-null value of its type, `null` meaning "unset".
+    pub fn check_changes(&self, changes: &Map<String, Value>) -> Result<()> {
+        if let Some(k) = changes.keys().find(|k| self.field(k).is_none()) {
+            return Err(Error::invalid_params(format!("collection '{}' has no field '{k}'", self.id)));
+        }
+        let set: Map<String, Value> =
+            changes.iter().filter(|(_, v)| !v.is_null()).map(|(k, v)| (k.clone(), v.clone())).collect();
+        self.check_values(&set)
     }
 
     /// Every required field present in a complete set of values.
@@ -219,6 +247,18 @@ mod tests {
         )
         .unwrap_err();
         assert!(e.message.contains("must name a date field"));
+        // ADR 0016 §3: only the two values; anything else names the file.
+        let e =
+            Collection::parse("c", "[collection]\nid = \"c\"\nlabel = \"C\"\nrepeat_complete = \"twice\"").unwrap_err();
+        assert!(e.message.contains("'c.toml'") && e.message.contains("unknown variant"), "{}", e.message);
+    }
+
+    #[test]
+    fn repeat_complete_defaults_to_restamp() {
+        assert_eq!(leetcode().repeat_complete, RepeatComplete::Restamp);
+        let c =
+            Collection::parse("c", "[collection]\nid = \"c\"\nlabel = \"C\"\nrepeat_complete = \"refuse\"").unwrap();
+        assert_eq!(c.repeat_complete, RepeatComplete::Refuse);
     }
 
     #[test]

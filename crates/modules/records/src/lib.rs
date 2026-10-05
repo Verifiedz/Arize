@@ -6,6 +6,7 @@
 //! change, with its event committed alongside (§7.1).
 
 mod item;
+mod lifecycle;
 mod schema;
 
 use async_trait::async_trait;
@@ -15,7 +16,7 @@ use shimmer_core::ids::is_valid_name;
 use shimmer_core::params::decode;
 use shimmer_core::{CommandSpec, Ctx, Error, ErrorCode, Execution, Manifest, Module, Result, WriteLock};
 
-use crate::item::{Item, Status};
+use crate::item::Item;
 use crate::schema::Collection;
 
 const LEETCODE: &str = include_str!("../collections/leetcode.toml");
@@ -40,6 +41,7 @@ impl Module for Records {
                 "records.item.created",
                 "records.item.updated",
                 "records.item.completed",
+                "records.item.reopened",
                 "records.item.removed",
                 "records.collection.created",
             ]
@@ -82,8 +84,17 @@ impl Module for Records {
                     "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIMIT},
                     "offset": {"type": "integer", "minimum": 0}}}),
             ),
-            ("records.update", "Set or unset (null) fields of a record", with(fields)),
-            ("records.complete", "Mark a record done and stamp its completion date", with(json!({}))),
+            ("records.update", "Set or unset (null) fields of a record", with(fields.clone())),
+            (
+                "records.complete",
+                "Mark a record done and stamp its completion date, optionally setting fields",
+                with(fields),
+            ),
+            (
+                "records.reopen",
+                "Mark a done record todo again (the stamp is kept unless clear_stamp)",
+                with(json!({"clear_stamp": {"type": "boolean"}})),
+            ),
             ("records.remove", "Delete a record", with(json!({}))),
         ]
         .into_iter()
@@ -108,6 +119,7 @@ impl Module for Records {
             "records.list" => self.list(ctx, decode(params)?),
             "records.update" => self.update(ctx, decode(params)?),
             "records.complete" => self.complete(ctx, decode(params)?),
+            "records.reopen" => self.reopen(ctx, decode(params)?),
             "records.remove" => self.remove(ctx, decode(params)?),
             _ => Err(Error::unknown_op(format!("records has no op '{op}'"))),
         }
@@ -126,6 +138,14 @@ struct WithFields {
     id: String,
     #[serde(default)]
     fields: Map<String, Value>,
+}
+
+#[derive(Deserialize)]
+struct Reopen {
+    collection: String,
+    id: String,
+    #[serde(default)]
+    clear_stamp: bool,
 }
 
 #[derive(Deserialize)]
@@ -225,12 +245,7 @@ impl Records {
 
     fn update(&self, ctx: &Ctx, p: WithFields) -> Result<Value> {
         let c = load_collection(ctx, &p.collection)?;
-        let set: Map<String, Value> =
-            p.fields.iter().filter(|(_, v)| !v.is_null()).map(|(k, v)| (k.clone(), v.clone())).collect();
-        c.check_values(&set)?;
-        if let Some(k) = p.fields.keys().find(|k| c.field(k).is_none()) {
-            return Err(Error::invalid_params(format!("collection '{}' has no field '{k}'", c.id)));
-        }
+        c.check_changes(&p.fields)?;
         let mut changed: Vec<String> = p.fields.keys().cloned().collect();
         changed.sort();
 
@@ -246,22 +261,32 @@ impl Records {
         Ok(wire)
     }
 
-    fn complete(&self, ctx: &Ctx, t: Target) -> Result<Value> {
-        let c = load_collection(ctx, &t.collection)?;
+    /// Done, stamped, and any `fields` set, in one transaction with one event (ADR 0016 §2).
+    fn complete(&self, ctx: &Ctx, p: WithFields) -> Result<Value> {
+        let c = load_collection(ctx, &p.collection)?;
         // Local calendar date, not the UTC date (ADR 0009): a late-evening completion west
         // of UTC must not stamp tomorrow.
         let today = shimmer_core::local_date(ctx.clock.now(), &ctx.local_tz).format("%Y-%m-%d").to_string();
 
         let _g = self.write.lock();
-        let mut item = load_item(ctx, &c, &t.id)?;
-        item.status = Status::Done;
-        if let Some(stamp) = &c.stamp_on_complete {
-            item.fields.insert(stamp.clone(), Value::String(today));
-        }
-        let wire = item.to_wire(&c);
+        let item = lifecycle::complete(&c, &load_item(ctx, &c, &p.id)?, p.fields, &today)?;
+        self.save(ctx, &c, &item, "records.item.completed")
+    }
+
+    /// `done → todo` (ADR 0016 §1).
+    fn reopen(&self, ctx: &Ctx, p: Reopen) -> Result<Value> {
+        let c = load_collection(ctx, &p.collection)?;
+        let _g = self.write.lock();
+        let item = lifecycle::reopen(&c, &load_item(ctx, &c, &p.id)?, p.clear_stamp)?;
+        self.save(ctx, &c, &item, "records.item.reopened")
+    }
+
+    /// Write `item` and emit `topic` with the full wire item, in one transaction (§7.1).
+    fn save(&self, ctx: &Ctx, c: &Collection, item: &Item, topic: &str) -> Result<Value> {
+        let wire = item.to_wire(c);
         ctx.store.transaction(|tx| {
-            tx.put(&item_path(&c.id, &t.id), item.to_toml())?;
-            tx.emit("records.item.completed", json!({"collection": c.id, "id": t.id, "item": wire}))
+            tx.put(&item_path(&c.id, &item.id), item.to_toml())?;
+            tx.emit(topic, json!({"collection": c.id, "id": item.id, "item": wire}))
         })?;
         Ok(wire)
     }

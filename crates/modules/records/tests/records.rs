@@ -323,3 +323,144 @@ async fn a_user_defined_collection_needs_no_code() {
     let item = call(&r, &env, "records.complete", json!({"collection": "jobs", "id": "acme"})).await.unwrap();
     assert_eq!(item["applied_on"], json!(env.clock.now().date_naive().to_string()));
 }
+
+// ---------------------------------------------------------------- ADR 0016: completion lifecycle
+
+/// A job tracker that refuses a second completion, as `job-applications` will.
+fn add_jobs_collection(env: &TestEnv) {
+    env.ctx
+        .store
+        .write(
+            "collections/jobs.toml",
+            r#"
+            [collection]
+            id = "jobs"
+            label = "Job applications"
+            stamp_on_complete = "applied_on"
+            repeat_complete = "refuse"
+
+            [[field]]
+            name = "company"
+            type = "string"
+            required = true
+
+            [[field]]
+            name = "stage"
+            type = "enum"
+            values = ["oa", "interview"]
+
+            [[field]]
+            name = "applied_on"
+            type = "date"
+            "#,
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn reopen_writes_todo_and_its_own_event() {
+    let (r, env) = setup().await;
+    add_two_sum(&r, &env).await;
+    let target = json!({"collection": "leetcode", "id": "two-sum"});
+    let solved = call(&r, &env, "records.complete", target.clone()).await.unwrap();
+
+    let item = call(&r, &env, "records.reopen", target.clone()).await.unwrap();
+    assert_eq!(item["status"], "todo");
+    assert_eq!(item["last_solved"], solved["last_solved"], "the stamp is kept by default");
+    assert!(file(&env, "items/leetcode/two-sum.toml").unwrap().contains("status = \"todo\""));
+    let ev = env.backend.events().pop().unwrap();
+    assert_eq!(ev.topic, "records.item.reopened");
+    assert_eq!(ev.payload, json!({"collection": "leetcode", "id": "two-sum", "item": item}));
+
+    // Reopening again: not done, so conflict, and nothing written.
+    let before = topics(&env).len();
+    let e = call(&r, &env, "records.reopen", target).await.unwrap_err();
+    assert_eq!((e.code, e.message.as_str()), (ErrorCode::Conflict, "'two-sum' in 'leetcode' is not done"));
+    assert_eq!(topics(&env).len(), before);
+}
+
+#[tokio::test]
+async fn reopen_can_clear_the_stamp() {
+    let (r, env) = setup().await;
+    add_two_sum(&r, &env).await;
+    call(&r, &env, "records.complete", json!({"collection": "leetcode", "id": "two-sum"})).await.unwrap();
+    let item =
+        call(&r, &env, "records.reopen", json!({"collection": "leetcode", "id": "two-sum", "clear_stamp": true}))
+            .await
+            .unwrap();
+    assert_eq!(item["last_solved"], Value::Null);
+    assert!(!file(&env, "items/leetcode/two-sum.toml").unwrap().contains("last_solved"));
+}
+
+#[tokio::test]
+async fn complete_with_fields_is_one_write_and_one_event() {
+    let (r, env) = setup().await;
+    add_jobs_collection(&env);
+    call(&r, &env, "records.add", json!({"collection": "jobs", "id": "acme", "fields": {"company": "Acme"}}))
+        .await
+        .unwrap();
+    let before = topics(&env).len();
+
+    let item = call(
+        &r,
+        &env,
+        "records.complete",
+        json!({"collection": "jobs", "id": "acme", "fields": {"stage": "oa", "applied_on": "2026-10-03"}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (item["status"].clone(), item["stage"].clone(), item["applied_on"].clone()),
+        (json!("done"), json!("oa"), json!("2026-10-03")),
+        "fields set and the stamp back-dated"
+    );
+    assert_eq!(topics(&env)[before..], ["records.item.completed"], "one event, no separate update");
+
+    // Bad fields: nothing written.
+    call(&r, &env, "records.reopen", json!({"collection": "jobs", "id": "acme"})).await.unwrap();
+    let before = topics(&env).len();
+    let e =
+        call(&r, &env, "records.complete", json!({"collection": "jobs", "id": "acme", "fields": {"stage": "offer"}}))
+            .await
+            .unwrap_err();
+    assert_eq!(e.code, ErrorCode::InvalidParams);
+    assert_eq!(topics(&env).len(), before);
+}
+
+#[tokio::test]
+async fn refuse_makes_a_second_completion_a_conflict_until_reopened() {
+    let (r, env) = setup().await;
+    add_jobs_collection(&env);
+    let target = json!({"collection": "jobs", "id": "acme"});
+    call(&r, &env, "records.add", json!({"collection": "jobs", "id": "acme", "fields": {"company": "Acme"}}))
+        .await
+        .unwrap();
+    let first = call(&r, &env, "records.complete", target.clone()).await.unwrap();
+    let file_after_first = file(&env, "items/jobs/acme.toml");
+    let before = topics(&env).len();
+
+    env.clock.advance(Duration::from_secs(86_400));
+    let e = call(&r, &env, "records.complete", target.clone()).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::Conflict);
+    assert_eq!(
+        e.message,
+        format!("'acme' in 'jobs' was already completed on {}", first["applied_on"].as_str().unwrap())
+    );
+    assert_eq!((topics(&env).len(), file(&env, "items/jobs/acme.toml")), (before, file_after_first));
+
+    call(&r, &env, "records.reopen", target.clone()).await.unwrap();
+    let again = call(&r, &env, "records.complete", target).await.unwrap();
+    assert_ne!(again["applied_on"], first["applied_on"], "reopened on purpose, so it stamps the new day");
+}
+
+#[tokio::test]
+async fn collections_always_say_what_a_repeat_completion_does() {
+    let (r, env) = setup().await;
+    add_jobs_collection(&env);
+    let data = call(&r, &env, "records.collections", json!({})).await.unwrap();
+    let repeat = |id: &str| {
+        data["collections"].as_array().unwrap().iter().find(|c| c["id"] == id).unwrap()["repeat_complete"].clone()
+    };
+    assert_eq!(repeat("leetcode"), "restamp", "the default is filled in");
+    assert_eq!(repeat("jobs"), "refuse");
+}
