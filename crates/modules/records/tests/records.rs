@@ -1034,6 +1034,7 @@ async fn every_template_is_listed_and_creates_a_valid_collection() {
             "interviews",
             "job-applications",
             "leetcode",
+            "networking-events",
             "offers",
             "projects",
             "stories"
@@ -1071,7 +1072,7 @@ async fn create_collection_never_overwrites_and_says_what_exists() {
         (
             json!({"id": "jobs", "template": "jobs"}),
             ErrorCode::NotFound,
-            "there are: addresses, certifications, charity, education, employment, interview-questions, interviews, job-applications, leetcode, offers, projects, stories",
+            "there are: addresses, certifications, charity, education, employment, interview-questions, interviews, job-applications, leetcode, networking-events, offers, projects, stories",
         ),
         (json!({"id": "Jobs!", "template": "job-applications"}), ErrorCode::InvalidParams, "not a valid collection id"),
         (json!({"id": "jobs", "template": "job-applications", "label": " "}), ErrorCode::InvalidParams, "label"),
@@ -1389,4 +1390,40 @@ async fn a_certification_is_earned_then_renewed() {
     let renewed = call(&r, &env, "records.complete", params).await.unwrap();
     assert_ne!(renewed["earned_on"], earned["earned_on"]);
     assert_eq!(renewed["expires_on"], "2032-12-10");
+}
+
+#[tokio::test]
+async fn an_event_is_attended_then_followed_up() {
+    let (r, env) = setup().await;
+    call(&r, &env, "records.create_collection", json!({"id": "events", "template": "networking-events"}))
+        .await
+        .unwrap();
+    call(
+        &r,
+        &env,
+        "records.add",
+        json!({"collection": "events", "fields": {
+        "name": "Fall Career Fair 2026", "kind": "career-fair", "event_date": "2026-10-22",
+        "registration_deadline": "2026-10-15", "rsvp": "registered"}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        env.backend.events().pop().unwrap().payload["deadlines"],
+        json!({"event_date": "2026-10-22", "registration_deadline": "2026-10-15"})
+    );
+    let attended = call(
+        &r,
+        &env,
+        "records.complete",
+        json!({"collection": "events", "id": "fall-career-fair-2026",
+        "fields": {"contacts_made": 4, "follow_up_on": "2026-10-24", "worth_it": "great"}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!((attended["status"].clone(), attended["contacts_made"].clone()), (json!("done"), json!(4)));
+    let owed = call(&r, &env, "records.list", json!({"collection": "events", "filter": {"followed_up": {"ne": true}}}))
+        .await
+        .unwrap();
+    assert_eq!(owed["total"], 1, "followed_up not set yet");
 }

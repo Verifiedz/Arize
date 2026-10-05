@@ -1,0 +1,144 @@
+# Networking events: one record per meetup, conference, career fair or info session.
+# Created from Shimmer's networking-events template. It's your file now: edit it freely.
+#
+# Times are text ("18:00") for now; the day itself is a date the calendar can remind you about.
+#
+# How it works:
+#   shimmer records add <collection> --name "Fall Career Fair 2026" --kind career-fair \
+#       --companies "Shopify, RBC, Amazon" --event-date 2026-10-22 --registration-deadline 2026-10-15 \
+#       --rsvp registered --bring-resume true --goal "talk to Shopify about the backend internship"
+#   shimmer records list <collection> --filter "status=todo" --sort event_date          what's coming up
+#   shimmer records complete <collection>/<id> --contacts-made 4 --follow-up-on 2026-10-24 --worth-it great
+#                                                                                       attended: stamps attended_on
+#   shimmer records list <collection> --filter "followed_up!=true" --sort follow_up_on  who you still owe a message
+
+[collection]
+id = "networking-events"
+label = "Networking events"
+description = "Meetups, conferences and career fairs: who'll be there, your goal, who you met, follow-ups"
+title = "{name}"
+# Completing an event means "attended": it stamps attended_on. Upcoming events are todo.
+stamp_on_complete = "attended_on"
+repeat_complete = "refuse"
+related = ["job-applications"]
+
+# ---- the event ------------------------------------------------------------------------------
+
+[[field]]
+name = "name"            # e.g. "Toronto Rust Meetup"
+type = "string"
+required = true
+
+[[field]]
+name = "kind"            # --filter kind=career-fair
+type = "enum"
+values = ["meetup", "conference", "career-fair", "info-session", "workshop", "webinar", "panel", "networking-mixer", "alumni-event", "company-tour", "hackathon", "other"]
+
+[[field]]
+name = "organizer"       # e.g. a club, a company, a community group
+type = "string"
+
+[[field]]
+name = "topic"
+type = "string"
+
+[[field]]
+name = "companies"       # who'll be there: booths, sponsors, speakers' companies
+type = "string"
+
+[[field]]
+name = "format"
+type = "enum"
+values = ["in-person", "virtual", "hybrid"]
+
+[[field]]
+name = "location"        # the venue, or the link for a virtual event
+type = "string"
+
+[[field]]
+name = "url"             # the event or registration page
+type = "string"
+role = "url"
+
+# ---- when -----------------------------------------------------------------------------------
+
+[[field]]
+name = "event_date"      # the day; the calendar can remind you
+type = "date"
+role = "deadline"
+
+[[field]]
+name = "end_date"        # for events over several days
+type = "date"
+
+[[field]]
+name = "start_time"      # e.g. "18:00"
+type = "string"
+
+[[field]]
+name = "registration_deadline"
+type = "date"
+role = "deadline"
+
+# ---- before you go --------------------------------------------------------------------------
+
+[[field]]
+name = "rsvp"
+type = "enum"
+values = ["interested", "registered", "waitlisted", "going", "cant-go"]
+
+[[field]]
+name = "cost"
+type = "int"
+
+[[field]]
+name = "currency"
+type = "string"
+
+[[field]]
+name = "goal"            # e.g. "get a referral at Shopify"
+type = "string"
+
+[[field]]
+name = "prep"            # elevator pitch, questions to ask, people to look for
+type = "string"
+
+[[field]]
+name = "bring_resume"
+type = "bool"
+
+# ---- after ----------------------------------------------------------------------------------
+
+[[field]]
+name = "attended_on"     # stamped by records complete
+type = "date"
+
+[[field]]
+name = "people_met"      # names and companies, quick notes
+type = "string"
+
+[[field]]
+name = "contacts_made"   # how many people you'd follow up with
+type = "int"
+
+[[field]]
+name = "follow_up_on"    # follow up while they remember you
+type = "date"
+role = "deadline"
+
+[[field]]
+name = "followed_up"
+type = "bool"
+
+[[field]]
+name = "takeaways"       # what you learned, leads
+type = "string"
+
+[[field]]
+name = "worth_it"        # whether to go again
+type = "enum"
+values = ["great", "good", "meh", "skip-next-time"]
+
+[[field]]
+name = "notes"
+type = "string"
