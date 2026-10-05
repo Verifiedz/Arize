@@ -1708,3 +1708,49 @@ async fn references_are_checked_followed_on_rename_and_guard_removal() {
     let problems = check["problems"][0]["problems"].to_string();
     assert!(problems.contains("no record 'globex' in 'applications'"), "{problems}");
 }
+
+#[tokio::test]
+async fn import_checks_every_row_and_writes_all_or_nothing() {
+    // ADR 0024 §4.
+    let (r, env) = setup().await;
+    add_postings_collection(&env);
+    add_posting(&r, &env, "old", json!({"company": "Old", "url": "https://old"})).await.unwrap();
+    let rows = json!([
+        {"company": "Acme", "position": "SWE"},
+        {"id": "globex", "company": "Globex", "status": "done", "applied_on": "2026-10-01"},
+        {"company": "Again", "url": "https://old"},
+        {"id": "old", "company": "Old"},
+        {"company": "Acme", "position": "SWE", "stage": ""},
+        {"position": "no company"}
+    ]);
+    let import = |extra: Value| {
+        let mut p = json!({"collection": "postings", "rows": rows.clone()});
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        p
+    };
+    let before = env.backend.events().len();
+
+    // One invalid row: nothing is written, and the report says what would happen.
+    let out = call(&r, &env, "records.import", import(json!({}))).await.unwrap();
+    assert_eq!(out["added"], json!(["acme-swe", "globex", "acme-swe-2"]));
+    assert_eq!(out["skipped"].as_array().unwrap().len(), 2, "{out}");
+    assert_eq!(out["skipped"][0]["row"], 3);
+    assert_eq!(out["invalid"], json!([{"row": 6, "error": "field 'company' is required"}]));
+    assert_eq!(out["written"], false);
+    assert_eq!(env.backend.events().len(), before);
+
+    let out = call(&r, &env, "records.import", import(json!({"skip_invalid": true, "dry_run": true}))).await.unwrap();
+    assert_eq!(out["written"], false, "a dry run never writes");
+
+    let out = call(&r, &env, "records.import", import(json!({"skip_invalid": true}))).await.unwrap();
+    assert_eq!(out["written"], true);
+    assert_eq!(topics(&env)[before..], ["records.item.created"; 3]);
+    let globex = call(&r, &env, "records.get", json!({"collection": "postings", "id": "globex"})).await.unwrap();
+    assert_eq!((globex["status"].clone(), globex["applied_on"].clone()), (json!("done"), json!("2026-10-01")));
+
+    // Importing the same rows again adds nothing new by id.
+    let again = json!({"collection": "postings", "rows": [{"id": "globex", "company": "Globex"}]});
+    assert_eq!(call(&r, &env, "records.import", again).await.unwrap()["added"], json!([]));
+    let too_many = json!({"collection": "postings", "rows": vec![json!({"company": "x"}); 5001]});
+    assert_eq!(call(&r, &env, "records.import", too_many).await.unwrap_err().code, ErrorCode::InvalidParams);
+}

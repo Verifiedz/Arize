@@ -109,12 +109,16 @@ collection = "jobs"      # the collection its value must be a record of
 
 | Op | Params | Result |
 |---|---|---|
-| `records.import` | `{"collection","rows":[{…}],"dry_run"?,"skip_invalid"?}` | `{"added":[ids],"skipped":[{"row","reason"}],"invalid":[{"row","error"}]}` |
+| `records.import` | `{"collection","rows":[{…}],"dry_run"?,"skip_invalid"?}` | `{"added":[ids],"skipped":[{"row","reason"}],"invalid":[{"row","error"}],"written":bool}` |
 
 - Each row is an object of field values, checked exactly like `records.add`, with an optional
-  `id` (generated as in ADR 0018 when left out). Ids and `unique` values are checked against the
-  collection **and against the other rows**.
-- A row whose `unique` value already exists is **skipped**, never overwritten, and reported.
+  `id` (generated as in ADR 0018 when left out) and an optional `status` (`todo`/`done`, so an
+  export imports back as it was). `null` and `""` are unset. Rows are numbered from 1. Ids and
+  `unique` values are checked against the collection **and against the other rows**.
+- A row whose id or `unique` value already exists is **skipped**, never overwritten, and
+  reported, so importing the same file twice adds nothing the second time. The same id twice in
+  one import is invalid.
+- `added` lists the ids that were (or, when `written` is false, would be) added.
 - **All or nothing:** every row that will be added is written in **one store transaction**, one
   `records.item.created` per record. If any row is invalid, nothing is written unless
   `skip_invalid` is set. `dry_run` checks everything and writes nothing.

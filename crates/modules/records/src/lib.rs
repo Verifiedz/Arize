@@ -45,6 +45,8 @@ const TEMPLATES: &[(&str, &str)] = &[
 ];
 const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 500;
+/// Most rows one `records.import` takes (ADR 0024 §4).
+const MAX_IMPORT_ROWS: usize = 5000;
 
 #[derive(Default)]
 pub struct Records {
@@ -171,6 +173,14 @@ impl Module for Records {
                     "id": {"type": "string"}, "confirm": {"type": "object"}}}),
             ),
             (
+                "records.import",
+                "Add many records in one transaction; rows already there (by id or unique value) are skipped",
+                json!({"type": "object", "required": ["collection", "rows"], "properties": {
+                    "collection": {"type": "string"},
+                    "rows": {"type": "array", "items": {"type": "object"}, "maxItems": MAX_IMPORT_ROWS},
+                    "dry_run": {"type": "boolean"}, "skip_invalid": {"type": "boolean"}}}),
+            ),
+            (
                 "records.restore_collection",
                 "Bring a removed collection back with its records",
                 json!({"type": "object", "required": ["id"], "properties": {"id": {"type": "string"}}}),
@@ -210,6 +220,7 @@ impl Module for Records {
             "records.rename_collection" => self.rename_collection(ctx, decode(params)?),
             "records.remove_collection" => self.remove_collection(ctx, decode(params)?),
             "records.restore_collection" => self.restore_collection(ctx, decode(params)?),
+            "records.import" => self.import(ctx, decode(params)?),
             _ => Err(Error::unknown_op(format!("records has no op '{op}'"))),
         }
     }
@@ -228,6 +239,17 @@ struct Remove {
     id: String,
     #[serde(default)]
     force: bool,
+}
+
+/// `records.import` (ADR 0024 §4).
+#[derive(Deserialize)]
+struct Import {
+    collection: String,
+    rows: Vec<Value>,
+    #[serde(default)]
+    dry_run: bool,
+    #[serde(default)]
+    skip_invalid: bool,
 }
 
 #[derive(Deserialize)]
@@ -729,6 +751,101 @@ impl Records {
         Ok(serde_json::to_value(c).unwrap_or_default())
     }
 
+    /// Add many records at once (ADR 0024 §4): each row checked as `records.add` checks one, and
+    /// against the other rows; rows already there skipped; everything written in one transaction,
+    /// or nothing when a row is invalid (unless `skip_invalid`) or on a dry run.
+    fn import(&self, ctx: &Ctx, p: Import) -> Result<Value> {
+        let c = load_collection(ctx, &p.collection)?;
+        if p.rows.len() > MAX_IMPORT_ROWS {
+            return Err(Error::invalid_params(format!(
+                "an import takes at most {MAX_IMPORT_ROWS} rows, got {}; split the file",
+                p.rows.len()
+            )));
+        }
+        let now = now(ctx);
+        let _g = self.write.lock();
+
+        // What's already there: ids, and the values unique fields hold.
+        let dir = format!("items/{}", c.id);
+        let mut taken_ids = std::collections::BTreeSet::new();
+        let mut taken_values: Vec<(String, Value, String)> = Vec::new();
+        for path in ctx.store.list(&dir)? {
+            let Some(id) = path.strip_prefix(&format!("{dir}/")).and_then(|p| p.strip_suffix(".toml")) else {
+                continue;
+            };
+            taken_ids.insert(id.to_owned());
+            if let Some(Ok(record)) = ctx.store.read_string(&path)?.map(|text| Item::from_toml(id, &text)) {
+                for (field, value) in c.unique_values(&record.fields_map()) {
+                    taken_values.push((field.to_owned(), value.clone(), id.to_owned()));
+                }
+            }
+        }
+
+        let (mut added, mut skipped, mut invalid) = (Vec::new(), Vec::new(), Vec::new());
+        let mut explicit = std::collections::BTreeSet::new();
+        for (i, row) in p.rows.into_iter().enumerate() {
+            let n = i + 1;
+            let item = match import_row(ctx, &c, row, &now) {
+                Ok(item) => item,
+                Err(e) => {
+                    invalid.push(json!({"row": n, "error": e.message}));
+                    continue;
+                }
+            };
+            let (item, given_id) = item;
+            if let Some(id) = &given_id {
+                if !explicit.insert(id.clone()) {
+                    invalid.push(json!({"row": n, "error": format!("id '{id}' is in the import twice")}));
+                    continue;
+                }
+                if taken_ids.contains(id) {
+                    skipped.push(json!({"row": n, "reason": format!("'{}' already has a record '{id}'", c.id)}));
+                    continue;
+                }
+            }
+            let fields = item.fields_map();
+            let clash = c.unique_values(&fields).into_iter().find_map(|(field, value)| {
+                taken_values
+                    .iter()
+                    .find(|(f, v, _)| f == field && v == value)
+                    .map(|(_, _, by)| (field, value, by.clone()))
+            });
+            if let Some((field, value, by)) = clash {
+                let shown = value.as_str().map_or_else(|| value.to_string(), str::to_owned);
+                skipped.push(json!({"row": n, "reason": format!("{field} '{shown}' is already used by '{by}'")}));
+                continue;
+            }
+            let mut item = item;
+            if given_id.is_none() {
+                let base = c.render_title(&item.fields).map(|t| item::slug(&t)).filter(|s| !s.is_empty());
+                let taken = |id: &str| Ok(taken_ids.contains(id) || explicit.contains(id));
+                item.id = match base {
+                    Some(base) => item::first_free(&base, false, taken)?,
+                    None => item::first_free(&now.today().format("%Y-%m-%d").to_string(), true, taken)?,
+                };
+            }
+            taken_ids.insert(item.id.clone());
+            for (field, value) in c.unique_values(&fields) {
+                taken_values.push((field.to_owned(), value.clone(), item.id.clone()));
+            }
+            added.push(item);
+        }
+
+        let ids: Vec<&str> = added.iter().map(|i| i.id.as_str()).collect();
+        let write = !p.dry_run && (invalid.is_empty() || p.skip_invalid) && !added.is_empty();
+        let out = json!({"added": ids, "skipped": skipped, "invalid": invalid, "written": write});
+        if write {
+            ctx.store.transaction(|tx| {
+                for item in &added {
+                    tx.put(&item_path(&c.id, &item.id), item.to_toml())?;
+                    tx.emit("records.item.created", payload(&c, item, &item.to_wire(&c)))?;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(out)
+    }
+
     /// Write `item` and emit `topic` with its payload, in one transaction (§7.1).
     fn save(&self, ctx: &Ctx, c: &Collection, item: &Item, topic: &str) -> Result<Value> {
         let wire = item.to_wire(c);
@@ -857,6 +974,44 @@ fn check_unique(ctx: &Ctx, c: &Collection, id: &str, values: &Map<String, Value>
         }
     }
     Ok(())
+}
+
+/// One import row as a record (with an empty id when it gave none), checked as `records.add`
+/// checks: `id` and `status` are optional keys, everything else a field; `null` is unset.
+fn import_row(ctx: &Ctx, c: &Collection, row: Value, now: &values::Now) -> Result<(Item, Option<String>)> {
+    let Value::Object(mut fields) = row else {
+        return Err(Error::invalid_params("a row must be an object of field values"));
+    };
+    let id = match fields.remove("id") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(id)) if id.is_empty() => None,
+        Some(Value::String(id)) => {
+            item::check_id(&id)?;
+            Some(id)
+        }
+        Some(other) => return Err(Error::invalid_params(format!("id must be text, got {other}"))),
+    };
+    let status = match fields.remove("status") {
+        None | Some(Value::Null) => item::Status::Todo,
+        Some(v) if v == "todo" && c.completable => item::Status::Todo,
+        Some(v) if v == "done" && c.completable => item::Status::Done,
+        Some(v) => {
+            return Err(Error::invalid_params(match c.completable {
+                true => format!("status must be \"todo\" or \"done\", got {v}"),
+                false => format!("'{}' has no status (completable = false)", c.id),
+            }))
+        }
+    };
+    fields.retain(|_, v| !v.is_null() && v.as_str() != Some(""));
+    values::normalize(c, &mut fields, now)?;
+    fields.retain(|_, v| !v.is_null());
+    c.check_values(&fields)?;
+    c.check_required(&fields)?;
+    check_refs(ctx, c, &fields)?;
+    let mut item = Item::new(id.as_deref().unwrap_or_default(), fields);
+    item.status = status;
+    item.status_line = c.completable;
+    Ok((item, id))
 }
 
 /// Every ref in `values` points at a record that exists (ADR 0024 §3).

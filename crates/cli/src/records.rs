@@ -10,6 +10,7 @@ use serde_json::{json, Map, Value};
 use shimmer_core::{Error, ErrorCode, Result};
 
 use crate::client::Client;
+use crate::csv;
 use crate::render::{self, cell, table};
 use crate::workspaces::Prompt;
 
@@ -42,6 +43,13 @@ commands:
                                        if other records refer to it
   restore COLLECTION/ID                bring a removed record back
   trash COLLECTION                     list removed records you can restore
+
+moving data:
+  import COLLECTION FILE               add records from a .csv (a header row of field names;
+       [--dry-run] [--skip-invalid]    list items split by ';') or .json (an array of objects);
+       [--yes]                         shows what it would do, then asks
+  export COLLECTION [--format csv|json] [list options]
+                                       write records to stdout; imports back unchanged
 
 changing a collection:
   check COLLECTION                     list records that don't fit the collection
@@ -141,6 +149,26 @@ pub enum RecordsCmd {
     RestoreCollection {
         id: String,
     },
+    /// ADR 0024 §4: the CLI reads `file`; the daemon checks and writes.
+    Import {
+        collection: String,
+        file: String,
+        dry_run: bool,
+        skip_invalid: bool,
+        yes: bool,
+    },
+    Export {
+        collection: String,
+        format: Format,
+        filter: Flags,
+        refine: Refine,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Format {
+    Csv,
+    Json,
 }
 
 /// `--add FIELD VALUE` / `--remove FIELD VALUE`: change items of a list field without resending
@@ -201,9 +229,14 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
     if force {
         rest.retain(|w| w != "--force");
     }
-    let yes = sub == "remove-collection" && rest.iter().any(|w| w == "--yes");
+    let yes = (sub == "remove-collection" || sub == "import") && rest.iter().any(|w| w == "--yes");
     if yes {
         rest.retain(|w| w != "--yes");
+    }
+    let dry_run = sub == "import" && rest.iter().any(|w| w == "--dry-run");
+    let skip_invalid = sub == "import" && rest.iter().any(|w| w == "--skip-invalid");
+    if sub == "import" {
+        rest.retain(|w| w != "--dry-run" && w != "--skip-invalid");
     }
     let (positional, flags) = split(rest)?;
     let no_flags = || match flags.first() {
@@ -237,12 +270,32 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
             let (collection, id) = target(&sub, target_words).map_err(|_| usage.to_owned())?;
             Ok(RecordsCmd::Rename { collection, id, new_id })
         }
-        "list" => {
-            let [collection]: [String; 1] =
-                positional.try_into().map_err(|_| "usage: shimmer records list COLLECTION [--FIELD VALUE]…")?;
+        "import" => {
+            no_flags()?;
+            let usage = "usage: shimmer records import COLLECTION FILE [--dry-run] [--skip-invalid] [--yes]";
+            let [collection, file]: [String; 2] = positional.try_into().map_err(|_| usage)?;
+            Ok(RecordsCmd::Import { collection, file, dry_run, skip_invalid, yes })
+        }
+        "list" | "export" => {
+            let [collection]: [String; 1] = positional
+                .try_into()
+                .map_err(|_| format!("usage: shimmer records {sub} COLLECTION [--FIELD VALUE]…"))?;
             let (mut filter, mut limit, mut offset, mut refine) = (Vec::new(), None, None, Refine::default());
+            let mut format = Format::Csv;
             for (name, value) in flags {
                 match name.as_str() {
+                    "format" if sub == "export" => {
+                        format = match value.as_str() {
+                            "csv" => Format::Csv,
+                            "json" => Format::Json,
+                            other => return Err(format!("--format is csv or json, not '{other}'")),
+                        }
+                    }
+                    "limit" | "offset" if sub == "export" => {
+                        return Err(
+                            "'records export' writes every matching record; it takes no --limit or --offset".into()
+                        )
+                    }
                     "limit" => limit = Some(number("--limit", &value)?),
                     "offset" => offset = Some(number("--offset", &value)?),
                     "filter" => refine.conditions.push(value),
@@ -252,6 +305,9 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
                     "sort" => refine.sort.push(value),
                     _ => filter.push((name, value)),
                 }
+            }
+            if sub == "export" {
+                return Ok(RecordsCmd::Export { collection, format, filter, refine });
             }
             Ok(RecordsCmd::List { collection, filter, limit, offset, refine })
         }
@@ -390,7 +446,9 @@ impl RecordsCmd {
             | Self::Restore { collection, .. }
             | Self::Trash { collection }
             | Self::Check { collection }
-            | Self::RenameField { collection, .. } => Some(collection),
+            | Self::RenameField { collection, .. }
+            | Self::Import { collection, .. }
+            | Self::Export { collection, .. } => Some(collection),
             Self::RenameCollection { .. } | Self::RemoveCollection { .. } | Self::RestoreCollection { .. } => None,
         }
     }
@@ -423,6 +481,18 @@ pub fn request(cmd: &RecordsCmd, schema: &Value) -> Result<(&'static str, Value)
     };
     Ok(match cmd {
         RecordsCmd::Help => return Err(Error::internal("help is not a request")),
+        RecordsCmd::Import { .. } => return Err(Error::internal("import reads its file in run")),
+        // One page of `records.list`; `run` pages through them all.
+        RecordsCmd::Export { collection, filter, refine, .. } => {
+            let list = RecordsCmd::List {
+                collection: collection.clone(),
+                filter: filter.clone(),
+                limit: Some(EXPORT_PAGE),
+                offset: None,
+                refine: refine.clone(),
+            };
+            return request(&list, schema);
+        }
         RecordsCmd::Collections => ("records.collections", json!({})),
         RecordsCmd::Add { collection, id, set } => {
             let mut params = json!({"collection": collection, "fields": fields(set)?});
@@ -629,12 +699,40 @@ fn is_list(schema: &Value, name: &str) -> bool {
 
 // ---------------------------------------------------------------- running
 
+/// `records export` pages through `records.list` this many at a time (its maximum).
+const EXPORT_PAGE: usize = 500;
+
 /// Fetch the collection's schema, send the op, render the reply.
 pub async fn run(client: &mut Client, cmd: &RecordsCmd, json: bool, prompt: &mut dyn Prompt) -> Result<String> {
     let schema = match cmd.collection() {
         Some(id) => schema(client, id).await?,
         None => Value::Null,
     };
+    match cmd {
+        RecordsCmd::Import { collection, file, dry_run, skip_invalid, yes } => {
+            let text =
+                std::fs::read_to_string(file).map_err(|e| Error::invalid_params(format!("can't read {file}: {e}")))?;
+            let rows = import_rows(file, &text, &schema)?;
+            return import(client, prompt, collection, rows, *dry_run, *skip_invalid, *yes, json).await;
+        }
+        RecordsCmd::Export { format, .. } => {
+            let (op, mut params) = request(cmd, &schema)?;
+            let mut items = Vec::new();
+            loop {
+                params["offset"] = json!(items.len());
+                let page = client.call(op, params.clone()).await?;
+                let got = page["items"].as_array().cloned().unwrap_or_default();
+                let total = page["total"].as_u64().unwrap_or(0) as usize;
+                let done = got.is_empty();
+                items.extend(got);
+                if done || items.len() >= total {
+                    break;
+                }
+            }
+            return Ok(export(&items, &schema, *format));
+        }
+        _ => {}
+    }
     let (op, mut params) = request(cmd, &schema)?;
     let data = match client.call(op, params.clone()).await {
         // ADR 0021 §5: the daemon says how many records go; ask, then send that count back.
@@ -650,6 +748,160 @@ pub async fn run(client: &mut Client, cmd: &RecordsCmd, json: bool, prompt: &mut
         other => other?,
     };
     Ok(if json { render::json(&data) } else { show(cmd, &data, &schema) })
+}
+
+/// The rows of an import file, as `records.import` takes them: `.json` is an array of objects,
+/// sent as written; anything else is CSV, typed from the collection like `--FIELD VALUE`.
+fn import_rows(file: &str, text: &str, schema: &Value) -> Result<Vec<Value>> {
+    let bad = |msg: String| Error::invalid_params(format!("{file}: {msg}"));
+    if file.ends_with(".json") {
+        let rows: Value = serde_json::from_str(text).map_err(|e| bad(e.to_string()))?;
+        return match rows {
+            Value::Array(rows) if rows.iter().all(Value::is_object) => Ok(rows),
+            _ => Err(bad("expected an array of objects, one per record".into())),
+        };
+    }
+    let mut lines = csv::parse(text).map_err(bad)?.into_iter();
+    let header = lines.next().ok_or_else(|| bad("empty: expected a header row of field names".into()))?;
+    let names: Vec<String> = header.iter().map(|h| field_name(schema, h.trim())).collect();
+    let mut rows = Vec::new();
+    for (n, line) in lines.enumerate() {
+        if line.len() != names.len() {
+            return Err(bad(format!("row {} has {} cells, the header has {}", n + 1, line.len(), names.len())));
+        }
+        let mut row = Map::new();
+        for (name, raw) in names.iter().zip(line) {
+            if raw.is_empty() {
+                continue;
+            }
+            let value = match name.as_str() {
+                "id" | "status" => json!(raw),
+                // List items are split by `;`, so a comma can sit inside one.
+                _ if is_list(schema, name) => {
+                    json!(raw.split(';').map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>())
+                }
+                _ => typed(schema, name, &raw).map_err(|e| bad(format!("row {}: {}", n + 1, e.message)))?.1,
+            };
+            row.insert(name.clone(), value);
+        }
+        rows.push(Value::Object(row));
+    }
+    Ok(rows)
+}
+
+/// Check everything first (a dry run), say what would happen, then ask before writing.
+#[allow(clippy::too_many_arguments)]
+async fn import(
+    client: &mut Client,
+    prompt: &mut dyn Prompt,
+    collection: &str,
+    rows: Vec<Value>,
+    dry_run: bool,
+    skip_invalid: bool,
+    yes: bool,
+    json: bool,
+) -> Result<String> {
+    let params = json!({"collection": collection, "rows": rows, "skip_invalid": skip_invalid});
+    let mut check = params.clone();
+    check["dry_run"] = json!(true);
+    let plan = client.call("records.import", check).await?;
+    let summary = import_summary(collection, &plan, false);
+    let added = plan["added"].as_array().map_or(0, Vec::len);
+    let blocked = !plan["invalid"].as_array().is_none_or(Vec::is_empty) && !skip_invalid;
+    if dry_run || added == 0 || blocked {
+        return Ok(if json { render::json(&plan) } else { summary });
+    }
+    if !yes {
+        if !prompt.interactive() {
+            return Err(Error::invalid_params(format!(
+                "refusing to import {added} record(s) into '{collection}' without confirmation; pass --yes"
+            )));
+        }
+        eprintln!("{summary}");
+        if !prompt.confirm("Import them?") {
+            return Ok("nothing imported".into());
+        }
+    }
+    let done = client.call("records.import", params).await?;
+    Ok(if json { render::json(&done) } else { import_summary(collection, &done, true) })
+}
+
+fn import_summary(collection: &str, data: &Value, written: bool) -> String {
+    let added = data["added"].as_array().map_or(0, Vec::len);
+    let mut out = match (written && data["written"] == true, added) {
+        (true, n) => format!("✓ imported {n} record(s) into {collection}"),
+        (false, 0) => format!("nothing to import into {collection}"),
+        (false, n) => format!("would import {n} record(s) into {collection}"),
+    };
+    for s in data["skipped"].as_array().into_iter().flatten() {
+        let _ = write!(
+            out,
+            "
+  skip row {}: {}",
+            cell(&s["row"]),
+            s["reason"].as_str().unwrap_or_default()
+        );
+    }
+    let invalid = data["invalid"].as_array().cloned().unwrap_or_default();
+    for i in &invalid {
+        let _ = write!(
+            out,
+            "
+  invalid row {}: {}",
+            cell(&i["row"]),
+            i["error"].as_str().unwrap_or_default()
+        );
+    }
+    if !invalid.is_empty() && data["written"] != true {
+        let _ = write!(
+            out,
+            "
+nothing imported while rows are invalid: fix them, or pass --skip-invalid"
+        );
+    }
+    out
+}
+
+/// Records as CSV (id, status, then fields in schema order; lists joined with `;`) or as a JSON
+/// array, so `records import` reads them back unchanged.
+fn export(items: &[Value], schema: &Value, format: Format) -> String {
+    if format == Format::Json {
+        let clean: Vec<Value> = items
+            .iter()
+            .map(|i| {
+                let mut i = i.clone();
+                if let Some(o) = i.as_object_mut() {
+                    o.retain(|_, v| !v.is_null());
+                }
+                i
+            })
+            .collect();
+        return render::json(&json!(clean));
+    }
+    let mut header = vec!["id".to_owned()];
+    if has_status(schema) {
+        header.push("status".to_owned());
+    }
+    header
+        .extend(schema["fields"].as_array().into_iter().flatten().filter_map(|f| f["name"].as_str().map(String::from)));
+    let mut out = csv::row(&header);
+    for item in items {
+        let cells: Vec<String> = header
+            .iter()
+            .map(|k| match &item[k.as_str()] {
+                Value::Null => String::new(),
+                Value::String(s) => s.clone(),
+                Value::Array(list) => list
+                    .iter()
+                    .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned))
+                    .collect::<Vec<_>>()
+                    .join(";"),
+                other => other.to_string(),
+            })
+            .collect();
+        out.push_str(&csv::row(&cells));
+    }
+    out.trim_end_matches('\n').to_owned()
 }
 
 /// Whether to go ahead with removing a collection, given the daemon's
@@ -730,6 +982,8 @@ pub fn show(cmd: &RecordsCmd, data: &Value, schema: &Value) -> String {
         }
         RecordsCmd::Get { collection, id } => item(collection, id, data, schema),
         RecordsCmd::List { .. } => list(data, schema),
+        RecordsCmd::Import { collection, .. } => import_summary(collection, data, true),
+        RecordsCmd::Export { .. } => render::json(data),
     }
 }
 
@@ -1416,6 +1670,60 @@ lru-cache  todo    LRU Cache  medium      -            2         true
         );
         let plain = parse_words(&["remove", "jobs/acme"]).unwrap();
         assert_eq!(request(&plain, &Value::Null).unwrap().1, json!({"collection": "jobs", "id": "acme"}));
+    }
+
+    #[test]
+    fn import_and_export_parse_and_round_trip() {
+        assert_eq!(
+            parse_words(&["import", "jobs", "jobs.csv", "--dry-run", "--yes"]).unwrap(),
+            RecordsCmd::Import {
+                collection: "jobs".into(),
+                file: "jobs.csv".into(),
+                dry_run: true,
+                skip_invalid: false,
+                yes: true
+            }
+        );
+        assert!(parse_words(&["import", "jobs"]).unwrap_err().contains("usage"));
+        let cmd = parse_words(&["export", "jobs", "--format", "json", "--stage", "oa"]).unwrap();
+        assert!(matches!(cmd, RecordsCmd::Export { format: Format::Json, .. }));
+        assert!(parse_words(&["export", "jobs", "--limit", "5"]).unwrap_err().contains("every matching record"));
+        assert!(parse_words(&["export", "jobs", "--format", "xml"]).is_err());
+
+        let schema = json!({"fields": [
+            {"name": "company", "type": "string"},
+            {"name": "salary", "type": "int"},
+            {"name": "tech_stack", "type": "list", "of": "string"}]});
+        let csv = "id,status,company,salary,tech-stack\nacme,done,\"Acme, Inc\",120,go;rust\n,,Globex,,\n";
+        let rows = import_rows("jobs.csv", csv, &schema).unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                json!({"id": "acme", "status": "done", "company": "Acme, Inc", "salary": 120, "tech_stack": ["go", "rust"]}),
+                json!({"company": "Globex"})
+            ],
+            "empty cells are unset; lists split on ';'"
+        );
+        let e = import_rows("jobs.csv", "company,salary\nAcme,lots\n", &schema).unwrap_err();
+        assert!(e.message.contains("row 1") && e.message.contains("whole number"), "{}", e.message);
+        assert!(import_rows("jobs.csv", "company\nA,B\n", &schema).unwrap_err().message.contains("2 cells"));
+        assert_eq!(import_rows("j.json", r#"[{"company": "A"}]"#, &schema).unwrap(), vec![json!({"company": "A"})]);
+        assert!(import_rows("j.json", r#"{"company": "A"}"#, &schema).is_err());
+
+        // What export writes, import reads back to the same rows.
+        let items = vec![
+            json!({"id": "acme", "status": "done", "company": "Acme, Inc", "salary": 120, "tech_stack": ["go", "rust"]}),
+            json!({"id": "globex", "status": "todo", "company": "Globex", "salary": null, "tech_stack": null}),
+        ];
+        let out = export(&items, &schema, Format::Csv);
+        assert_eq!(
+            out,
+            "id,status,company,salary,tech_stack\nacme,done,\"Acme, Inc\",120,go;rust\nglobex,todo,Globex,,"
+        );
+        let back = import_rows("x.csv", &out, &schema).unwrap();
+        assert_eq!(back[0], items[0]);
+        assert_eq!(back[1], json!({"id": "globex", "status": "todo", "company": "Globex"}));
+        assert!(!export(&items, &schema, Format::Json).contains("null"));
     }
 
     #[test]
