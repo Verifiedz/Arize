@@ -271,6 +271,13 @@ impl Collection {
                         "stamp_on_complete '{stamp}' is a deadline; a stamp records something that happened"
                     )));
                 }
+                // A todo record has no stamp yet, and reopening can clear it: it can't be required
+                // (Dev A's review of #83).
+                Some(f) if f.required => {
+                    return Err(bad(format!(
+                        "stamp_on_complete '{stamp}' can't be required: a record has no stamp until it's completed"
+                    )));
+                }
                 Some(f) if f.kind.is_dated() => {}
                 _ => return Err(bad(format!("stamp_on_complete '{stamp}' must name a date or datetime field"))),
             }
@@ -752,6 +759,10 @@ mod tests {
             ("title = \"{A B}\"", "is not a field name"),
             ("[extra]\nlead_days = 3", "must be a table"),
             ("[[field]]\nname = \"a\"\ntype = \"list\"", "needs `of`"),
+            (
+                "stamp_on_complete = \"d\"\n[[field]]\nname = \"d\"\ntype = \"date\"\nrequired = true",
+                "can't be required",
+            ),
             ("[[field]]\nname = \"a\"\ntype = \"ref\"", "needs `collection`"),
             ("[[field]]\nname = \"a\"\ntype = \"ref\"\ncollection = \"Jobs!\"", "not a valid collection id"),
             ("[[field]]\nname = \"a\"\ntype = \"string\"\ncollection = \"jobs\"", "only ref fields take"),
