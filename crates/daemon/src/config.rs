@@ -122,6 +122,10 @@ fn detect_from_candidates(candidates: impl Iterator<Item = String>) -> Option<(L
 fn persist_detected_timezone(path: &Path, existing: &str, name: &str) -> Result<()> {
     let addition = format!("local_timezone = \"{name}\"\n");
     let new_text = if let Some(insert_at) = general_table_header_end(existing) {
+        // The header line may be the file's last line with no trailing `\n` (so `insert_at`
+        // lands right after the `]`, not on a fresh line) — in that case the insertion needs
+        // its own leading `\n`, or the key glues onto the header and produces invalid TOML.
+        let addition = if existing[..insert_at].ends_with('\n') { addition } else { format!("\n{addition}") };
         let mut s = existing.to_string();
         s.insert_str(insert_at, &addition);
         s
@@ -233,6 +237,21 @@ mod tests {
         let idx_other = written.find("some_other_key").unwrap();
         assert!(idx_header < idx_local && idx_local < idx_other, "must insert right after the header line");
         assert_eq!(Config::parse(&written).unwrap().local_timezone, LocalTimezone::UTC);
+    }
+
+    #[test]
+    fn persist_inserts_after_a_general_header_with_no_trailing_newline() {
+        // The header is the file's last line with no trailing `\n` — a naive insert glues
+        // the new key onto the `[general]` line, producing invalid TOML (#9).
+        let text = "[lanes]\nfetchers = 2\n[general]";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        persist_detected_timezone(&path, text, "America/New_York").unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(!written.contains("[general]local_timezone"), "must not glue onto the header line");
+        let cfg = Config::parse(&written).unwrap();
+        assert_eq!(cfg.lanes["fetchers"], 2, "existing content must survive");
+        assert_eq!(cfg.local_timezone.name(), "America/New_York");
     }
 
     #[test]
