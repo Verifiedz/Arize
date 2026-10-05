@@ -1024,7 +1024,16 @@ async fn every_template_is_listed_and_creates_a_valid_collection() {
         data["templates"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap().to_owned()).collect();
     assert_eq!(
         ids,
-        ["addresses", "education", "employment", "interview-questions", "interviews", "job-applications", "leetcode"]
+        [
+            "addresses",
+            "charity",
+            "education",
+            "employment",
+            "interview-questions",
+            "interviews",
+            "job-applications",
+            "leetcode"
+        ]
     );
 
     for template in &ids {
@@ -1058,7 +1067,7 @@ async fn create_collection_never_overwrites_and_says_what_exists() {
         (
             json!({"id": "jobs", "template": "jobs"}),
             ErrorCode::NotFound,
-            "there are: addresses, education, employment, interview-questions, interviews, job-applications, leetcode",
+            "there are: addresses, charity, education, employment, interview-questions, interviews, job-applications, leetcode",
         ),
         (json!({"id": "Jobs!", "template": "job-applications"}), ErrorCode::InvalidParams, "not a valid collection id"),
         (json!({"id": "jobs", "template": "job-applications", "label": " "}), ErrorCode::InvalidParams, "label"),
@@ -1200,4 +1209,35 @@ async fn background_history_is_a_reference_list() {
             .await
             .unwrap();
     assert_eq!(current["items"][0]["id"], "initech-engineer", "no end date = your current job");
+}
+
+#[tokio::test]
+async fn a_planned_gift_is_given_once() {
+    let (r, env) = setup().await;
+    call(&r, &env, "records.create_collection", json!({"id": "charity", "template": "charity"})).await.unwrap();
+    let gift = call(
+        &r,
+        &env,
+        "records.add",
+        json!({"collection": "charity", "fields": {
+        "recipient": "Islamic Relief", "kind": "zakat", "amount": 400, "currency": "CAD", "due_on": "2027-03-01"}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!((gift["id"].clone(), gift["status"].clone()), (json!("islamic-relief-zakat"), json!("todo")));
+    assert_eq!(env.backend.events().pop().unwrap().payload["deadlines"], json!({"due_on": "2027-03-01"}));
+    let target = json!({"collection": "charity", "id": "islamic-relief-zakat", "fields": {"method": "online"}});
+    let given = call(&r, &env, "records.complete", target.clone()).await.unwrap();
+    assert_eq!(given["status"], "done");
+    assert_eq!(call(&r, &env, "records.complete", target).await.unwrap_err().code, ErrorCode::Conflict, "given once");
+    // Any charity, not only Islamic kinds of giving.
+    let general = call(
+        &r,
+        &env,
+        "records.add",
+        json!({"collection": "charity", "fields": {"recipient": "Food bank", "kind": "general"}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(general["id"], "food-bank-general");
 }
