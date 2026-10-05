@@ -25,12 +25,14 @@ commands:
                                        without an ID, one is made from its title (two-sum)
   list COLLECTION [--FIELD VALUE]…     list records; each --FIELD filters on an exact value
        [--status todo|done] [--limit N] [--offset N]
-       [--filter \"FIELD OP VALUE\"]…        OP: = != < <= > >= ~ (contains); a|b|c after = is one-of
+       [--filter \"FIELD OP VALUE\"]…        OP: = != < <= > >= ~ (contains); a|b|c after = is one-of;
+                                           \"FIELD has VALUE\" for list fields
        [--has FIELD] [--missing FIELD]     has a value / has none
        [--search TEXT]                     text in the id or any text field
        [--sort FIELD]… [--sort -FIELD]     order, e.g. --sort oa_deadline --sort -applied_on
   get COLLECTION/ID                    show one record
   update COLLECTION/ID [--FIELD VALUE]… [--unset FIELD]…
+       [--add FIELD VALUE]… [--remove FIELD VALUE]…  change items of a list field
   complete COLLECTION/ID [--FIELD VALUE]… [--unset FIELD]…
                                        mark done and stamp the collection's date field;
                                        a value for the date field back-dates it
@@ -85,12 +87,14 @@ pub enum RecordsCmd {
         id: String,
         set: Flags,
         unset: Vec<String>,
+        items: Vec<ItemEdit>,
     },
     Complete {
         collection: String,
         id: String,
         set: Flags,
         unset: Vec<String>,
+        items: Vec<ItemEdit>,
     },
     Reopen {
         collection: String,
@@ -136,6 +140,15 @@ pub enum RecordsCmd {
     },
 }
 
+/// `--add FIELD VALUE` / `--remove FIELD VALUE`: change items of a list field without resending
+/// the rest (ADR 0024 §2). VALUE may hold several items, comma-separated.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ItemEdit {
+    pub add: bool,
+    pub field: String,
+    pub value: String,
+}
+
 /// What `records list` asks beyond exact `--FIELD VALUE` matches (ADR 0019).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Refine {
@@ -159,6 +172,27 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
     let clear_stamp = sub == "reopen" && rest.iter().any(|w| w == "--clear-stamp");
     if clear_stamp {
         rest.retain(|w| w != "--clear-stamp");
+    }
+    // `--add` and `--remove` take two words, a field and a value, so they come out before `split`.
+    let mut items = Vec::new();
+    if sub == "update" || sub == "complete" {
+        let mut kept = Vec::new();
+        let mut words = rest.into_iter();
+        while let Some(word) = words.next() {
+            let add = match word.as_str() {
+                "--add" => true,
+                "--remove" => false,
+                _ => {
+                    kept.push(word);
+                    continue;
+                }
+            };
+            match (words.next(), words.next()) {
+                (Some(field), Some(value)) => items.push(ItemEdit { add, field, value }),
+                _ => return Err(format!("{word} needs a field and a value, e.g. {word} tech_stack rust")),
+            }
+        }
+        rest = kept;
     }
     let yes = sub == "remove-collection" && rest.iter().any(|w| w == "--yes");
     if yes {
@@ -219,12 +253,12 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
             let (unset, set) = flags.into_iter().partition::<Vec<_>, _>(|(name, _)| name == "unset");
             let unset: Vec<String> = unset.into_iter().map(|(_, field)| field).collect();
             if sub == "complete" {
-                return Ok(RecordsCmd::Complete { collection, id, set, unset });
+                return Ok(RecordsCmd::Complete { collection, id, set, unset, items });
             }
-            if set.is_empty() && unset.is_empty() {
-                return Err("nothing to update: give --FIELD VALUE or --unset FIELD".into());
+            if set.is_empty() && unset.is_empty() && items.is_empty() {
+                return Err("nothing to update: give --FIELD VALUE, --unset FIELD or --add/--remove FIELD VALUE".into());
             }
-            Ok(RecordsCmd::Update { collection, id, set, unset })
+            Ok(RecordsCmd::Update { collection, id, set, unset, items })
         }
         "templates" => {
             no_flags()?;
@@ -362,11 +396,21 @@ pub fn request(cmd: &RecordsCmd, schema: &Value) -> Result<(&'static str, Value)
     let fields = |pairs: &[(String, String)]| -> Result<Map<String, Value>> {
         pairs.iter().map(|(name, raw)| typed(schema, name, raw)).collect()
     };
-    // `--FIELD VALUE` sets, `--unset FIELD` sends `null`.
-    let changes = |set: &[(String, String)], unset: &[String]| -> Result<Map<String, Value>> {
+    // `--FIELD VALUE` sets, `--unset FIELD` sends `null`, `--add`/`--remove` a list patch.
+    let changes = |set: &[(String, String)], unset: &[String], items: &[ItemEdit]| -> Result<Map<String, Value>> {
         let mut changes = fields(set)?;
         for name in unset {
             changes.insert(field_name(schema, name), Value::Null);
+        }
+        for edit in items {
+            let name = field_name(schema, &edit.field);
+            let patch = changes.entry(name.clone()).or_insert_with(|| json!({}));
+            let Some(patch) = patch.as_object_mut() else {
+                return Err(Error::invalid_params(format!("'{name}' is both set and changed by item; pick one")));
+            };
+            let key = if edit.add { "add" } else { "remove" };
+            let list = patch.entry(key).or_insert_with(|| json!([])).as_array_mut().expect("always a list");
+            list.extend(split_list(&edit.value).into_iter().map(Value::String));
         }
         Ok(changes)
     };
@@ -384,8 +428,15 @@ pub fn request(cmd: &RecordsCmd, schema: &Value) -> Result<(&'static str, Value)
             ("records.rename", json!({"collection": collection, "id": id, "new_id": new_id}))
         }
         RecordsCmd::List { collection, filter, limit, offset, refine } => {
-            let mut params =
-                json!({"collection": collection, "filter": query_filter(schema, &fields(filter)?, refine)?});
+            // On a list field, `--stack rust` means "has rust": the daemon reads a plain value so.
+            let exact = filter
+                .iter()
+                .map(|(flag, raw)| match is_list(schema, &field_name(schema, flag)) {
+                    true => Ok((field_name(schema, flag), json!(raw))),
+                    false => typed(schema, flag, raw),
+                })
+                .collect::<Result<Map<String, Value>>>()?;
+            let mut params = json!({"collection": collection, "filter": query_filter(schema, &exact, refine)?});
             if let Some(text) = &refine.search {
                 params["search"] = json!(text);
             }
@@ -409,12 +460,12 @@ pub fn request(cmd: &RecordsCmd, schema: &Value) -> Result<(&'static str, Value)
             ("records.list", params)
         }
         RecordsCmd::Get { collection, id } => ("records.get", json!({"collection": collection, "id": id})),
-        RecordsCmd::Update { collection, id, set, unset } => {
-            ("records.update", json!({"collection": collection, "id": id, "fields": changes(set, unset)?}))
+        RecordsCmd::Update { collection, id, set, unset, items } => {
+            ("records.update", json!({"collection": collection, "id": id, "fields": changes(set, unset, items)?}))
         }
-        RecordsCmd::Complete { collection, id, set, unset } => {
+        RecordsCmd::Complete { collection, id, set, unset, items } => {
             let mut params = json!({"collection": collection, "id": id});
-            let changes = changes(set, unset)?;
+            let changes = changes(set, unset, items)?;
             if !changes.is_empty() {
                 params["fields"] = Value::Object(changes);
             }
@@ -483,9 +534,17 @@ fn condition(schema: &Value, raw: &str) -> Result<(String, &'static str, Value)>
         [("<=", "lte"), (">=", "gte"), ("!=", "ne"), ("<", "lt"), (">", "gt"), ("=", "eq"), ("~", "contains")];
     let bad = || {
         Error::invalid_params(format!(
-            "--filter '{raw}': write FIELD OP VALUE with OP one of = != < <= > >= ~, e.g. --filter \"oa_deadline<=2026-10-10\""
+            "--filter '{raw}': write FIELD OP VALUE with OP one of = != < <= > >= ~ has, e.g. --filter \"oa_deadline<=2026-10-10\""
         ))
     };
+    // `tech_stack has rust` (ADR 0024 §2).
+    if let Some((flag, value)) = raw.split_once(" has ") {
+        let (flag, value) = (flag.trim(), value.trim());
+        if flag.is_empty() || value.is_empty() {
+            return Err(bad());
+        }
+        return Ok((field_name(schema, flag), "has", json!(value)));
+    }
     let at = raw.find(['<', '>', '!', '=', '~']).ok_or_else(bad)?;
     let (flag, rest) = (raw[..at].trim(), &raw[at..]);
     let (symbol, op) = OPS.iter().find(|(symbol, _)| rest.starts_with(symbol)).ok_or_else(bad)?;
@@ -498,7 +557,10 @@ fn condition(schema: &Value, raw: &str) -> Result<(String, &'static str, Value)>
             value.split('|').map(|v| typed(schema, flag, v.trim()).map(|(_, v)| v)).collect::<Result<Vec<_>>>()?;
         return Ok((field_name(schema, flag), "in", json!(items)));
     }
-    // `contains` always takes text, whatever the field's type.
+    // `contains` always takes text, whatever the field's type; so does a list's `=` (`has`).
+    if is_list(schema, &field_name(schema, flag)) && *op == "eq" {
+        return Ok((field_name(schema, flag), "has", json!(value)));
+    }
     let (name, value) = match *op {
         "contains" => (field_name(schema, flag), json!(value)),
         _ => typed(schema, flag, value)?,
@@ -536,9 +598,20 @@ fn typed(schema: &Value, flag: &str, raw: &str) -> Result<(String, Value)> {
             "false" | "no" | "n" | "0" => false,
             _ => return Err(bad("true or false")),
         }),
+        // `--tech-stack "go, rust"` (ADR 0024 §2).
+        "list" => Value::Array(split_list(raw).into_iter().map(Value::String).collect()),
         _ => Value::String(raw.to_owned()),
     };
     Ok((name, value))
+}
+
+/// Comma-separated items, trimmed, blanks dropped.
+fn split_list(raw: &str) -> Vec<String> {
+    raw.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect()
+}
+
+fn is_list(schema: &Value, name: &str) -> bool {
+    field(schema, name).is_some_and(|f| f["type"] == "list")
 }
 
 // ---------------------------------------------------------------- running
@@ -740,6 +813,15 @@ fn describe_field(f: &Value) -> String {
         Some("enum") => {
             notes.push(f["values"].as_array().into_iter().flatten().map(cell).collect::<Vec<_>>().join("|"))
         }
+        Some("list") => {
+            let of = f["of"].as_str().unwrap_or("string");
+            match f["values"].as_array() {
+                Some(values) => {
+                    notes.push(format!("list of {}", values.iter().map(cell).collect::<Vec<_>>().join("|")))
+                }
+                None => notes.push(format!("list of {of}")),
+            }
+        }
         Some("string") | None => {}
         Some(other) => notes.push(other.to_owned()),
     }
@@ -824,7 +906,12 @@ fn shown(schema: &Value, key: &str, v: &Value) -> String {
     let datetime = field(schema, key).is_some_and(|f| f["type"] == "datetime");
     match v.as_str().map(chrono::DateTime::parse_from_rfc3339) {
         Some(Ok(at)) if datetime => at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string(),
-        _ => cell(v),
+        // A list as its items (ADR 0024 §2); `[]` is unset.
+        _ => match v.as_array() {
+            Some(items) if items.is_empty() => cell(&Value::Null),
+            Some(items) => cell(&Value::String(items.iter().map(cell).collect::<Vec<_>>().join(", "))),
+            None => cell(v),
+        },
     }
 }
 
@@ -874,8 +961,13 @@ mod tests {
 
     #[test]
     fn targets_both_spellings() {
-        let want =
-            RecordsCmd::Complete { collection: "leetcode".into(), id: "two-sum".into(), set: vec![], unset: vec![] };
+        let want = RecordsCmd::Complete {
+            collection: "leetcode".into(),
+            id: "two-sum".into(),
+            set: vec![],
+            unset: vec![],
+            items: vec![],
+        };
         assert_eq!(parse_words(&["complete", "leetcode/two-sum"]).unwrap(), want);
         assert_eq!(parse_words(&["complete", "leetcode", "two-sum"]).unwrap(), want);
         for bad in [&["complete"][..], &["complete", "leetcode"], &["complete", "/x"], &["complete", "a", "b", "c"]] {
@@ -899,7 +991,8 @@ mod tests {
                 collection: "leetcode".into(),
                 id: "two-sum".into(),
                 set: pairs(&[("url", "https://x")]),
-                unset: vec!["difficulty".into()]
+                unset: vec!["difficulty".into()],
+                items: vec![]
             }
         );
         assert!(parse_words(&["update", "leetcode/two-sum"]).unwrap_err().contains("nothing to update"));
@@ -937,7 +1030,8 @@ mod tests {
                 collection: "leetcode".into(),
                 id: "x".into(),
                 set: pairs(&[("last-solved", "2026-10-03")]),
-                unset: vec!["url".into()]
+                unset: vec!["url".into()],
+                items: vec![]
             }
         );
         let (op, params) = request(&complete, &leetcode()).unwrap();
@@ -1263,6 +1357,36 @@ lru-cache  todo    LRU Cache  medium      -            2         true
     }
 
     #[test]
+    fn list_fields_take_commas_add_remove_and_has() {
+        let schema = json!({"fields": [{"name": "tech_stack", "type": "list", "of": "string"}]});
+        let add = parse_words(&["add", "jobs", "--tech-stack", "go, rust,"]).unwrap();
+        assert_eq!(request(&add, &schema).unwrap().1["fields"], json!({"tech_stack": ["go", "rust"]}));
+
+        let update =
+            parse_words(&["update", "jobs/x", "--add", "tech-stack", "sql, c", "--remove", "tech_stack", "go"])
+                .unwrap();
+        assert_eq!(
+            request(&update, &schema).unwrap().1["fields"],
+            json!({"tech_stack": {"add": ["sql", "c"], "remove": ["go"]}})
+        );
+        assert!(parse_words(&["update", "jobs/x", "--add", "tech_stack"]).unwrap_err().contains("a field and a value"));
+        let both = parse_words(&["update", "jobs/x", "--tech-stack", "go", "--add", "tech_stack", "c"]).unwrap();
+        assert!(request(&both, &schema).unwrap_err().message.contains("pick one"));
+
+        for words in
+            [&["list", "jobs", "--filter", "tech_stack has Rust"][..], &["list", "jobs", "--filter", "tech-stack=Rust"]]
+        {
+            let (_, params) = request(&parse_words(words).unwrap(), &schema).unwrap();
+            assert_eq!(params["filter"], json!({"tech_stack": {"has": "Rust"}}), "{words:?}");
+        }
+        let (_, params) = request(&parse_words(&["list", "jobs", "--tech-stack", "go"]).unwrap(), &schema).unwrap();
+        assert_eq!(params["filter"], json!({"tech_stack": "go"}));
+        assert_eq!(describe_field(&schema["fields"][0]), "tech_stack (list of string)");
+        assert_eq!(shown(&schema, "tech_stack", &json!(["go", "rust"])), "go, rust");
+        assert_eq!(shown(&schema, "tech_stack", &json!([])), "-");
+    }
+
+    #[test]
     fn datetimes_show_in_local_time() {
         let schema = json!({"fields": [{"name": "at", "type": "datetime"}, {"name": "note", "type": "string"}]});
         let at = chrono::DateTime::parse_from_rfc3339("2026-10-21T06:59:00Z").unwrap();
@@ -1276,8 +1400,13 @@ lru-cache  todo    LRU Cache  medium      -            2         true
     fn single_item_output() {
         let item = json!({"id": "two-sum", "status": "done", "title": "Two Sum", "difficulty": "easy",
             "url": null, "last_solved": "2026-09-25", "attempts": null, "starred": null});
-        let complete =
-            RecordsCmd::Complete { collection: "leetcode".into(), id: "two-sum".into(), set: vec![], unset: vec![] };
+        let complete = RecordsCmd::Complete {
+            collection: "leetcode".into(),
+            id: "two-sum".into(),
+            set: vec![],
+            unset: vec![],
+            items: vec![],
+        };
         assert_eq!(show(&complete, &item, &leetcode()), "✓ leetcode/two-sum done (last_solved 2026-09-25)");
 
         let get = RecordsCmd::Get { collection: "leetcode".into(), id: "two-sum".into() };

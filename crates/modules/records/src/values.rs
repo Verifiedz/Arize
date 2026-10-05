@@ -4,6 +4,8 @@
 
 use chrono::{DateTime, LocalResult, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone, Utc};
 use chrono_tz::Tz;
+use std::collections::BTreeMap;
+
 use serde_json::{Map, Value};
 use shimmer_core::{Error, Result};
 
@@ -72,17 +74,84 @@ pub fn instant(stored: &str, tz: &Tz) -> Option<DateTime<Utc>> {
 }
 
 /// Rewrite `values` in place so they're stored as records keeps them: `datetime` fields to their
-/// stored form. Values of other fields, `null`s and unknown keys are left for the normal checks.
+/// stored form, lists tidied (see [`tidy`]; an empty list becomes `null`, unset). Values of other
+/// fields, list patches, `null`s and unknown keys are left for [`patch_lists`] and the checks.
 pub fn normalize(c: &Collection, values: &mut Map<String, Value>, now: &Now) -> Result<()> {
     for (name, value) in values.iter_mut() {
         let Some(field) = c.field(name) else { continue };
-        if field.kind == FieldType::Datetime {
-            if let Value::String(s) = value {
-                let stored = datetime(s, &now.tz)
-                    .map_err(|want| Error::invalid_params(format!("field '{name}' must be {want}, got \"{s}\"")))?;
-                *value = Value::String(stored);
+        match field.kind {
+            FieldType::Datetime => {
+                if let Value::String(s) = value {
+                    let stored = datetime(s, &now.tz)
+                        .map_err(|want| Error::invalid_params(format!("field '{name}' must be {want}, got \"{s}\"")))?;
+                    *value = Value::String(stored);
+                }
             }
+            FieldType::List => {
+                if let Value::Array(items) = value {
+                    *value = tidy(std::mem::take(items));
+                }
+            }
+            _ => {}
         }
+    }
+    Ok(())
+}
+
+/// A list as stored: string items trimmed, blank ones dropped, repeats (ignoring case) dropped,
+/// order kept. `null` when nothing is left: an empty list is unset (ADR 0024 §2).
+pub fn tidy(items: Vec<Value>) -> Value {
+    let mut out: Vec<Value> = Vec::new();
+    for item in items {
+        let item = match item {
+            Value::String(s) if s.trim().is_empty() => continue,
+            Value::String(s) => Value::String(s.trim().to_owned()),
+            other => other,
+        };
+        if !out.iter().any(|kept| same(kept, &item)) {
+            out.push(item);
+        }
+    }
+    if out.is_empty() {
+        Value::Null
+    } else {
+        Value::Array(out)
+    }
+}
+
+/// List items are the same if equal, strings ignoring case.
+pub fn same(a: &Value, b: &Value) -> bool {
+    match (a.as_str(), b.as_str()) {
+        (Some(a), Some(b)) => a.to_lowercase() == b.to_lowercase(),
+        _ => a == b,
+    }
+}
+
+/// Resolve `{"add": [...], "remove": [...]}` on list fields against the record's current values
+/// (ADR 0024 §2), so the changes hold whole lists. Removing an item that isn't there is fine;
+/// anything other than `add` and `remove` in a patch is `invalid_params`.
+pub fn patch_lists(c: &Collection, changes: &mut Map<String, Value>, current: &BTreeMap<String, Value>) -> Result<()> {
+    for (name, value) in changes.iter_mut() {
+        let Some(field) = c.field(name).filter(|f| f.kind == FieldType::List) else { continue };
+        let Value::Object(patch) = value else { continue };
+        if let Some(k) = patch.keys().find(|k| *k != "add" && *k != "remove") {
+            return Err(Error::invalid_params(format!(
+                "field '{}': a list change takes \"add\" and \"remove\", not \"{k}\"",
+                field.name
+            )));
+        }
+        let part = |key: &str| -> Result<Vec<Value>> {
+            match patch.get(key) {
+                None => Ok(Vec::new()),
+                Some(Value::Array(items)) => Ok(items.clone()),
+                Some(_) => Err(Error::invalid_params(format!("field '{}': \"{key}\" takes a list", field.name))),
+            }
+        };
+        let (add, remove) = (part("add")?, part("remove")?);
+        let mut items = current.get(name).and_then(Value::as_array).cloned().unwrap_or_default();
+        items.retain(|i| !remove.iter().any(|r| same(i, r)));
+        items.extend(add);
+        *value = tidy(items);
     }
     Ok(())
 }
@@ -90,6 +159,7 @@ pub fn normalize(c: &Collection, values: &mut Map<String, Value>, now: &Now) -> 
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
+    use serde_json::json;
 
     use super::*;
 
@@ -119,6 +189,27 @@ mod tests {
         assert_eq!(start, Utc.with_ymd_and_hms(2026, 10, 20, 4, 0, 0).unwrap());
         assert!(instant("2026-10-20T03:00:00Z", &TORONTO).unwrap() < start, "11pm the night before");
         assert!(instant("garbage", &TORONTO).is_none());
+    }
+
+    #[test]
+    fn lists_are_tidied_and_patched() {
+        assert_eq!(tidy(vec![json!(" Go "), json!(""), json!("rust"), json!("go")]), json!(["Go", "rust"]));
+        assert_eq!(tidy(vec![json!("  ")]), Value::Null, "empty is unset");
+
+        let c = Collection::parse(
+            "p",
+            "[collection]\nid = \"p\"\nlabel = \"P\"\n[[field]]\nname = \"stack\"\ntype = \"list\"\nof = \"string\"",
+        )
+        .unwrap();
+        let current = BTreeMap::from([("stack".to_owned(), json!(["Go", "Rust"]))]);
+        let mut changes = json!({"stack": {"add": ["SQL", "go"], "remove": ["rust"]}}).as_object().unwrap().clone();
+        patch_lists(&c, &mut changes, &current).unwrap();
+        assert_eq!(changes["stack"], json!(["Go", "SQL"]));
+        let mut changes = json!({"stack": {"remove": ["Go", "Rust"]}}).as_object().unwrap().clone();
+        patch_lists(&c, &mut changes, &current).unwrap();
+        assert_eq!(changes["stack"], Value::Null, "removing every item unsets it");
+        let mut changes = json!({"stack": {"put": ["x"]}}).as_object().unwrap().clone();
+        assert!(patch_lists(&c, &mut changes, &current).is_err());
     }
 
     #[test]

@@ -1564,3 +1564,60 @@ async fn datetimes_are_read_in_the_local_timezone_and_stored_as_utc() {
     let item = call(&r, &env, "records.complete", json!({"collection": "rounds", "id": "oa"})).await.unwrap();
     assert_eq!(item["done_at"], json!(env.clock.now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)));
 }
+
+fn add_projects_collection(env: &TestEnv) {
+    env.ctx
+        .store
+        .write(
+            "collections/projects.toml",
+            r#"
+            [collection]
+            id = "projects"
+            label = "Projects"
+            title = "{name}: {stack}"
+
+            [[field]]
+            name = "name"
+            type = "string"
+            required = true
+
+            [[field]]
+            name = "stack"
+            type = "list"
+            of = "string"
+            "#,
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn list_fields_are_arrays_changed_whole_or_by_item() {
+    // ADR 0024 §2.
+    let (r, env) = setup().await;
+    add_projects_collection(&env);
+    let add = json!({"collection": "projects", "id": "shimmer", "fields": {"name": "Shimmer", "stack": ["Rust", " rust ", "TOML"]}});
+    let item = call(&r, &env, "records.add", add).await.unwrap();
+    assert_eq!(item["stack"], json!(["Rust", "TOML"]), "tidied: trimmed, repeats dropped");
+    assert!(file(&env, "items/projects/shimmer.toml").unwrap().contains("stack = [\"Rust\", \"TOML\"]"));
+    assert_eq!(env.backend.events().pop().unwrap().payload["title"], "Shimmer: Rust, TOML");
+
+    let target = |fields: Value| json!({"collection": "projects", "id": "shimmer", "fields": fields});
+    let item = call(&r, &env, "records.update", target(json!({"stack": {"add": ["SQLite"], "remove": ["toml"]}})))
+        .await
+        .unwrap();
+    assert_eq!(item["stack"], json!(["Rust", "SQLite"]));
+    assert_eq!(env.backend.events().pop().unwrap().payload["changed"], json!(["stack"]));
+
+    let item = call(&r, &env, "records.update", target(json!({"stack": []}))).await.unwrap();
+    assert_eq!(item["stack"], Value::Null, "an empty list is unset");
+    assert!(!file(&env, "items/projects/shimmer.toml").unwrap().contains("stack"));
+
+    let e = call(&r, &env, "records.update", target(json!({"stack": "Rust"}))).await.unwrap_err();
+    assert!(e.message.contains("must be a list"), "{}", e.message);
+    let e = call(&r, &env, "records.update", target(json!({"stack": {"put": ["x"]}}))).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::InvalidParams);
+
+    call(&r, &env, "records.update", target(json!({"stack": ["Go"]}))).await.unwrap();
+    let list = json!({"collection": "projects", "filter": {"stack": {"has": "go"}}});
+    assert_eq!(call(&r, &env, "records.list", list).await.unwrap()["total"], 1);
+}

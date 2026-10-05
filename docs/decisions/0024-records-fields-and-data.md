@@ -66,7 +66,10 @@ of = "string"            # or "enum" (with values = [...]), or "ref" (with colle
   at least one item.
 - `of` must be `string`, `enum` or `ref`; `unique` and `role` are not allowed on a list.
 - **Filtering:** a new operator, `has`: the list contains this item (strings ignoring case).
-  `set: true/false` works as for any field. Lists can't be sorted.
+  A plain value on a list means `has`, and `null` means unset. `set: true/false` works as for any
+  field; no other operator applies. Lists can't be sorted.
+- **Stored tidy:** string items are trimmed, blank items and repeats (ignoring case) dropped,
+  order kept. A list that ends up empty is unset.
 - **Updating:** a list field in `records.update` (or `complete`'s `fields`) takes either a whole
   new list, or `{"add": [...], "remove": [...]}` to change items without resending the rest.
 - **Search** looks in string and enum list items too; **titles** render a list as its items joined

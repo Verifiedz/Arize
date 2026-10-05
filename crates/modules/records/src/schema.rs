@@ -73,6 +73,9 @@ pub struct Field {
     /// No two records share a set value (ADR 0017 §4).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unique: bool,
+    /// What a `list` field holds: `string` or `enum` (ADR 0024 §2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub of: Option<FieldType>,
 }
 
 /// What a field means, so other features can use it without knowing the collection
@@ -96,6 +99,8 @@ pub enum FieldType {
     Enum,
     /// A moment (stored as UTC RFC 3339) or a plain date (ADR 0024 §1).
     Datetime,
+    /// Several values of the type `of` names (ADR 0024 §2).
+    List,
 }
 
 /// The file as written. `deny_unknown_fields` turns a typo like `value = [...]` into an error
@@ -152,13 +157,29 @@ impl Collection {
             if !seen.insert(f.name.as_str()) {
                 return Err(bad(format!("field '{}' is defined twice", f.name)));
             }
-            match (f.kind, f.values.is_empty()) {
+            match (f.kind, f.of) {
+                (FieldType::List, Some(FieldType::String | FieldType::Enum)) => {}
+                (FieldType::List, Some(_)) => {
+                    return Err(bad(format!("list field '{}': `of` must be \"string\" or \"enum\"", f.name)));
+                }
+                (FieldType::List, None) => {
+                    return Err(bad(format!("list field '{}' needs `of`: what it holds", f.name)));
+                }
+                (_, Some(_)) => return Err(bad(format!("field '{}': only list fields take `of`", f.name))),
+                (_, None) => {}
+            }
+            if f.kind == FieldType::List && (f.unique || f.role.is_some()) {
+                return Err(bad(format!("list field '{}' can't be unique or have a role", f.name)));
+            }
+            match (f.item_kind(), f.values.is_empty()) {
                 (FieldType::Enum, true) => return Err(bad(format!("enum field '{}' needs values", f.name))),
                 (FieldType::Enum, false) if f.values.iter().collect::<BTreeSet<_>>().len() != f.values.len() => {
                     return Err(bad(format!("enum field '{}' repeats a value", f.name)));
                 }
                 (FieldType::Enum, false) => {}
-                (_, false) => return Err(bad(format!("field '{}': only enum fields take values", f.name))),
+                (_, false) => {
+                    return Err(bad(format!("field '{}': only enum fields (and lists of enum) take values", f.name)));
+                }
                 (_, true) => {}
             }
             match (f.role, f.kind) {
@@ -252,6 +273,15 @@ impl Collection {
             None | Some(Value::Null) => None,
             Some(Value::String(s)) if s.is_empty() => None,
             Some(Value::String(s)) => Some(s.clone()),
+            // A list reads as its items (ADR 0024 §2).
+            Some(Value::Array(items)) if items.is_empty() => None,
+            Some(Value::Array(items)) => Some(
+                items
+                    .iter()
+                    .map(|i| i.as_str().map_or_else(|| i.to_string(), str::to_owned))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
             Some(other) => Some(other.to_string()),
         };
         let mut any_set = false;
@@ -315,11 +345,16 @@ impl Collection {
 
     /// Every required field present in a complete set of values.
     pub fn check_required(&self, values: &Map<String, Value>) -> Result<()> {
-        match self.fields.iter().find(|f| f.required && values.get(&f.name).is_none_or(Value::is_null)) {
+        match self.fields.iter().find(|f| f.required && values.get(&f.name).is_none_or(is_unset)) {
             Some(f) => Err(Error::invalid_params(format!("field '{}' is required", f.name))),
             None => Ok(()),
         }
     }
+}
+
+/// No value: missing, `null`, or an empty list (ADR 0024 §2). `required` means not unset.
+pub fn is_unset(v: &Value) -> bool {
+    v.is_null() || v.as_array().is_some_and(Vec::is_empty)
 }
 
 impl FieldType {
@@ -330,8 +365,23 @@ impl FieldType {
 }
 
 impl Field {
+    /// The type of one value: `of` for a list, the field's own type otherwise.
+    pub fn item_kind(&self) -> FieldType {
+        match self.kind {
+            FieldType::List => self.of.unwrap_or(FieldType::String),
+            k => k,
+        }
+    }
+
     /// Check a value as stored (after [`crate::values::normalize`]).
     pub fn check(&self, value: &Value) -> Result<()> {
+        if self.kind == FieldType::List {
+            let Some(items) = value.as_array() else {
+                return Err(Error::invalid_params(format!("field '{}' must be a list, got {value}", self.name)));
+            };
+            let one = Field { kind: self.item_kind(), of: None, ..self.clone() };
+            return items.iter().try_for_each(|i| one.check(i));
+        }
         let ok = match self.kind {
             FieldType::String => value.is_string(),
             FieldType::Int => value.is_i64(),
@@ -341,6 +391,7 @@ impl Field {
             FieldType::Datetime => value.as_str().is_some_and(|s| {
                 NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok() || chrono::DateTime::parse_from_rfc3339(s).is_ok()
             }),
+            FieldType::List => unreachable!("checked above"),
         };
         if ok {
             return Ok(());
@@ -352,6 +403,7 @@ impl Field {
             FieldType::Date => "a date like \"2026-09-25\"".to_owned(),
             FieldType::Enum => format!("one of {}", self.values.join(", ")),
             FieldType::Datetime => "a date and time like \"2026-10-20 23:59\", or a date".to_owned(),
+            FieldType::List => unreachable!("checked above"),
         };
         Err(Error::invalid_params(format!("field '{}' must be {want}, got {value}", self.name)))
     }
@@ -405,6 +457,21 @@ mod tests {
 
     fn with_fields(fields: &str) -> Result<Collection> {
         Collection::parse("c", &format!("[collection]\nid = \"c\"\nlabel = \"C\"\n{fields}"))
+    }
+
+    #[test]
+    fn list_fields_check_each_item_and_titles_join_them() {
+        let c = with_fields(
+            "title = \"{name}: {tags}\"\n[[field]]\nname = \"name\"\ntype = \"string\"\n[[field]]\nname = \"tags\"\ntype = \"list\"\nof = \"enum\"\nvalues = [\"a\", \"b\"]\nrequired = true",
+        )
+        .unwrap();
+        let tags = c.field("tags").unwrap();
+        assert!(tags.check(&json!(["a", "b"])).is_ok());
+        assert!(tags.check(&json!(["a", "c"])).unwrap_err().message.contains("one of a, b"));
+        assert!(tags.check(&json!("a")).unwrap_err().message.contains("must be a list"));
+        assert!(c.check_required(&json!({"tags": []}).as_object().unwrap().clone()).is_err(), "empty is unset");
+        let fields = BTreeMap::from([("name".to_owned(), json!("x")), ("tags".to_owned(), json!(["a", "b"]))]);
+        assert_eq!(c.title_of("id", &fields), "x: a, b");
     }
 
     #[test]
@@ -567,6 +634,11 @@ mod tests {
             ("title = \"a}\"", "unmatched '}'"),
             ("title = \"{A B}\"", "is not a field name"),
             ("[extra]\nlead_days = 3", "must be a table"),
+            ("[[field]]\nname = \"a\"\ntype = \"list\"", "needs `of`"),
+            ("[[field]]\nname = \"a\"\ntype = \"list\"\nof = \"int\"", "`of` must be"),
+            ("[[field]]\nname = \"a\"\ntype = \"string\"\nof = \"string\"", "only list fields take `of`"),
+            ("[[field]]\nname = \"a\"\ntype = \"list\"\nof = \"enum\"", "needs values"),
+            ("[[field]]\nname = \"a\"\ntype = \"list\"\nof = \"string\"\nunique = true", "can't be unique"),
             (
                 "stamp_on_complete = \"d\"\n[[field]]\nname = \"d\"\ntype = \"date\"\nrole = \"deadline\"",
                 "is a deadline",

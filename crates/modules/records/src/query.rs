@@ -33,6 +33,8 @@ enum Kind {
     Id,
     Status,
     Field(FieldType, Vec<String>),
+    /// A list field, by the type of its items (ADR 0024 §2).
+    List(FieldType, Vec<String>),
 }
 
 #[derive(Debug)]
@@ -46,6 +48,8 @@ enum Op {
     In(Vec<Value>),
     Set(bool),
     Contains(String),
+    /// The list holds this item (strings ignoring case).
+    Has(Value),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -79,6 +83,13 @@ impl Query {
                         conditions.push((key.clone(), kind.clone(), op(c, key, &kind, name, arg, now)?));
                     }
                 }
+                // On a list, a plain value is `has` and `null` is "unset" (ADR 0024 §2).
+                Value::Null if matches!(kind, Kind::List(..)) => {
+                    conditions.push((key.clone(), kind.clone(), Op::Set(false)))
+                }
+                plain if matches!(kind, Kind::List(..)) => {
+                    conditions.push((key.clone(), kind.clone(), op(c, key, &kind, "has", plain, now)?))
+                }
                 plain => conditions.push((key.clone(), kind.clone(), Op::Eq(stored(key, &kind, plain, now)?))),
             }
         }
@@ -101,6 +112,9 @@ impl Query {
             no_status(c, name)?;
             let kind = kind(c, name)
                 .ok_or_else(|| Error::invalid_params(format!("cannot sort '{}' on unknown field '{name}'", c.id)))?;
+            if matches!(kind, Kind::List(..)) {
+                return Err(Error::invalid_params(format!("'{name}' is a list; lists can't be sorted")));
+            }
             if keys.iter().any(|(k, _, _): &(String, Kind, Direction)| k == name) {
                 return Err(Error::invalid_params(format!("sort names '{name}' twice")));
             }
@@ -110,7 +124,7 @@ impl Query {
         let searchable = c
             .fields
             .iter()
-            .filter(|f| matches!(f.kind, FieldType::String | FieldType::Enum))
+            .filter(|f| matches!(f.item_kind(), FieldType::String | FieldType::Enum))
             .map(|f| f.name.clone())
             .collect();
         Ok(Self { conditions, search, sort: keys, searchable, tz: now.tz })
@@ -123,7 +137,7 @@ impl Query {
         let search = self.search.as_deref().is_none_or(|needle| {
             std::iter::once("id")
                 .chain(self.searchable.iter().map(String::as_str))
-                .any(|k| got(k).as_str().is_some_and(|s| s.to_lowercase().contains(needle)))
+                .any(|k| texts(got(k)).any(|s| s.to_lowercase().contains(needle)))
         });
         conditions && search
     }
@@ -164,7 +178,10 @@ fn kind(c: &Collection, key: &str) -> Option<Kind> {
     match key {
         "id" => Some(Kind::Id),
         "status" => Some(Kind::Status),
-        _ => c.field(key).map(|f| Kind::Field(f.kind, f.values.clone())),
+        _ => c.field(key).map(|f| match f.kind {
+            FieldType::List => Kind::List(f.item_kind(), f.values.clone()),
+            k => Kind::Field(k, f.values.clone()),
+        }),
     }
 }
 
@@ -178,10 +195,13 @@ fn op(c: &Collection, key: &str, kind: &Kind, name: &str, arg: &Value, now: &Now
         Kind::Field(t, _) => matches!(t, FieldType::Int | FieldType::Date | FieldType::Datetime | FieldType::Enum),
         _ => false,
     };
+    let list = matches!(kind, Kind::List(..));
     let allowed = match name {
+        "has" => list,
+        "set" => !matches!(kind, Kind::Id | Kind::Status),
+        _ if list => false,
         "eq" | "ne" | "in" => true,
         "lt" | "lte" | "gt" | "gte" => ordered,
-        "set" => !matches!(kind, Kind::Id | Kind::Status),
         "contains" => matches!(kind, Kind::Id | Kind::Field(FieldType::String, _)),
         other => return Err(bad(key, &format!("unknown operator '{other}'"))),
     };
@@ -205,6 +225,7 @@ fn op(c: &Collection, key: &str, kind: &Kind, name: &str, arg: &Value, now: &Now
             _ => return Err(bad(key, "'in' takes a non-empty list")),
         },
         "set" => Op::Set(arg.as_bool().ok_or_else(|| bad(key, "'set' takes true or false"))?),
+        "has" => Op::Has(value(arg)?),
         _ => match arg.as_str() {
             Some(s) if !s.is_empty() => Op::Contains(s.to_lowercase()),
             _ => return Err(bad(key, "'contains' takes some text")),
@@ -221,6 +242,7 @@ fn describe(kind: &Kind) -> String {
             let article = if name.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
             format!("{article} {name} field")
         }
+        Kind::List(..) => "a list field (use 'has' or 'set')".into(),
     }
 }
 
@@ -228,6 +250,7 @@ fn describe(kind: &Kind) -> String {
 fn check_value(c: &Collection, key: &str, kind: &Kind, v: &Value) -> Result<()> {
     match kind {
         Kind::Field(..) => c.field(key).map_or(Ok(()), |f| f.check(v)),
+        Kind::List(..) => c.field(key).map_or(Ok(()), |f| f.check(&Value::Array(vec![v.clone()]))),
         Kind::Id if v.is_string() => Ok(()),
         Kind::Status if v == "todo" || v == "done" => Ok(()),
         Kind::Id => Err(bad(key, "the id is text")),
@@ -246,9 +269,15 @@ fn stored(key: &str, kind: &Kind, v: &Value, now: &Now) -> Result<Value> {
     }
 }
 
-/// Set means a value other than `null` or `""` (ADR 0017's rule).
+/// Set means a value other than `null`, `""` or `[]` (ADR 0017's rule, ADR 0024 §2).
 fn is_set(v: &Value) -> bool {
-    !v.is_null() && v.as_str() != Some("")
+    !crate::schema::is_unset(v) && v.as_str() != Some("")
+}
+
+/// The text in a value: a string, or a list's string items.
+fn texts(v: &Value) -> impl Iterator<Item = &str> {
+    let list = v.as_array().map(|items| items.iter().filter_map(Value::as_str));
+    v.as_str().into_iter().chain(list.into_iter().flatten())
 }
 
 fn holds(kind: &Kind, op: &Op, got: &Value, tz: &Tz) -> bool {
@@ -264,6 +293,7 @@ fn holds(kind: &Kind, op: &Op, got: &Value, tz: &Tz) -> bool {
         Op::In(list) => is_set(got) && list.contains(got),
         Op::Set(want) => is_set(got) == *want,
         Op::Contains(needle) => got.as_str().is_some_and(|s| s.to_lowercase().contains(needle)),
+        Op::Has(want) => got.as_array().is_some_and(|items| items.iter().any(|i| values::same(i, want))),
     }
 }
 
@@ -291,6 +321,7 @@ fn sort_value(kind: &Kind, v: &Value, tz: &Tz) -> Option<Key> {
         Kind::Field(FieldType::Enum, values) => Key::Rank(values.iter().position(|x| Some(x.as_str()) == v.as_str())?),
         Kind::Field(FieldType::Bool, _) => Key::Bool(v.as_bool()?),
         Kind::Field(FieldType::String, _) | Kind::Id | Kind::Status => Key::Text(v.as_str()?.to_lowercase()),
+        Kind::Field(FieldType::List, _) | Kind::List(..) => return None,
     })
 }
 
@@ -366,6 +397,28 @@ mod tests {
 
     fn ids(q: &Query) -> Vec<String> {
         sample().iter().filter(|w| q.matches(w)).map(|w| w["id"].as_str().unwrap().to_owned()).collect()
+    }
+
+    #[test]
+    fn lists_take_has_and_set_and_are_searched() {
+        let c = Collection::parse(
+            "p",
+            "[collection]\nid = \"p\"\nlabel = \"P\"\n[[field]]\nname = \"stack\"\ntype = \"list\"\nof = \"string\"",
+        )
+        .unwrap();
+        let q = |filter: Value, search: Option<&str>| Query::new(&c, filter.as_object().unwrap(), search, &[], &now());
+        let rec = job("a", json!({"stack": ["Go", "Rust"]}));
+        let none = job("b", json!({}));
+        assert!(q(json!({"stack": {"has": "rust"}}), None).unwrap().matches(&rec), "ignoring case");
+        assert!(!q(json!({"stack": {"has": "sql"}}), None).unwrap().matches(&rec));
+        assert!(q(json!({"stack": {"set": false}}), None).unwrap().matches(&none));
+        assert!(q(json!({}), Some("rus")).unwrap().matches(&rec), "search looks in list items");
+        assert!(q(json!({"stack": "go"}), None).unwrap().matches(&rec), "a plain value is has");
+        assert!(q(json!({"stack": null}), None).unwrap().matches(&none), "null is unset");
+        assert!(q(json!({"stack": {"eq": "Go"}}), None).unwrap_err().message.contains("a list field"));
+        let e = Query::new(&c, &Map::new(), None, &["stack".into()], &now()).unwrap_err();
+        assert!(e.message.contains("can't be sorted"));
+        assert!(query(json!({"company": {"has": "x"}})).unwrap_err().message.contains("doesn't apply"));
     }
 
     #[test]

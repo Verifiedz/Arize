@@ -2,7 +2,6 @@
 //! the collection file that keep the user's comments and layout. Pure: text and values in, text
 //! and reports out (§12 rule 10). The ops in `lib.rs` read, call these, and write the result.
 
-use serde_json::Value;
 use shimmer_core::{Error, Result};
 use toml_edit::DocumentMut;
 
@@ -14,7 +13,7 @@ use crate::schema::Collection;
 pub fn problems(c: &Collection, item: &Item) -> Vec<String> {
     let mut out = Vec::new();
     for f in c.fields.iter().filter(|f| f.required) {
-        if item.fields.get(&f.name).is_none_or(Value::is_null) {
+        if item.fields.get(&f.name).is_none_or(crate::schema::is_unset) {
             out.push(format!("required field '{}' is missing", f.name));
         }
     }
@@ -103,7 +102,7 @@ fn set_str(slot: &mut toml_edit::Item, s: &str) {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     use super::*;
 

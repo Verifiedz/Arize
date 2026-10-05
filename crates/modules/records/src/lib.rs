@@ -334,13 +334,15 @@ impl Records {
 
     fn add(&self, ctx: &Ctx, mut p: Add) -> Result<Value> {
         let c = load_collection(ctx, &p.collection)?;
-        values::normalize(&c, &mut p.fields, &now(ctx))?;
         if let Some(id) = &p.id {
             item::check_id(id)?;
         }
         if let Some((k, _)) = p.fields.iter().find(|(_, v)| v.is_null()) {
             return Err(Error::invalid_params(format!("field '{k}' is null; leave it out to leave it unset")));
         }
+        values::normalize(&c, &mut p.fields, &now(ctx))?;
+        // An empty list is unset (ADR 0024 §2): nothing to store.
+        p.fields.retain(|_, v| !v.is_null());
         c.check_values(&p.fields)?;
         c.check_required(&p.fields)?;
 
@@ -414,10 +416,11 @@ impl Records {
     fn update(&self, ctx: &Ctx, mut p: WithFields) -> Result<Value> {
         let c = load_collection(ctx, &p.collection)?;
         values::normalize(&c, &mut p.fields, &now(ctx))?;
-        c.check_changes(&p.fields)?;
 
         let _g = self.write.lock();
         let before = load_item(ctx, &c, &p.id)?;
+        values::patch_lists(&c, &mut p.fields, &before.fields)?;
+        c.check_changes(&p.fields)?;
         check_unique(ctx, &c, &p.id, &p.fields)?;
         let mut item = before.clone();
         item.apply(p.fields);
@@ -441,6 +444,7 @@ impl Records {
 
         let _g = self.write.lock();
         let current = load_item(ctx, &c, &p.id)?;
+        values::patch_lists(&c, &mut p.fields, &current.fields)?;
         check_unique(ctx, &c, &p.id, &p.fields)?;
         let item = lifecycle::complete(&c, &current, p.fields, &now)?;
         self.save(ctx, &c, &item, "records.item.completed")
