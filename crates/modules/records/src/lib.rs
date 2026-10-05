@@ -440,7 +440,7 @@ impl Records {
                 continue;
             };
             // One bad hand-edit must not hide every other record.
-            match ctx.store.read_string(&path)?.map(|text| Item::from_toml(id, &text)) {
+            match read_item(ctx, &path, id) {
                 Some(Ok(item)) => {
                     let wire = item.to_wire(&c);
                     if query.matches(&wire) {
@@ -615,7 +615,7 @@ impl Records {
                 continue;
             };
             checked += 1;
-            let found = match ctx.store.read_string(&path)?.map(|text| Item::from_toml(id, &text)) {
+            let found = match read_item(ctx, &path, id) {
                 Some(Ok(item)) => {
                     let mut found = collections::problems(&c, &item);
                     found.extend(dangling(ctx, &c, &item.fields)?);
@@ -1174,6 +1174,16 @@ fn load_item(ctx: &Ctx, c: &Collection, id: &str) -> Result<Item> {
     match ctx.store.read_string(&item_path(&c.id, id))? {
         Some(text) => Item::from_toml(id, &text),
         None => Err(Error::not_found(format!("no record '{id}' in '{}'", c.id))),
+    }
+}
+
+/// A record file as an item, for the ops that scan a collection (`list`, `check`). A file that
+/// can't be read at all (not UTF-8, an I/O error) is an `Err` for that one record, like one that
+/// doesn't parse, so it never hides the rest. `None` when it's gone.
+fn read_item(ctx: &Ctx, path: &str, id: &str) -> Option<Result<Item>> {
+    match ctx.store.read_string(path) {
+        Ok(text) => text.map(|text| Item::from_toml(id, &text)),
+        Err(e) => Some(Err(Error::invalid_params(format!("record file '{id}.toml' can't be read: {}", e.message)))),
     }
 }
 

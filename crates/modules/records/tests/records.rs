@@ -1796,3 +1796,19 @@ async fn purge_deletes_trashed_records_only_after_confirmation() {
     assert_eq!(trash["items"], json!([]));
     assert_eq!(call(&r, &env, "records.purge", json!({"collection": "leetcode"})).await.unwrap(), json!({"purged": 0}));
 }
+
+#[tokio::test]
+async fn a_file_that_cant_be_read_is_reported_and_hides_nothing() {
+    // Dev A's review of #88: a hand-edit that leaves invalid UTF-8 must be one record's problem
+    // in records.check (and one skipped file in records.list), not a failure of the whole op.
+    let (r, env) = setup().await;
+    add_two_sum(&r, &env).await;
+    env.ctx.store.write("items/leetcode/garbled.toml", vec![0xff, 0xfe, b'x']).unwrap();
+    let check = call(&r, &env, "records.check", json!({"collection": "leetcode"})).await.unwrap();
+    assert_eq!(check["checked"], 2);
+    assert_eq!(check["problems"][0]["id"], "garbled");
+    assert!(check["problems"][0]["problems"][0].as_str().unwrap().contains("can't be read"), "{check}");
+    let list = call(&r, &env, "records.list", json!({"collection": "leetcode"})).await.unwrap();
+    assert_eq!(list["total"], 1);
+    assert!(list["skipped"][0].as_str().unwrap().contains("garbled.toml"), "{list}");
+}
