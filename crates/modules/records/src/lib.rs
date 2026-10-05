@@ -438,7 +438,16 @@ impl Records {
         query.sort(&mut matching);
         let total = matching.len();
         let items: Vec<Value> = matching.into_iter().skip(p.offset).take(limit).collect();
-        let mut out = json!({"items": items, "total": total});
+        // What to call each listed record (ADR 0024 §5), so clients never render titles.
+        let titles: Map<String, Value> = items
+            .iter()
+            .filter_map(|w| {
+                let id = w["id"].as_str()?;
+                let fields = w.as_object()?.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                Some((id.to_owned(), json!(c.title_of(id, &fields))))
+            })
+            .collect();
+        let mut out = json!({"items": items, "total": total, "titles": titles});
         if !skipped.is_empty() {
             out["skipped"] = json!(skipped);
         }

@@ -225,9 +225,15 @@ impl Collection {
         if let Some(title) = &file.collection.title {
             let names: BTreeSet<&str> = file.field.iter().map(|f| f.name.as_str()).collect();
             for part in title_parts(title).map_err(|m| bad(format!("title: {m}")))? {
-                if let Part::Field(name) = part {
-                    if !names.contains(name) {
-                        return Err(bad(format!("title: '{{{name}}}' is not a field")));
+                let inner = match part {
+                    Part::Optional(inner) => inner,
+                    other => vec![other],
+                };
+                for part in inner {
+                    if let Part::Field(name) = part {
+                        if !names.contains(name) {
+                            return Err(bad(format!("title: '{{{name}}}' is not a field")));
+                        }
                     }
                 }
             }
@@ -311,6 +317,22 @@ impl Collection {
                     if let Some(v) = value(name) {
                         any_set = true;
                         out.push_str(&v);
+                    }
+                }
+                // Only when every field inside is set (ADR 0024 §5).
+                Part::Optional(inner) => {
+                    let all_set = inner.iter().all(|p| !matches!(p, Part::Field(name) if value(name).is_none()));
+                    if all_set {
+                        for p in inner {
+                            match p {
+                                Part::Field(name) => {
+                                    any_set = true;
+                                    out.push_str(&value(name).unwrap_or_default());
+                                }
+                                Part::Text(t) => out.push_str(t),
+                                Part::Optional(_) => {}
+                            }
+                        }
                     }
                 }
             }
@@ -456,13 +478,41 @@ impl Field {
 enum Part<'a> {
     Text(&'a str),
     Field(&'a str),
+    /// `[ by {author}]`: left out unless every field inside is set (ADR 0024 §5).
+    Optional(Vec<Part<'a>>),
 }
 
-/// Split a `title` template into text and `{field}` parts. A `{` or `}` that isn't part of a
-/// `{name}` is an error: there is no escaping and no other syntax (ADR 0017 §2).
+/// Split a `title` template into text, `{field}` and `[optional]` parts. A bracket or brace that
+/// isn't part of that syntax is an error: there is no escaping (ADR 0017 §2, ADR 0024 §5).
 fn title_parts(template: &str) -> std::result::Result<Vec<Part<'_>>, String> {
     let mut parts = Vec::new();
     let mut rest = template;
+    while let Some(open) = rest.find(['[', ']']) {
+        if rest[open..].starts_with(']') {
+            return Err(format!("unmatched ']' in \"{template}\""));
+        }
+        parts.extend(plain_parts(&rest[..open], template)?);
+        let after = &rest[open + 1..];
+        let close = after.find(']').ok_or_else(|| format!("unmatched '[' in \"{template}\""))?;
+        let inner = &after[..close];
+        if inner.contains('[') {
+            return Err(format!("optional parts can't be nested in \"{template}\""));
+        }
+        let inner = plain_parts(inner, template)?;
+        if !inner.iter().any(|p| matches!(p, Part::Field(_))) {
+            return Err(format!("an optional part needs a {{field}} inside in \"{template}\""));
+        }
+        parts.push(Part::Optional(inner));
+        rest = &after[close + 1..];
+    }
+    parts.extend(plain_parts(rest, template)?);
+    Ok(parts)
+}
+
+/// Text and `{field}` parts of a piece of a template with no brackets.
+fn plain_parts<'a>(piece: &'a str, template: &str) -> std::result::Result<Vec<Part<'a>>, String> {
+    let mut parts = Vec::new();
+    let mut rest = piece;
     while let Some(open) = rest.find(['{', '}']) {
         if rest[open..].starts_with('}') {
             return Err(format!("unmatched '}}' in \"{template}\""));
@@ -514,6 +564,31 @@ mod tests {
         assert!(c.check_required(&json!({"tags": []}).as_object().unwrap().clone()).is_err(), "empty is unset");
         let fields = BTreeMap::from([("name".to_owned(), json!("x")), ("tags".to_owned(), json!(["a", "b"]))]);
         assert_eq!(c.title_of("id", &fields), "x: a, b");
+    }
+
+    #[test]
+    fn optional_title_parts_need_every_field_inside() {
+        let c = with_fields(
+            "title = \"{book}[ by {author}][ ({year}, {publisher})]\"\n[[field]]\nname = \"book\"\ntype = \"string\"\n[[field]]\nname = \"author\"\ntype = \"string\"\n[[field]]\nname = \"year\"\ntype = \"int\"\n[[field]]\nname = \"publisher\"\ntype = \"string\"",
+        )
+        .unwrap();
+        let title = |v: Value| c.title_of("id", &v.as_object().unwrap().clone().into_iter().collect());
+        assert_eq!(title(json!({"book": "Dune"})), "Dune", "no dangling 'by'");
+        assert_eq!(title(json!({"book": "Dune", "author": "Herbert", "year": 1965})), "Dune by Herbert");
+        assert_eq!(
+            title(json!({"book": "Dune", "author": "Herbert", "year": 1965, "publisher": "Chilton"})),
+            "Dune by Herbert (1965, Chilton)"
+        );
+        assert_eq!(title(json!({"author": "Herbert"})), "by Herbert", "an optional part counts as set");
+        assert_eq!(title(json!({})), "id");
+        for (bad, want) in [
+            ("title = \"a]\"", "unmatched ']'"),
+            ("title = \"[a\"", "unmatched '['"),
+            ("title = \"[x [y]]\"", "can't be nested"),
+            ("title = \"[ by ]\"", "needs a {field}"),
+        ] {
+            assert!(with_fields(bad).unwrap_err().message.contains(want), "{bad}");
+        }
     }
 
     #[test]

@@ -1619,7 +1619,9 @@ async fn list_fields_are_arrays_changed_whole_or_by_item() {
 
     call(&r, &env, "records.update", target(json!({"stack": ["Go"]}))).await.unwrap();
     let list = json!({"collection": "projects", "filter": {"stack": {"has": "go"}}});
-    assert_eq!(call(&r, &env, "records.list", list).await.unwrap()["total"], 1);
+    let out = call(&r, &env, "records.list", list).await.unwrap();
+    assert_eq!(out["total"], 1);
+    assert_eq!(out["titles"], json!({"shimmer": "Shimmer: Go"}), "list says what to call each record");
 }
 
 fn add_linked_collections(env: &TestEnv) {

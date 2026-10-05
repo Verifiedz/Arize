@@ -139,11 +139,12 @@ collection = "jobs"      # the collection its value must be a record of
   `--filter "oa_deadline<=today+7"` means "due within a week", and the CLI never needs to know the
   timezone. A plain date compared with a `datetime` compares days, so `<= 2026-10-20` includes
   23:59 that day (sorting still uses instants, §1).
-- **Titles in `records.list`:** the response gains `titles: {id: title}`. `records get` shows the
-  title next to the id.
+- **Titles in `records.list`:** the response gains `titles: {id: title}` for the listed records.
+  `records list` shows them as a TITLE column, unless the title is a single field that already
+  has its own column.
 - **Optional parts in titles:** `"{title}[ by {author}]"`. A `[…]` part is left out when any field
-  inside it is unset, so no dangling "by". `[` and `]` outside that use are now an error in a
-  title (no shipped title uses them).
+  inside it is unset, so no dangling "by". A `[…]` part needs a field inside and doesn't nest.
+  `[` and `]` outside that use are now an error in a title (no shipped title uses them).
 - **`records.purge {collection, id?, confirm?}`:** permanently deletes trashed records (one, or the
   whole trash), after `confirmation_required` with `{"records": N}`, as removing a collection asks
   (ADR 0021). Emits `records.trash.purged`.

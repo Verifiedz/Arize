@@ -1150,7 +1150,13 @@ fn list(data: &Value, schema: &Value) -> String {
             .filter(|k| items.iter().any(|i| !i[k.as_str()].is_null() && i[k.as_str()] != ""))
             .collect();
         let status = has_status(schema);
+        // The daemon's titles (ADR 0024 §5), when the collection has a title other than a field.
+        let titles = &data["titles"];
+        let titled = schema["title"].is_string() && !keys_are_title(schema) && titles.is_object();
         let mut header = vec!["ID".to_owned()];
+        if titled {
+            header.push("TITLE".to_owned());
+        }
         if status {
             header.push("STATUS".to_owned());
         }
@@ -1159,7 +1165,11 @@ fn list(data: &Value, schema: &Value) -> String {
             .iter()
             .map(|i| {
                 // The id in full: a cut id can't be typed back.
-                let mut row = vec![i["id"].as_str().unwrap_or_default().to_owned()];
+                let id = i["id"].as_str().unwrap_or_default();
+                let mut row = vec![id.to_owned()];
+                if titled {
+                    row.push(cell(&titles[id]));
+                }
                 if status {
                     row.push(cell(&i["status"]));
                 }
@@ -1180,6 +1190,12 @@ fn list(data: &Value, schema: &Value) -> String {
         let _ = write!(out, "\nskipped: {}", cell(skipped));
     }
     out
+}
+
+/// A title that is just one field (`"{title}"`, `"{question}"`) already shows as its column.
+fn keys_are_title(schema: &Value) -> bool {
+    let title = schema["title"].as_str().unwrap_or_default();
+    title.starts_with('{') && title.ends_with('}') && title[1..title.len() - 1].chars().all(|c| c != '{' && c != '[')
 }
 
 /// A value as a person reads it: a `datetime` in this machine's local time (ADR 0024 §1), the rest
@@ -1751,6 +1767,21 @@ lru-cache  todo    LRU Cache  medium      -            2         true
             request(&parse_words(&["list", "leetcode", "--filter", "last_solved>=today-7"]).unwrap(), &leetcode())
                 .unwrap();
         assert_eq!(params["filter"], json!({"last_solved": {"gte": "today-7"}}), "the daemon reads 'today'");
+    }
+
+    #[test]
+    fn list_shows_the_daemons_titles() {
+        let schema = json!({"title": "{company}: {position}", "fields": [
+            {"name": "company", "type": "string"}, {"name": "position", "type": "string"}]});
+        let data = json!({"items": [{"id": "acme", "status": "todo", "company": "Acme", "position": "SWE"}],
+                          "total": 1, "titles": {"acme": "Acme: SWE"}});
+        let cmd = parse_words(&["list", "jobs"]).unwrap();
+        let out = show(&cmd, &data, &schema);
+        assert!(out.starts_with("ID    TITLE      STATUS"), "{out}");
+        assert!(out.contains("acme  Acme: SWE  todo"), "{out}");
+        // A one-field title is already a column.
+        let out = show(&cmd, &data, &json!({"title": "{company}", "fields": schema["fields"]}));
+        assert!(!out.contains("TITLE"), "{out}");
     }
 
     #[test]

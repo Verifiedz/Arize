@@ -397,7 +397,12 @@
             "url": null,
             "last_solved": null
           }
-        ]
+        ],
+        "titles": {
+          "two-sum": "Two Sum",
+          "lru-cache": "LRU Cache",
+          "median-of-two-sorted-arrays": "Median of Two Sorted Arrays"
+        }
       }
     },
     {
