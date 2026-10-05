@@ -21,7 +21,16 @@ use shimmer_core::{CommandSpec, Ctx, Error, ErrorCode, Execution, Manifest, Modu
 use crate::item::Item;
 use crate::schema::Collection;
 
-const LEETCODE: &str = include_str!("../collections/leetcode.toml");
+const LEETCODE: &str = include_str!("../templates/leetcode.toml");
+
+/// Built-in collection templates (ADR 0022), by id. Each is an ordinary collection file whose
+/// `[collection] id` is the template's id; creating one copies it with only the id (and label)
+/// changed.
+const TEMPLATES: &[(&str, &str)] = &[
+    ("interviews", include_str!("../templates/interviews.toml")),
+    ("job-applications", include_str!("../templates/job-applications.toml")),
+    ("leetcode", LEETCODE),
+];
 const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 500;
 
@@ -68,7 +77,7 @@ impl Module for Records {
         }
         ctx.store.transaction(|tx| {
             tx.put("collections/leetcode.toml", LEETCODE)?;
-            tx.emit("records.collection.created", json!({"collection": "leetcode"}))
+            tx.emit("records.collection.created", json!({"collection": "leetcode", "template": "leetcode"}))
         })
     }
 
@@ -125,6 +134,13 @@ impl Module for Records {
                 "records.trash",
                 "List a collection's removed records",
                 json!({"type": "object", "required": ["collection"], "properties": {"collection": {"type": "string"}}}),
+            ),
+            ("records.templates", "List the built-in collection templates", json!({"type": "object"})),
+            (
+                "records.create_collection",
+                "Create a collection from a template",
+                json!({"type": "object", "required": ["id", "template"], "properties": {
+                    "id": {"type": "string"}, "template": {"type": "string"}, "label": {"type": "string"}}}),
             ),
             (
                 "records.check",
@@ -183,6 +199,8 @@ impl Module for Records {
             "records.restore" => self.restore(ctx, decode(params)?),
             "records.trash" => self.trash(ctx, decode(params)?),
             "records.check" => self.check(ctx, decode(params)?),
+            "records.templates" => self.templates(),
+            "records.create_collection" => self.create_collection(ctx, decode(params)?),
             "records.rename_field" => self.rename_field(ctx, decode(params)?),
             "records.rename_collection" => self.rename_collection(ctx, decode(params)?),
             "records.remove_collection" => self.remove_collection(ctx, decode(params)?),
@@ -214,6 +232,14 @@ struct Add {
     id: Option<String>,
     #[serde(default)]
     fields: Map<String, Value>,
+}
+
+#[derive(Deserialize)]
+struct CreateCollection {
+    id: String,
+    template: String,
+    #[serde(default)]
+    label: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -445,6 +471,49 @@ impl Records {
             tx.emit("records.item.renamed", event)
         })?;
         Ok(wire)
+    }
+
+    /// Every built-in template, as `records.collections` shows a collection (ADR 0022 §2).
+    fn templates(&self) -> Result<Value> {
+        let templates = TEMPLATES
+            .iter()
+            .map(|(id, text)| Collection::parse(id, text).map(|c| serde_json::to_value(c).unwrap_or_default()))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(json!({"templates": templates}))
+    }
+
+    /// A new collection from a template: its text copied with only the id (and label) changed,
+    /// checked, and written with its event in one transaction. Never overwrites (ADR 0022 §2).
+    fn create_collection(&self, ctx: &Ctx, p: CreateCollection) -> Result<Value> {
+        if !is_valid_name(&p.id) {
+            return Err(Error::invalid_params(format!(
+                "'{}' is not a valid collection id: lowercase letters, digits, '-' or '_', starting with a letter",
+                p.id
+            )));
+        }
+        let Some((_, text)) = TEMPLATES.iter().find(|(id, _)| *id == p.template) else {
+            let names: Vec<&str> = TEMPLATES.iter().map(|(id, _)| *id).collect();
+            return Err(Error::not_found(format!("no template '{}' (there are: {})", p.template, names.join(", "))));
+        };
+        let mut text = collections::set_id(&p.template, text, &p.id)?;
+        if let Some(label) = &p.label {
+            if label.trim().is_empty() {
+                return Err(Error::invalid_params("label must not be empty"));
+            }
+            text = collections::set_label(&p.id, &text, label)?;
+        }
+        // A template that can't produce a valid collection is a bug: fail, don't write it.
+        let c = Collection::parse(&p.id, &text)?;
+
+        let _g = self.write.lock();
+        if ctx.store.read_string(&collection_path(&p.id))?.is_some() {
+            return Err(Error::conflict(format!("there is already a collection '{}'", p.id)));
+        }
+        ctx.store.transaction(|tx| {
+            tx.put(&collection_path(&p.id), text)?;
+            tx.emit("records.collection.created", json!({"collection": p.id, "template": p.template}))
+        })?;
+        Ok(serde_json::to_value(c).unwrap_or_default())
     }
 
     /// Every record that doesn't fit the collection, and why. Writes nothing (ADR 0021 §2).

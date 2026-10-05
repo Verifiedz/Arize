@@ -380,7 +380,7 @@ mod tests {
 
     use super::*;
 
-    const LEETCODE: &str = include_str!("../collections/leetcode.toml");
+    const LEETCODE: &str = include_str!("../templates/leetcode.toml");
 
     fn leetcode() -> Collection {
         Collection::parse("leetcode", LEETCODE).unwrap()
@@ -489,7 +489,7 @@ mod tests {
         let url = json["fields"].as_array().unwrap().iter().find(|f| f["name"] == "url").unwrap();
         assert_eq!((url["role"].clone(), url["unique"].clone()), (json!("url"), json!(true)));
         // Unset keys stay out, so a collection without them looks exactly as before.
-        let plain = serde_json::to_value(leetcode()).unwrap();
+        let plain = serde_json::to_value(with_fields("[[field]]\nname = \"a\"\ntype = \"string\"").unwrap()).unwrap();
         for key in ["description", "related", "extra"] {
             assert!(plain.get(key).is_none(), "{key}");
         }

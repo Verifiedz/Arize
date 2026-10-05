@@ -1008,3 +1008,135 @@ async fn remove_collection_asks_first_then_restore_brings_it_all_back() {
     let e = call(&r, &env, "records.restore_collection", json!({"id": "leetcode"})).await.unwrap_err();
     assert_eq!(e.code, ErrorCode::NotFound);
 }
+
+// ---------------------------------------------------------------- ADR 0022: templates
+
+#[tokio::test]
+async fn every_template_is_listed_and_creates_a_valid_collection() {
+    let (r, env) = setup().await;
+    let data = call(&r, &env, "records.templates", json!({})).await.unwrap();
+    let ids: Vec<String> =
+        data["templates"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap().to_owned()).collect();
+    assert_eq!(ids, ["interviews", "job-applications", "leetcode"]);
+
+    for template in &ids {
+        let id = format!("my-{template}");
+        let c = call(&r, &env, "records.create_collection", json!({"id": id, "template": template})).await.unwrap();
+        assert_eq!(c["id"], id.as_str(), "{template}");
+        let text = file(&env, &format!("collections/{id}.toml")).unwrap();
+        assert!(text.contains(&format!("id = \"{id}\"")), "{template}");
+        assert!(text.lines().next().unwrap().starts_with('#'), "{template}: the comments come along");
+        let ev = env.backend.events().pop().unwrap();
+        assert_eq!(
+            (ev.topic.as_str(), ev.payload["template"].as_str()),
+            ("records.collection.created", Some(template.as_str()))
+        );
+    }
+    // And each one is usable right away.
+    let check = call(&r, &env, "records.check", json!({"collection": "my-job-applications"})).await.unwrap();
+    assert_eq!(check["checked"], 0);
+}
+
+#[tokio::test]
+async fn create_collection_never_overwrites_and_says_what_exists() {
+    let (r, env) = setup().await;
+    let before = topics(&env).len();
+    for (params, code, says) in [
+        (
+            json!({"id": "leetcode", "template": "job-applications"}),
+            ErrorCode::Conflict,
+            "already a collection 'leetcode'",
+        ),
+        (
+            json!({"id": "jobs", "template": "jobs"}),
+            ErrorCode::NotFound,
+            "there are: interviews, job-applications, leetcode",
+        ),
+        (json!({"id": "Jobs!", "template": "job-applications"}), ErrorCode::InvalidParams, "not a valid collection id"),
+        (json!({"id": "jobs", "template": "job-applications", "label": " "}), ErrorCode::InvalidParams, "label"),
+    ] {
+        let e = call(&r, &env, "records.create_collection", params.clone()).await.unwrap_err();
+        assert_eq!(e.code, code, "{params}");
+        assert!(e.message.contains(says), "{params}: {}", e.message);
+    }
+    assert_eq!(topics(&env).len(), before);
+    assert!(file(&env, "collections/leetcode.toml").unwrap().contains("label = \"LeetCode\""), "untouched");
+
+    let c = call(
+        &r,
+        &env,
+        "records.create_collection",
+        json!({"id": "jobs", "template": "job-applications", "label": "Internships 2027"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(c["label"], "Internships 2027");
+}
+
+#[tokio::test]
+async fn a_job_hunt_with_the_templates() {
+    let (r, env) = setup().await;
+    for (id, template) in [("jobs", "job-applications"), ("rounds", "interviews")] {
+        call(&r, &env, "records.create_collection", json!({"id": id, "template": template})).await.unwrap();
+    }
+    // Saved, with a generated id, a unique URL and a deadline the calendar will see.
+    let job = call(
+        &r,
+        &env,
+        "records.add",
+        json!({"collection": "jobs", "fields": {
+        "position": "SDE Intern", "company": "Amazon", "url": "https://amazon.jobs/1", "oa_deadline": "2026-10-20"}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!((job["id"].clone(), job["status"].clone()), (json!("amazon-sde-intern"), json!("todo")));
+    let ev = env.backend.events().pop().unwrap();
+    assert_eq!(
+        (ev.payload["title"].clone(), ev.payload["deadlines"].clone()),
+        (json!("Amazon: SDE Intern"), json!({"oa_deadline": "2026-10-20"}))
+    );
+    let dup = call(
+        &r,
+        &env,
+        "records.add",
+        json!({"collection": "jobs", "fields": {"position": "X", "company": "Amazon", "url": "https://amazon.jobs/1"}}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(dup.code, ErrorCode::Conflict);
+
+    // Applied once; a second "applied" is refused.
+    let target = json!({"collection": "jobs", "id": "amazon-sde-intern"});
+    let applied = call(&r, &env, "records.complete", target.clone()).await.unwrap();
+    assert_eq!(applied["status"], "done");
+    assert_eq!(call(&r, &env, "records.complete", target).await.unwrap_err().code, ErrorCode::Conflict);
+    call(
+        &r,
+        &env,
+        "records.update",
+        json!({"collection": "jobs", "id": "amazon-sde-intern", "fields": {"stage": "interviewing"}}),
+    )
+    .await
+    .unwrap();
+
+    // A round, done and passed in one step.
+    let round = call(&r, &env, "records.add", json!({"collection": "rounds", "fields": {"application": "amazon-sde-intern", "kind": "technical", "round": 1}}))
+        .await
+        .unwrap();
+    assert_eq!(round["id"], "amazon-sde-intern-technical");
+    let done = call(
+        &r,
+        &env,
+        "records.complete",
+        json!({"collection": "rounds", "id": "amazon-sde-intern-technical", "fields": {"outcome": "passed"}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!((done["status"].clone(), done["outcome"].clone()), (json!("done"), json!("passed")));
+
+    let active =
+        call(&r, &env, "records.list", json!({"collection": "jobs", "filter": {"stage": {"gte": "interviewing"}}}))
+            .await
+            .unwrap();
+    assert_eq!(active["total"], 1);
+}

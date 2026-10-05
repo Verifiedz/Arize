@@ -1,0 +1,64 @@
+# Interviews: one record per round, as many rounds of any kind as a pipeline has.
+# Created from Shimmer's interviews template. It's your file now: edit it freely.
+#
+# How it works:
+#   shimmer records add <collection> --application google-swe-ng --kind technical --round 1 --scheduled-on 2026-10-29
+#   shimmer records complete <collection>/<id> --outcome passed      the round happened
+#   shimmer records list <collection> --application google-swe-ng --sort round
+#   shimmer records list <collection> --filter "scheduled_on>=2026-10-05" --sort scheduled_on
+
+[collection]
+id = "interviews"
+label = "Interviews"
+description = "One record per interview round, linked to a job application"
+title = "{application}: {kind}"
+# Completing a round means it happened: it stamps today's date in done_on.
+stamp_on_complete = "done_on"
+repeat_complete = "refuse"
+related = ["job-applications"]
+
+[[field]]
+name = "application"     # the id of the job in your job-applications collection
+type = "string"
+required = true
+
+[[field]]
+name = "kind"
+type = "enum"
+required = true
+values = ["recruiter-screen", "oa", "take-home", "case-study", "technical", "system-design", "behavioral", "hiring-manager", "team-match", "other"]
+
+[[field]]
+name = "round"
+type = "int"
+
+[[field]]
+name = "scheduled_on"
+type = "date"
+role = "deadline"
+
+[[field]]
+name = "format"
+type = "enum"
+values = ["video", "phone", "onsite", "async"]
+
+[[field]]
+name = "interviewer"
+type = "string"
+
+[[field]]
+name = "prep"            # what to study for it
+type = "string"
+
+[[field]]
+name = "outcome"
+type = "enum"
+values = ["waiting", "passed", "failed"]
+
+[[field]]
+name = "done_on"         # stamped by records complete
+type = "date"
+
+[[field]]
+name = "notes"           # what they asked, how it went
+type = "string"

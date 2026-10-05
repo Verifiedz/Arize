@@ -206,7 +206,7 @@ mod tests {
     use super::*;
 
     fn leetcode() -> Collection {
-        Collection::parse("leetcode", include_str!("../collections/leetcode.toml")).unwrap()
+        Collection::parse("leetcode", include_str!("../templates/leetcode.toml")).unwrap()
     }
 
     fn obj(v: Value) -> Map<String, Value> {

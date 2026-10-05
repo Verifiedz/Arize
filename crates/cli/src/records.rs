@@ -17,6 +17,9 @@ pub const USAGE: &str = "usage: shimmer records <command>
 
 commands:
   collections                          list collections and their fields
+  templates                            list ready-made collections to start from
+  new ID --from TEMPLATE [--label TEXT] create a collection from a template, e.g.
+                                         shimmer records new jobs --from job-applications
   add COLLECTION [ID] [--FIELD VALUE]… add a record, e.g.
                                          shimmer records add leetcode --title \"Two Sum\" --difficulty easy
                                        without an ID, one is made from its title (two-sum)
@@ -107,6 +110,12 @@ pub enum RecordsCmd {
     },
     Check {
         collection: String,
+    },
+    Templates,
+    New {
+        id: String,
+        template: String,
+        label: Option<String>,
     },
     RenameField {
         collection: String,
@@ -217,6 +226,27 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
             }
             Ok(RecordsCmd::Update { collection, id, set, unset })
         }
+        "templates" => {
+            no_flags()?;
+            match positional.is_empty() {
+                true => Ok(RecordsCmd::Templates),
+                false => Err("'records templates' takes no arguments".into()),
+            }
+        }
+        "new" => {
+            let usage = "usage: shimmer records new ID --from TEMPLATE [--label TEXT]";
+            let [id]: [String; 1] = positional.try_into().map_err(|_| usage)?;
+            let (mut template, mut label) = (None, None);
+            for (name, value) in flags {
+                match name.as_str() {
+                    "from" => template = Some(value),
+                    "label" => label = Some(value),
+                    other => return Err(format!("'records new' takes --from and --label, not '--{other}'")),
+                }
+            }
+            let template = template.ok_or("records new needs --from TEMPLATE; see 'shimmer records templates'")?;
+            Ok(RecordsCmd::New { id, template, label })
+        }
         "check" | "rename-field" | "rename-collection" | "remove-collection" | "restore-collection" => {
             no_flags()?;
             let usage = match sub.as_str() {
@@ -307,7 +337,7 @@ fn number(flag: &str, value: &str) -> std::result::Result<usize, String> {
 impl RecordsCmd {
     fn collection(&self) -> Option<&str> {
         match self {
-            Self::Help | Self::Collections => None,
+            Self::Help | Self::Collections | Self::Templates | Self::New { .. } => None,
             Self::Add { collection, .. }
             | Self::Rename { collection, .. }
             | Self::List { collection, .. }
@@ -401,6 +431,14 @@ pub fn request(cmd: &RecordsCmd, schema: &Value) -> Result<(&'static str, Value)
         RecordsCmd::Restore { collection, id } => ("records.restore", json!({"collection": collection, "id": id})),
         RecordsCmd::Trash { collection } => ("records.trash", json!({"collection": collection})),
         RecordsCmd::Check { collection } => ("records.check", json!({"collection": collection})),
+        RecordsCmd::Templates => ("records.templates", json!({})),
+        RecordsCmd::New { id, template, label } => {
+            let mut params = json!({"id": id, "template": template});
+            if let Some(label) = label {
+                params["label"] = json!(label);
+            }
+            ("records.create_collection", params)
+        }
         RecordsCmd::RenameField { collection, from, to } => (
             "records.rename_field",
             json!({"collection": collection, "from": field_name(schema, from), "to": to.replace('-', "_")}),
@@ -571,6 +609,8 @@ pub fn show(cmd: &RecordsCmd, data: &Value, schema: &Value) -> String {
         }
         RecordsCmd::Restore { collection, id } => format!("✓ {collection}/{id} restored"),
         RecordsCmd::Check { collection } => check_report(collection, data),
+        RecordsCmd::Templates => templates(data),
+        RecordsCmd::New { id, template, .. } => created(id, template, data),
         RecordsCmd::RenameField { collection, from, to } => format!(
             "✓ {collection}: field '{}' is now '{}' ({} record(s) updated)",
             field_name(schema, from),
@@ -604,6 +644,40 @@ pub fn show(cmd: &RecordsCmd, data: &Value, schema: &Value) -> String {
         RecordsCmd::Get { collection, id } => item(collection, id, data, schema),
         RecordsCmd::List { .. } => list(data, schema),
     }
+}
+
+fn templates(data: &Value) -> String {
+    let rows: Vec<Vec<String>> = data["templates"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|t| vec![cell(&t["id"]), cell(&t["label"]), t["description"].as_str().unwrap_or_default().to_owned()])
+        .collect();
+    match rows.is_empty() {
+        true => "no templates".into(),
+        false => table(&["ID".into(), "LABEL".into(), "DESCRIPTION".into()], &rows),
+    }
+}
+
+/// What was made, how to add the first record (its required fields), and what goes with it.
+/// Everything comes from the new collection the daemon returned (§2).
+fn created(id: &str, template: &str, collection: &Value) -> String {
+    let mut out = format!("✓ created collection {id} from {template}");
+    let required: Vec<String> = collection["fields"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|f| f["required"] == true)
+        .map(|f| format!("--{} …", f["name"].as_str().unwrap_or_default().replace('_', "-")))
+        .collect();
+    let _ = write!(out, "\n  add one: shimmer records add {id}");
+    if !required.is_empty() {
+        let _ = write!(out, " {}", required.join(" "));
+    }
+    for related in collection["related"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        let _ = write!(out, "\n  goes with: {related} (shimmer records new {related} --from {related})");
+    }
+    out
 }
 
 /// `checked 42 records; 2 with problems`, then each record's problems, one per line.
@@ -702,7 +776,12 @@ fn list(data: &Value, schema: &Value) -> String {
     let mut out = if items.is_empty() {
         "no records".to_owned()
     } else {
-        let keys = columns(&items[0], schema);
+        // Only columns some listed record has filled in: a 20-field collection with three fields
+        // set shouldn't print 17 columns of dashes. `records get` still shows every field.
+        let keys: Vec<String> = columns(&items[0], schema)
+            .into_iter()
+            .filter(|k| items.iter().any(|i| !i[k.as_str()].is_null() && i[k.as_str()] != ""))
+            .collect();
         let status = has_status(schema);
         let mut header = vec!["ID".to_owned()];
         if status {
@@ -1062,6 +1141,38 @@ mod tests {
     }
 
     #[test]
+    fn templates_and_new() {
+        assert_eq!(parse_words(&["templates"]).unwrap(), RecordsCmd::Templates);
+        let new = parse_words(&["new", "jobs", "--from", "job-applications", "--label", "Internships"]).unwrap();
+        assert_eq!(
+            request(&new, &Value::Null).unwrap(),
+            (
+                "records.create_collection",
+                json!({"id": "jobs", "template": "job-applications", "label": "Internships"})
+            )
+        );
+        assert!(parse_words(&["new", "jobs"]).unwrap_err().contains("--from TEMPLATE"));
+        assert!(parse_words(&["new"]).unwrap_err().contains("usage"));
+        assert!(parse_words(&["new", "jobs", "--from", "x", "--colour", "red"])
+            .unwrap_err()
+            .contains("--from and --label"));
+
+        let collection = json!({"id": "jobs", "related": ["interviews"], "fields": [
+            {"name": "position", "type": "string", "required": true},
+            {"name": "company", "type": "string", "required": true},
+            {"name": "url", "type": "string", "required": false}]});
+        assert_eq!(
+            show(&new, &collection, &Value::Null),
+            "✓ created collection jobs from job-applications\n  add one: shimmer records add jobs --position … --company …\n  goes with: interviews (shimmer records new interviews --from interviews)"
+        );
+        let listing = json!({"templates": [{"id": "leetcode", "label": "LeetCode", "description": "Problems"}]});
+        assert_eq!(
+            show(&RecordsCmd::Templates, &listing, &Value::Null),
+            "ID        LABEL     DESCRIPTION\nleetcode  LeetCode  Problems"
+        );
+    }
+
+    #[test]
     fn misuse() {
         assert_eq!(parse_words(&[]).unwrap(), RecordsCmd::Help);
         assert!(parse_words(&["frob"]).unwrap_err().contains("unknown records command"));
@@ -1126,10 +1237,11 @@ mod tests {
         ]});
         let cmd = parse_words(&["list", "leetcode", "--limit", "2"]).unwrap();
         let want = "\
-ID         STATUS  TITLE      DIFFICULTY  URL  LAST SOLVED  ATTEMPTS  STARRED
-two-sum    done    Two Sum    easy        -    2026-09-18   -         -
-lru-cache  todo    LRU Cache  medium      -    -            2         true
+ID         STATUS  TITLE      DIFFICULTY  LAST SOLVED  ATTEMPTS  STARRED
+two-sum    done    Two Sum    easy        2026-09-18   -         -
+lru-cache  todo    LRU Cache  medium      -            2         true
 2 of 3";
+        // URL is empty in every listed record, so its column is left out.
         assert_eq!(show(&cmd, &data, &leetcode()), want);
 
         let empty = json!({"items": [], "total": 0, "skipped": ["record file 'x.toml': bad"]});

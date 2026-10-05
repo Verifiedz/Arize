@@ -282,7 +282,8 @@ Clients should offer: run cleanup, force relaunch, or open the log. Never auto-f
   ]}}
 ```
 
-Illustrative excerpt — `records` actually registers sixteen ops (`records.collections`,
+Illustrative excerpt — `records` actually registers eighteen ops (`records.collections`,
+`.templates`, `.create_collection`,
 `.add`, `.get`, `.list`, `.update`, `.complete`, `.reopen`, `.rename`, `.remove`, `.restore`,
 `.trash`, `.check`, `.rename_field`, `.rename_collection`, `.remove_collection`,
 `.restore_collection`) and twelve topics; see "Records
@@ -400,6 +401,8 @@ after a step has run leaves it `dirty`.
 | `records.remove` | inline | `{"collection","id"}` | `{"removed":true}`. The record moves to `data/records/trash/<collection>/<id>.toml` (the latest removed version of each id), out of every other op. ADR 0020. |
 | `records.restore` | inline | `{"collection","id"}` | The record, back exactly as removed; emits `records.item.restored`. `not_found` if it isn't in the trash; `conflict` if the id, or one of its `unique` values, is taken again. |
 | `records.trash` | inline | `{"collection"}` | `{"items":[…]}`: the collection's removed records, by id. |
+| `records.templates` | inline | `{}` | `{"templates":[…]}`: each built-in template as `records.collections` shows a collection, by id. ADR 0022. |
+| `records.create_collection` | inline | `{"id","template","label"?}` | The new collection. Copies the template's file (comments kept) with only `id` and `label` changed, checks it, and writes it with `records.collection.created` in one transaction. `conflict` if the id exists; `not_found` naming the templates for an unknown one. |
 | `records.check` | inline | `{"collection"}` | `{"checked":N,"problems":[{"id","problems":["…"]}]}`: records that don't fit the collection (missing required, wrong type, unknown keys, unreadable). Writes nothing. ADR 0021. |
 | `records.rename_field` | inline | `{"collection","from","to"}` | `{"collection":{…},"updated":N}`. One transaction renames the field in the collection file (comments kept) and in every live and trashed record; emits `records.field.renamed`. |
 | `records.rename_collection` | inline | `{"id","new_id"}` | The collection under its new id; moves its file, records and trash in one transaction; emits `records.collection.renamed`. `conflict` if `new_id` exists. |
@@ -465,7 +468,7 @@ tolerate unknown topics.
 | `workspaces.session.abandoned` | A launch (forced or not) was claimed but no step ran: cancelled first, or step 1 couldn't start. The workspace is back to the state it had. Payload `{workspace, reason, forced, back_to}`. |
 | `workspaces.workspace.reset` | `workspaces.reset` cleared `dirty` without cleanup. Payload `{workspace, prior}`. |
 | `records.item.created` / `.updated` / `.completed` / `.reopened` / `.renamed` / `.removed` / `.restored` | Record mutations. All carry `{collection, id, title, deadlines, item}` (for `.removed`, `item` is the record as it was): `item` is the full wire item, `title` the record's readable name (the collection's `title` template, or the id), `deadlines` `{field: date}` for every set field with `role = "deadline"` (ADR 0017). `.updated` also carries `changed`: the fields whose value actually changed, sorted (`[]` when nothing did). `.renamed` also carries `new_id` (`id` is the old one; `item` is under the new one). |
-| `records.collection.created` | The built-in collection was seeded on first start. |
+| `records.collection.created` | A collection was created: seeded on first start, or by `records.create_collection`. Payload `{collection, template}`. |
 | `records.field.renamed` | `{collection, from, to}`. |
 | `records.collection.renamed` / `.removed` / `.restored` | `{collection, new_id}` / `{collection, records}` / `{collection}`. |
 | `fetchers.item.found` | A source returned a new, deduplicated item. |

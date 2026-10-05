@@ -1,0 +1,129 @@
+# Job applications: one record per job you're tracking.
+# Created from Shimmer's job-applications template. It's your file now: add, remove or rename
+# fields freely (shimmer records check <collection> tells you if a record stops fitting).
+#
+# How it works:
+#   shimmer records add <collection> --position "SDE Intern" --company Amazon   saved, not applied (todo)
+#   shimmer records complete <collection>/<id>                                applied: stamps applied_on
+#   shimmer records update <collection>/<id> --stage interviewing             where it stands after
+#   shimmer records list <collection> --filter "stage!=rejected" --sort apply_by
+
+[collection]
+id = "job-applications"
+label = "Job applications"
+description = "Position, company, stage, deadlines and the date you applied"
+# How a job is named in lists, reminders and notifications.
+title = "{company}: {position}"
+# Completing a job means "I applied": it stamps today's date in applied_on.
+stamp_on_complete = "applied_on"
+# Applying happens once: completing again is refused (reopen it first if you must).
+repeat_complete = "refuse"
+related = ["interviews"]
+
+# ---- the posting -------------------------------------------------------------------------
+
+[[field]]
+name = "position"
+type = "string"
+required = true
+
+[[field]]
+name = "company"
+type = "string"
+required = true
+
+[[field]]
+name = "url"             # the posting; the same posting can't be saved twice
+type = "string"
+role = "url"
+unique = true
+
+[[field]]
+name = "employment_type"
+type = "enum"
+values = ["full-time", "part-time", "internship", "co-op", "contract"]
+
+[[field]]
+name = "level"
+type = "enum"
+values = ["intern", "new-grad", "junior", "mid", "senior", "staff"]
+
+[[field]]
+name = "location"        # a city, or "Remote"
+type = "string"
+
+[[field]]
+name = "job_id"          # the company's requisition id
+type = "string"
+
+[[field]]
+name = "term"            # e.g. "Summer 2027"
+type = "string"
+
+[[field]]
+name = "duration"        # e.g. "12 weeks"
+type = "string"
+
+[[field]]
+name = "salary"          # e.g. "$52/hr"
+type = "string"
+
+[[field]]
+name = "applicants"      # how many have applied so far, e.g. LinkedIn's "200 applicants";
+type = "int"             # --filter "applicants<50" finds the less crowded postings
+
+[[field]]
+name = "posted_on"
+type = "date"
+
+[[field]]
+name = "description"
+type = "string"
+
+# ---- your tracking -----------------------------------------------------------------------
+
+[[field]]
+name = "stage"           # after applying; empty = waiting to hear back. Listed in pipeline
+type = "enum"            # order, so --filter "stage>=interviewing" and --sort stage follow it.
+values = ["screening", "assessment", "interviewing", "offer", "accepted", "declined", "rejected", "withdrawn", "ghosted"]
+
+[[field]]
+name = "priority"
+type = "enum"
+values = ["dream", "target", "backup"]
+
+[[field]]
+name = "source"          # where you found it
+type = "enum"
+values = ["linkedin", "company-site", "referral", "discord", "career-fair", "handshake", "other"]
+
+[[field]]
+name = "referral"        # who referred you
+type = "string"
+
+[[field]]
+name = "apply_by"        # the application closes
+type = "date"
+role = "deadline"
+
+[[field]]
+name = "oa_deadline"     # the online assessment is due
+type = "date"
+role = "deadline"
+
+[[field]]
+name = "follow_up_on"    # when to check in with them
+type = "date"
+role = "deadline"
+
+[[field]]
+name = "applied_on"      # stamped by records complete
+type = "date"
+
+[[field]]
+name = "notes"
+type = "string"
+
+[[view]]
+kind = "heatmap"         # your application streak
+source = "applied_on"

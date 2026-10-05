@@ -76,6 +76,18 @@ pub fn set_id(file_id: &str, text: &str, new_id: &str) -> Result<String> {
     Ok(doc.to_string())
 }
 
+/// The collection file with `[collection] label` set, comments kept (ADR 0022 §2).
+pub fn set_label(file_id: &str, text: &str, label: &str) -> Result<String> {
+    let mut doc = parse(file_id, text)?;
+    let slot = doc
+        .get_mut("collection")
+        .and_then(toml_edit::Item::as_table_like_mut)
+        .and_then(|h| h.get_mut("label"))
+        .ok_or_else(|| Error::invalid_params(format!("collection file '{file_id}.toml' has no [collection] label")))?;
+    set_str(slot, label);
+    Ok(doc.to_string())
+}
+
 fn parse(file_id: &str, text: &str) -> Result<DocumentMut> {
     text.parse::<DocumentMut>().map_err(|e| Error::invalid_params(format!("collection file '{file_id}.toml': {e}")))
 }

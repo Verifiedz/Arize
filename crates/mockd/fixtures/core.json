@@ -93,6 +93,18 @@
                 "execution": "inline"
               },
               {
+                "op": "records.templates",
+                "summary": "List the built-in collection templates",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "records.create_collection",
+                "summary": "Create a collection from a template",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
                 "op": "records.check",
                 "summary": "Report records that don't fit their collection; changes nothing",
                 "params_schema": {},
