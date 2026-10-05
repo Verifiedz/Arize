@@ -1028,6 +1028,7 @@ async fn every_template_is_listed_and_creates_a_valid_collection() {
             "addresses",
             "certifications",
             "charity",
+            "documents",
             "education",
             "employment",
             "interview-questions",
@@ -1074,7 +1075,7 @@ async fn create_collection_never_overwrites_and_says_what_exists() {
         (
             json!({"id": "jobs", "template": "jobs"}),
             ErrorCode::NotFound,
-            "there are: addresses, certifications, charity, education, employment, interview-questions, interviews, job-applications, leetcode, networking-events, offers, outreach, projects, stories, subscriptions",
+            "there are: addresses, certifications, charity, documents, education, employment, interview-questions, interviews, job-applications, leetcode, networking-events, offers, outreach, projects, stories, subscriptions",
         ),
         (json!({"id": "Jobs!", "template": "job-applications"}), ErrorCode::InvalidParams, "not a valid collection id"),
         (json!({"id": "jobs", "template": "job-applications", "label": " "}), ErrorCode::InvalidParams, "label"),
@@ -1477,4 +1478,32 @@ async fn subscriptions_are_on_or_off_and_warn_before_charges() {
             .unwrap_err();
         assert_eq!(e.code, ErrorCode::InvalidParams, "{kind}");
     }
+}
+
+#[tokio::test]
+async fn documents_warn_before_they_expire() {
+    let (r, env) = setup().await;
+    call(&r, &env, "records.create_collection", json!({"id": "documents", "template": "documents"})).await.unwrap();
+    for (name, expires) in [("Passport", "2031-03-01"), ("Study permit", "2027-01-15")] {
+        call(
+            &r,
+            &env,
+            "records.add",
+            json!({"collection": "documents", "fields": {
+            "name": name, "state": "valid", "expires_on": expires}}),
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(env.backend.events().pop().unwrap().payload["deadlines"], json!({"expires_on": "2027-01-15"}));
+    let soon = call(
+        &r,
+        &env,
+        "records.list",
+        json!({"collection": "documents",
+        "filter": {"expires_on": {"lte": "2027-06-01"}}, "sort": ["expires_on"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!((soon["total"].clone(), soon["items"][0]["id"].clone()), (json!(1), json!("study-permit")));
 }

@@ -19,7 +19,7 @@ description = "Where you've lived and when, for background checks"
 title = "{street}, {city}"
 # History has nothing to finish: no status, no completing.
 completable = false
-related = ["education", "employment"]
+related = ["education", "employment", "documents"]
 
 [[field]]
 name = "street"          # number and street

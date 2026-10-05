@@ -18,7 +18,7 @@ description = "Schools, degrees and dates, for applications and background check
 title = "{school}: {degree}"
 # History has nothing to finish: no status, no completing.
 completable = false
-related = ["employment", "addresses"]
+related = ["employment", "addresses", "documents"]
 
 [[field]]
 name = "school"

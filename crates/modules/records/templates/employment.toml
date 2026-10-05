@@ -18,7 +18,7 @@ description = "Jobs you've held: company, title, dates, manager, why you left"
 title = "{company}: {job_title}"
 # History has nothing to finish: no status, no completing.
 completable = false
-related = ["education", "addresses"]
+related = ["education", "addresses", "documents"]
 
 [[field]]
 name = "company"
