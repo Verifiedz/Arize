@@ -1,0 +1,85 @@
+[template]
+label = "Web project"
+description = "Editor, dev server, localhost and your links (live site, host, repo) in one go"
+
+[[question]]
+name = "PROJECT_DIR"
+prompt = "Project folder"
+kind = "folder"
+required = true
+
+[[question]]
+name = "CODE_EDITOR"
+prompt = "Editor"
+kind = "choice"
+choices = ["vscode", "cursor", "zed", "webstorm", "intellij", "sublime", "neovim", "none"]
+default = "vscode"
+
+[[question]]
+name = "OPEN_PATH"
+prompt = "File to open instead of the folder"
+kind = "text"
+help = "Inside the project, e.g. site.code-workspace or src/app/page.tsx. Leave empty to open the folder."
+
+[[question]]
+name = "GIT_ON_OPEN"
+prompt = "Pull the latest code when it opens"
+kind = "choice"
+choices = ["pull", "none"]
+default = "pull"
+help = "pull: only when you have no uncommitted changes; never stops the launch if you're offline."
+
+[[question]]
+name = "INSTALL_COMMAND"
+prompt = "Install command"
+kind = "command"
+default = "auto"
+help = "auto: npm/pnpm/yarn/bun install, only when the lockfile changed. Leave empty to never install."
+
+[[question]]
+name = "SERVICES_COMMAND"
+prompt = "Command to start services first"
+kind = "command"
+help = "e.g. docker compose up -d. Leave empty for none."
+
+[[question]]
+name = "DEV_COMMAND"
+prompt = "Dev server command"
+kind = "command"
+default = "auto"
+help = "auto: the dev (or start) script in package.json. Leave empty for no dev server."
+
+[[question]]
+name = "LOCAL_URL"
+prompt = "Local URL"
+kind = "url"
+default = "auto"
+help = "auto: from the framework (Next.js :3000, Vite :5173, Astro :4321…). Leave empty for none."
+
+[[question]]
+name = "REPO_PAGE"
+prompt = "Repository page to open"
+kind = "choice"
+choices = ["home", "pulls", "issues", "actions", "none"]
+default = "home"
+help = "Found from the project's git remote."
+
+[[question]]
+name = "LINKS"
+prompt = "Other links to open"
+kind = "urls"
+help = "Your live site, hosting dashboard (Vercel, Netlify…), analytics. Separate them with spaces."
+
+[[question]]
+name = "TERMINAL_APP"
+prompt = "Terminal"
+kind = "choice"
+choices = ["auto", "kitty", "foot", "alacritty", "wezterm", "ghostty", "gnome-terminal", "konsole", "terminal", "iterm", "none"]
+default = "auto"
+help = "auto: Terminal on macOS, the first one found on Linux. terminal and iterm are macOS only."
+
+[[question]]
+name = "TERMINAL_COMMAND"
+prompt = "Command to run in the terminal"
+kind = "command"
+help = "e.g. claude. Leave empty for just a shell in the project."

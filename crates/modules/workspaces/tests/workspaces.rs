@@ -85,6 +85,8 @@ fn it_declares_its_lane_the_process_capability_and_the_protocol_ops() {
             ("workspaces.cleanup".to_owned(), queued()),
             ("workspaces.force_relaunch".to_owned(), queued()),
             ("workspaces.reset".to_owned(), Execution::Inline),
+            ("workspaces.templates".to_owned(), Execution::Inline),
+            ("workspaces.create".to_owned(), Execution::Inline),
         ]
     );
 }

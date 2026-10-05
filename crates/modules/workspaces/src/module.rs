@@ -16,9 +16,11 @@ use serde_json::{json, Map, Value};
 use shimmer_core::params::decode;
 use shimmer_core::{CommandSpec, Ctx, Error, Execution, LaneConfig, Manifest, Module, Result, SpawnMode, WriteLock};
 
+use crate::builtin;
 use crate::manifest::{self, Workspace};
 use crate::persist::{self, Saved, STATE_FILE};
 use crate::state::{self, WorkspaceState};
+use crate::template::Template;
 
 /// Launches touch shared state (a desktop, a terminal multiplexer), so they run one at a time
 /// (CLAUDE.md §6.1).
@@ -45,6 +47,7 @@ impl Module for Workspaces {
                 "workspaces.session.cleaned",
                 "workspaces.session.abandoned",
                 "workspaces.workspace.reset",
+                "workspaces.workspace.created",
             ]
             .map(String::from)
             .to_vec(),
@@ -83,6 +86,20 @@ impl Module for Workspaces {
             ("workspaces.cleanup", "Run a dirty workspace's cleanup script", id.clone(), queued()),
             ("workspaces.force_relaunch", "Launch a dirty workspace anyway (logged as forced)", id.clone(), queued()),
             ("workspaces.reset", "Clear dirty without running cleanup (last resort)", id, Execution::Inline),
+            (
+                "workspaces.templates",
+                "List the built-in workspace templates and their questions",
+                json!({"type": "object"}),
+                Execution::Inline,
+            ),
+            (
+                "workspaces.create",
+                "Create a workspace from a template and your answers",
+                json!({"type": "object", "required": ["id", "template"], "properties": {
+                    "id": {"type": "string"}, "template": {"type": "string"},
+                    "values": {"type": "object"}, "label": {"type": "string"}}}),
+                Execution::Inline,
+            ),
         ]
         .into_iter()
         .map(|(op, summary, params_schema, execution)| CommandSpec {
@@ -102,6 +119,8 @@ impl Module for Workspaces {
             "workspaces.activate" => self.activate(ctx, &decode::<Target>(params)?.id).await,
             "workspaces.force_relaunch" => self.force_relaunch(ctx, &decode::<Target>(params)?.id).await,
             "workspaces.cleanup" => self.cleanup(ctx, &decode::<Target>(params)?.id).await,
+            "workspaces.templates" => templates(),
+            "workspaces.create" => self.create(ctx, decode(params)?),
             _ => Err(Error::unknown_op(format!("workspaces has no op '{op}'"))),
         }
     }
@@ -110,6 +129,23 @@ impl Module for Workspaces {
 #[derive(Deserialize)]
 struct Target {
     id: String,
+}
+
+/// `workspaces.create` (ADR 0025 §7).
+#[derive(Deserialize)]
+struct Create {
+    id: String,
+    template: String,
+    #[serde(default)]
+    values: Map<String, Value>,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+/// Every built-in template with its questions, by id (ADR 0025 §7).
+fn templates() -> Result<Value> {
+    let all: Vec<Value> = builtin::all()?.iter().map(Template::to_wire).collect();
+    Ok(json!({"templates": all}))
 }
 
 impl Workspaces {
@@ -169,6 +205,48 @@ impl Workspaces {
             _ => add_invalid(&mut out, &errors),
         }
         Ok(Value::Object(out))
+    }
+
+    /// A new workspace from a template and the person's answers: the template's files, with the
+    /// answers as `[env]`, checked like any workspace and written with their event in one
+    /// transaction. Never overwrites (ADR 0025 §7).
+    fn create(&self, ctx: &Ctx, p: Create) -> Result<Value> {
+        if !manifest::valid_name(&p.id) {
+            return Err(Error::invalid_params(format!(
+                "'{}' is not a valid workspace id: lowercase letters, digits, '-' or '_', at most {} characters",
+                p.id,
+                manifest::MAX_NAME_LEN
+            )));
+        }
+        let template = builtin::find(&p.template)?;
+        if let Some(label) = &p.label {
+            if label.trim().is_empty() || label.contains(['\n', '\r']) {
+                return Err(Error::invalid_params("label must be one line of text"));
+            }
+        }
+        let answers = template.answers(&p.values)?;
+        let files = template.workspace_files(&answers, p.label.as_deref().map(str::trim));
+
+        // A template that can't produce a valid workspace is a bug: fail, don't write it.
+        let names: Vec<String> = files.iter().map(|(path, _)| path.clone()).collect();
+        let toml = files.iter().find(|(path, _)| path == "workspace.toml").map(|(_, t)| t.as_str()).unwrap_or_default();
+        manifest::parse(&p.id, toml, &names).map_err(|e| {
+            Error::internal(format!("template '{}' made an invalid workspace: {}", p.template, e.message))
+        })?;
+
+        {
+            let _g = self.write.lock();
+            if !ctx.store.list(&p.id)?.is_empty() {
+                return Err(Error::conflict(format!("there is already a workspace '{}'", p.id)));
+            }
+            ctx.store.transaction(|tx| {
+                for (path, text) in &files {
+                    tx.put(&format!("{}/{path}", p.id), text.clone())?;
+                }
+                tx.emit("workspaces.workspace.created", json!({"workspace": p.id, "template": p.template}))
+            })?;
+        }
+        self.status(ctx, &p.id)
     }
 
     /// `dirty → ready` without running cleanup (§10.3: the last resort when there is no

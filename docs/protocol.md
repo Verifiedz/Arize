@@ -356,6 +356,8 @@ emails.
 | `workspaces.cleanup` | queued (`workspaces`) | `{"id"}` | Task handle. Runs `cleanup.{sh,ps1}` supervised; on success `dirty → ready`. |
 | `workspaces.force_relaunch` | queued (`workspaces`) | `{"id"}` | Task handle. Launches a `dirty` workspace anyway; emits `workspaces.session.forced` before any step runs. |
 | `workspaces.reset` | inline | `{"id"}` | `{"id","state":"ready"}`. Clears `dirty` without running cleanup. Last resort; also clears an unreadable `state.toml`. |
+| `workspaces.templates` | inline | `{}` | `{"templates":[{"id","label","description","questions":[{"name","prompt","kind","required","default"?,"choices"?,"help"?}]}]}`, by id. `kind` is `text`, `command`, `folder`, `file`, `url`, `urls` or `choice`. ADR 0025. |
+| `workspaces.create` | inline | `{"id","template","values"?,"label"?}` | The new workspace, as `workspaces.status` shows it (state `ready`). `values` maps question names to strings; left out means the default, or empty. Every answer is written to the workspace's `[env]`. A missing required answer, an unknown question, or an answer that doesn't fit its kind (`folder`/`file` must be absolute, `url`s must start with `http://` or `https://`) is `invalid_params` naming the question; an unknown template is `not_found` naming the ones there are; anything already at `data/workspaces/<id>/` is `conflict`, never overwritten. One transaction writes the folder and emits `workspaces.workspace.created`. ADR 0025. |
 
 `state` is one of `ready`, `launching`, `active`, `dirty`, or `invalid` when the workspace's
 `workspace.toml` or `state.toml` can't be read; `error` then says why, one problem per line
@@ -437,6 +439,7 @@ tolerate unknown topics.
 | `workspaces.session.cleaned` | Cleanup script succeeded; state back to `ready`. Payload `{workspace, log}`. |
 | `workspaces.session.abandoned` | A launch (forced or not) was claimed but no step ran: cancelled first, or step 1 couldn't start. The workspace is back to the state it had. Payload `{workspace, reason, forced, back_to}`. |
 | `workspaces.workspace.reset` | `workspaces.reset` cleared `dirty` without cleanup. Payload `{workspace, prior}`. |
+| `workspaces.workspace.created` | `workspaces.create` made a workspace from a template. Payload `{workspace, template}`. ADR 0025. |
 | `records.item.created` / `.updated` / `.completed` / `.removed` | Record mutations. |
 | `records.collection.created` | The built-in collection was seeded on first start. |
 | `fetchers.item.found` | A source returned a new, deduplicated item. |

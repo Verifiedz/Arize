@@ -30,6 +30,11 @@ commands:
   force-relaunch NAME [--yes] [--wait]  launch a dirty workspace anyway (asks first)
   reset NAME [--yes]                    clear dirty without running cleanup (asks first)
 
+  templates                             list ready-made workspaces to start from
+  new NAME --from TEMPLATE              create a workspace from a template; asks its questions,
+      [--set QUESTION=ANSWER]…          e.g. shimmer workspaces new site --from web-project
+      [--label TEXT]                    --set answers one without asking (needed in scripts)
+
 --wait  follow the launch until it ends and show how it went. Without it the command
         returns once the launch is queued; check on it with 'shimmer workspaces status NAME'.
         Don't use --wait from a workspace's own step scripts: launches run one at a time.
@@ -42,11 +47,34 @@ workspace.toml and its steps/ scripts (ADR 0012). Add --json to any command for 
 pub enum WorkspacesCmd {
     Help,
     List,
-    Status { id: String },
-    Activate { id: String, wait: bool },
-    Cleanup { id: String, wait: bool },
-    ForceRelaunch { id: String, yes: bool, wait: bool },
-    Reset { id: String, yes: bool },
+    Status {
+        id: String,
+    },
+    Activate {
+        id: String,
+        wait: bool,
+    },
+    Cleanup {
+        id: String,
+        wait: bool,
+    },
+    ForceRelaunch {
+        id: String,
+        yes: bool,
+        wait: bool,
+    },
+    Reset {
+        id: String,
+        yes: bool,
+    },
+    Templates,
+    /// `set`: `--set NAME=VALUE` answers, in order (ADR 0025 §8).
+    New {
+        id: String,
+        template: String,
+        label: Option<String>,
+        set: Vec<(String, String)>,
+    },
 }
 
 // ---------------------------------------------------------------- parsing
@@ -55,6 +83,9 @@ pub enum WorkspacesCmd {
 pub fn parse(words: Vec<String>) -> std::result::Result<WorkspacesCmd, String> {
     let mut words = words.into_iter();
     let Some(sub) = words.next() else { return Ok(WorkspacesCmd::Help) };
+    if sub == "new" {
+        return parse_new(words.collect());
+    }
     let mut positional = Vec::new();
     let (mut yes, mut wait) = (false, false);
     for word in words {
@@ -96,8 +127,50 @@ pub fn parse(words: Vec<String>) -> std::result::Result<WorkspacesCmd, String> {
         "cleanup" => Ok(WorkspacesCmd::Cleanup { id: name(positional)?, wait }),
         "force-relaunch" => Ok(WorkspacesCmd::ForceRelaunch { id: name(positional)?, yes, wait }),
         "reset" => Ok(WorkspacesCmd::Reset { id: name(positional)?, yes }),
+        "templates" => match positional.is_empty() {
+            true => Ok(WorkspacesCmd::Templates),
+            false => Err("'workspaces templates' takes no arguments".into()),
+        },
         other => Err(format!("unknown workspaces command '{other}'; see 'shimmer workspaces --help'")),
     }
+}
+
+/// `new NAME --from TEMPLATE [--label TEXT] [--set NAME=VALUE]…`: the one command here whose
+/// flags take values.
+fn parse_new(words: Vec<String>) -> std::result::Result<WorkspacesCmd, String> {
+    let usage = "usage: shimmer workspaces new NAME --from TEMPLATE [--label TEXT] [--set QUESTION=ANSWER]…";
+    let (mut positional, mut template, mut label, mut set) = (Vec::new(), None, None, Vec::new());
+    let mut words = words.into_iter();
+    while let Some(word) = words.next() {
+        let Some(flag) = word.strip_prefix("--") else {
+            positional.push(word);
+            continue;
+        };
+        let name = flag.split('=').next().unwrap_or(flag);
+        if !matches!(name, "from" | "label" | "set") {
+            return Err(format!("'workspaces new' takes --from, --label and --set, not '--{name}'"));
+        }
+        let (name, value) = match flag.split_once('=') {
+            Some((name, value)) => (name.to_owned(), value.to_owned()),
+            None => (flag.to_owned(), words.next().ok_or(format!("--{flag} needs a value"))?),
+        };
+        match name.as_str() {
+            "from" => template = Some(value),
+            "label" => label = Some(value),
+            "set" => match value.split_once('=') {
+                Some((q, a)) if !q.trim().is_empty() => set.push((q.trim().to_owned(), a.to_owned())),
+                _ => {
+                    return Err(format!(
+                        "--set takes QUESTION=ANSWER, e.g. --set PROJECT_DIR=~/code/site, got '{value}'"
+                    ))
+                }
+            },
+            _ => unreachable!("checked above"),
+        }
+    }
+    let [id]: [String; 1] = positional.try_into().map_err(|_| usage.to_owned())?;
+    let template = template.ok_or("workspaces new needs --from TEMPLATE; see 'shimmer workspaces templates'")?;
+    Ok(WorkspacesCmd::New { id, template, label, set })
 }
 
 // ---------------------------------------------------------------- asking first
@@ -109,6 +182,10 @@ pub trait Prompt {
     fn interactive(&self) -> bool;
     /// Ask a yes/no question; anything but y/yes is no.
     fn confirm(&mut self, question: &str) -> bool;
+    /// Ask for one line of text; `None` if nothing could be read.
+    fn ask(&mut self, _question: &str) -> Option<String> {
+        None
+    }
 }
 
 /// The real one: asks on stderr, so `--json` output on stdout stays clean.
@@ -127,6 +204,16 @@ impl Prompt for Terminal {
             return false;
         }
         matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+    }
+
+    fn ask(&mut self, question: &str) -> Option<String> {
+        eprint!("{question}");
+        let _ = std::io::stderr().flush();
+        let mut answer = String::new();
+        match std::io::stdin().lock().read_line(&mut answer) {
+            Ok(0) | Err(_) => None,
+            Ok(_) => Some(answer.trim().to_owned()),
+        }
     }
 }
 
@@ -172,6 +259,25 @@ pub async fn run(client: &mut Client, cmd: &WorkspacesCmd, json: bool, prompt: &
                 }
             }
             queued(client, Queued::ForceRelaunch, id, *wait, json).await
+        }
+        WorkspacesCmd::Templates => {
+            let data = client.call("workspaces.templates", json!({})).await?;
+            Ok(out(&data, templates(&data)))
+        }
+        WorkspacesCmd::New { id, template, label, set } => {
+            let all = client.call("workspaces.templates", json!({})).await?;
+            let questions = all["templates"]
+                .as_array()
+                .and_then(|ts| ts.iter().find(|t| t["id"] == template.as_str()))
+                .map(|t| t["questions"].clone())
+                .unwrap_or(Value::Null);
+            let values = answers(&questions, set, prompt, &Paths::from_env())?;
+            let mut params = json!({"id": id, "template": template, "values": values});
+            if let Some(label) = label {
+                params["label"] = json!(label);
+            }
+            let data = client.call("workspaces.create", params).await.map_err(|e| how_to_answer(e, prompt))?;
+            Ok(out(&data, created(id, template)))
         }
         WorkspacesCmd::Reset { id, yes } => {
             if !*yes {
@@ -314,6 +420,134 @@ fn explain(e: Error, id: &str) -> Error {
     }
     let _ = write!(message, "\n{}", ways_out(id, detail["has_cleanup_script"] == true));
     Error::new(ErrorCode::WorkspaceDirty, message)
+}
+
+// ---------------------------------------------------------------- templates (ADR 0025)
+
+/// Where `~` and relative paths point: only the client knows (ADR 0025 §8).
+struct Paths {
+    home: Option<String>,
+    cwd: Option<String>,
+}
+
+impl Paths {
+    fn from_env() -> Self {
+        Self { home: std::env::var("HOME").ok(), cwd: std::env::current_dir().ok().map(|d| d.display().to_string()) }
+    }
+
+    /// `~/x` → `$HOME/x`, `x` → `$PWD/x`; absolute paths and empty answers as they are.
+    fn absolute(&self, answer: &str) -> String {
+        let a = answer.trim();
+        let joined = |base: &Option<String>, rest: &str| match base {
+            Some(b) if rest.is_empty() => b.clone(),
+            Some(b) => format!("{}/{rest}", b.trim_end_matches('/')),
+            None => a.to_owned(),
+        };
+        if a.is_empty() || a.starts_with('/') {
+            a.to_owned()
+        } else if a == "~" || a.starts_with("~/") {
+            joined(&self.home, a.trim_start_matches('~').trim_start_matches('/'))
+        } else {
+            joined(&self.cwd, a.trim_start_matches("./"))
+        }
+    }
+}
+
+/// The answers to send: `--set` ones first, then, at a terminal, each question not answered yet
+/// (an empty answer takes the template's default). Without a terminal nothing is asked
+/// (CLAUDE.md §15.1); the daemon then names any required answer that is missing.
+fn answers(
+    questions: &Value,
+    set: &[(String, String)],
+    prompt: &mut dyn Prompt,
+    paths: &Paths,
+) -> Result<serde_json::Map<String, Value>> {
+    let kind_of = |name: &str| {
+        questions.as_array().and_then(|qs| qs.iter().find(|q| q["name"] == name)).and_then(|q| q["kind"].as_str())
+    };
+    let fix = |name: &str, answer: &str| match kind_of(name) {
+        Some("folder" | "file") => paths.absolute(answer),
+        _ => answer.trim().to_owned(),
+    };
+    let mut out = serde_json::Map::new();
+    for (name, answer) in set {
+        out.insert(name.clone(), json!(fix(name, answer)));
+    }
+    if !prompt.interactive() {
+        return Ok(out);
+    }
+    for q in questions.as_array().into_iter().flatten() {
+        let Some(name) = q["name"].as_str() else { continue };
+        if out.contains_key(name) {
+            continue;
+        }
+        let mut question = q["prompt"].as_str().unwrap_or(name).to_owned();
+        if let Some(choices) = q["choices"].as_array() {
+            let list: Vec<&str> = choices.iter().filter_map(Value::as_str).collect();
+            let _ = write!(question, " ({})", list.join(", "));
+        }
+        match q["default"].as_str() {
+            Some(d) => {
+                let _ = write!(question, " [{d}]");
+            }
+            None if q["required"] != true => question.push_str(" [none]"),
+            None => {}
+        }
+        question.push_str(": ");
+        if let Some(help) = q["help"].as_str() {
+            question = format!(
+                "  {help}
+{question}"
+            );
+        }
+        loop {
+            let Some(answer) = prompt.ask(&question) else { return Ok(out) };
+            if !answer.is_empty() {
+                out.insert(name.to_owned(), json!(fix(name, &answer)));
+                break;
+            }
+            if q["required"] != true {
+                break;
+            }
+            eprintln!("  this one is required");
+        }
+    }
+    Ok(out)
+}
+
+/// Without a terminal, a missing required answer should say how to give it.
+fn how_to_answer(e: Error, prompt: &dyn Prompt) -> Error {
+    if e.code == ErrorCode::InvalidParams && e.message.contains(" is required") && !prompt.interactive() {
+        let name = e.message.split(' ').next().unwrap_or("QUESTION");
+        return Error::new(
+            e.code,
+            format!(
+                "{}
+  answer it with --set {name}=…",
+                e.message
+            ),
+        );
+    }
+    e
+}
+
+fn templates(data: &Value) -> String {
+    let rows: Vec<Vec<String>> = data["templates"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|t| vec![cell(&t["id"]), cell(&t["label"]), cell(&t["description"])])
+        .collect();
+    table(&["ID".into(), "LABEL".into(), "DESCRIPTION".into()], &rows)
+}
+
+fn created(id: &str, template: &str) -> String {
+    [
+        format!("✓ created workspace {id} from {template}"),
+        format!("  start it: shimmer workspaces activate {id} --wait"),
+        format!("  change an answer: edit [env] in data/workspaces/{id}/workspace.toml in your Shimmer folder"),
+    ]
+    .join("\n")
 }
 
 // ---------------------------------------------------------------- output
@@ -671,6 +905,111 @@ mod tests {
         let e = confirm(&mut p, false, "reset", "Reset?", "deep-work", &s).unwrap_err();
         assert_eq!(e.message, "refusing to reset 'deep-work' without confirmation; pass --yes to do it anyway");
         assert!(p.asked.is_empty());
+    }
+
+    /// A scripted person who types these answers, in order.
+    struct Typist {
+        lines: Vec<&'static str>,
+        asked: Vec<String>,
+    }
+
+    impl Prompt for Typist {
+        fn interactive(&self) -> bool {
+            true
+        }
+        fn confirm(&mut self, _: &str) -> bool {
+            false
+        }
+        fn ask(&mut self, question: &str) -> Option<String> {
+            self.asked.push(question.to_owned());
+            (!self.lines.is_empty()).then(|| self.lines.remove(0).to_owned())
+        }
+    }
+
+    fn paths() -> Paths {
+        Paths { home: Some("/home/me".into()), cwd: Some("/home/me/code".into()) }
+    }
+
+    #[test]
+    fn new_parses_from_label_and_set() {
+        let words = [
+            "new",
+            "site",
+            "--from",
+            "web-project",
+            "--set",
+            "PROJECT_DIR=~/code/site",
+            "--set=LINKS=https://a.dev b",
+            "--label",
+            "My site",
+        ];
+        assert_eq!(
+            parse(words.iter().map(|s| s.to_string()).collect()).unwrap(),
+            WorkspacesCmd::New {
+                id: "site".into(),
+                template: "web-project".into(),
+                label: Some("My site".into()),
+                set: vec![("PROJECT_DIR".into(), "~/code/site".into()), ("LINKS".into(), "https://a.dev b".into())]
+            }
+        );
+        let bad = |w: &[&str]| parse(w.iter().map(|s| s.to_string()).collect()).unwrap_err();
+        assert!(bad(&["new", "site"]).contains("needs --from"));
+        assert!(bad(&["new", "--from", "x"]).contains("usage"));
+        assert!(bad(&["new", "site", "--from", "x", "--set", "nope"]).contains("QUESTION=ANSWER"));
+        assert!(bad(&["new", "site", "--from", "x", "--yes"]).contains("not '--yes'"));
+        assert_eq!(parse(vec!["templates".into()]).unwrap(), WorkspacesCmd::Templates);
+    }
+
+    #[test]
+    fn paths_become_absolute_on_the_client() {
+        let p = paths();
+        assert_eq!(p.absolute("~/code/site"), "/home/me/code/site");
+        assert_eq!(p.absolute("~"), "/home/me");
+        assert_eq!(p.absolute("./site"), "/home/me/code/site");
+        assert_eq!(p.absolute("site"), "/home/me/code/site");
+        assert_eq!(p.absolute("/srv/site"), "/srv/site");
+        assert_eq!(p.absolute(""), "");
+    }
+
+    #[test]
+    fn answers_asks_what_set_left_and_retries_required_ones() {
+        let questions = json!([
+            {"name": "PROJECT_DIR", "prompt": "Project folder", "kind": "folder", "required": true},
+            {"name": "CODE_EDITOR", "prompt": "Editor", "kind": "choice", "choices": ["vscode", "cursor"], "default": "vscode", "required": false},
+            {"name": "LINKS", "prompt": "Links", "kind": "urls", "required": false, "help": "Space-separated."}
+        ]);
+        let mut p = Typist { lines: vec!["", "~/site", "", "https://me.dev"], asked: Vec::new() };
+        let got = answers(&questions, &[], &mut p, &paths()).unwrap();
+        assert_eq!(
+            Value::Object(got),
+            json!({"PROJECT_DIR": "/home/me/site", "LINKS": "https://me.dev"}),
+            "empty = the default"
+        );
+        assert_eq!(p.asked[0], "Project folder: ");
+        assert_eq!(p.asked[1], "Project folder: ", "required: asked again");
+        assert_eq!(p.asked[2], "Editor (vscode, cursor) [vscode]: ");
+        assert_eq!(p.asked[3], "  Space-separated.\nLinks [none]: ");
+
+        let mut p = Typist { lines: vec![], asked: Vec::new() };
+        let set = [("PROJECT_DIR".to_owned(), "~/x".to_owned())];
+        let got = answers(&questions, &set, &mut p, &paths()).unwrap();
+        assert_eq!(got["PROJECT_DIR"], "/home/me/x");
+        assert_eq!(p.asked.len(), 1, "stops when nothing more can be read");
+
+        // No terminal: nothing is asked, only --set is sent.
+        let mut p = answer(false, false);
+        let got = answers(&questions, &set, &mut p, &paths()).unwrap();
+        assert_eq!(got.len(), 1);
+        let e = how_to_answer(Error::invalid_params("PROJECT_DIR (Project folder) is required"), &p);
+        assert!(e.message.ends_with("answer it with --set PROJECT_DIR=…"), "{}", e.message);
+    }
+
+    #[test]
+    fn templates_and_created_output() {
+        let data = json!({"templates": [{"id": "smoke-test", "label": "Smoke test", "description": "Opens nothing"}]});
+        assert_eq!(templates(&data), "ID          LABEL       DESCRIPTION\nsmoke-test  Smoke test  Opens nothing");
+        assert!(created("site", "web-project")
+            .starts_with("✓ created workspace site from web-project\n  start it: shimmer workspaces activate site"));
     }
 
     #[test]

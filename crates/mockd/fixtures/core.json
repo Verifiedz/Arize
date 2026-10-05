@@ -157,13 +157,26 @@
                 "summary": "Clear dirty without cleanup",
                 "params_schema": {},
                 "execution": "inline"
+              },
+              {
+                "op": "workspaces.templates",
+                "summary": "List the built-in workspace templates and their questions",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "workspaces.create",
+                "summary": "Create a workspace from a template and your answers",
+                "params_schema": {},
+                "execution": "inline"
               }
             ],
             "topics": [
               "workspaces.session.launched",
               "workspaces.session.dirty",
               "workspaces.session.forced",
-              "workspaces.session.cleaned"
+              "workspaces.session.cleaned",
+              "workspaces.workspace.created"
             ]
           }
         ]

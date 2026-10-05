@@ -1,0 +1,11 @@
+[template]
+label = "Smoke test"
+description = "Opens nothing: checks that workspaces launch, fail and clean up on this machine"
+
+[[question]]
+name = "FAIL_AT"
+prompt = "Fail on purpose at"
+kind = "choice"
+choices = ["none", "check", "cleanup"]
+default = "none"
+help = "none: launches cleanly. check: goes dirty at step 1. cleanup: cleanup fails and it stays dirty."
