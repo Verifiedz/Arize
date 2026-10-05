@@ -137,7 +137,8 @@ collection = "jobs"      # the collection its value must be a record of
 - **Relative dates** in `filter` values for `date` and `datetime` fields: `"today"`,
   `"today+7"`, `"today-30"` (days), resolved by the daemon in the configured timezone. So
   `--filter "oa_deadline<=today+7"` means "due within a week", and the CLI never needs to know the
-  timezone.
+  timezone. A plain date compared with a `datetime` compares days, so `<= 2026-10-20` includes
+  23:59 that day (sorting still uses instants, §1).
 - **Titles in `records.list`:** the response gains `titles: {id: title}`. `records get` shows the
   title next to the id.
 - **Optional parts in titles:** `"{title}[ by {author}]"`. A `[…]` part is left out when any field
@@ -147,7 +148,8 @@ collection = "jobs"      # the collection its value must be a record of
   whole trash), after `confirmation_required` with `{"records": N}`, as removing a collection asks
   (ADR 0021). Emits `records.trash.purged`.
 - **OR across fields:** `filter` may hold `"or": [ {…}, {…} ]`: a record matches if it matches any
-  of the inner filters (each an ordinary filter), and every other key still applies. CLI:
+  of the inner filters (each an ordinary, non-empty filter; `or` doesn't nest), and every other
+  key still applies. A collection with a field named `or` keeps filtering on that field. CLI:
   `--or "stage=offer" --or "priority=dream"`.
 
 ### 6. Templates

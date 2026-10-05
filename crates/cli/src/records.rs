@@ -28,7 +28,9 @@ commands:
        [--status todo|done] [--limit N] [--offset N]
        [--filter \"FIELD OP VALUE\"]…        OP: = != < <= > >= ~ (contains); a|b|c after = is one-of;
                                            \"FIELD has VALUE\" for list fields
+       [--or \"FIELD OP VALUE\"]…            any one of these holds, e.g. --or stage=offer --or priority=dream
        [--has FIELD] [--missing FIELD]     has a value / has none
+                                           dates may be today, today+7, today-30
        [--search TEXT]                     text in the id or any text field
        [--sort FIELD]… [--sort -FIELD]     order, e.g. --sort oa_deadline --sort -applied_on
   get COLLECTION/ID                    show one record
@@ -190,6 +192,8 @@ pub struct Refine {
     pub search: Option<String>,
     /// `--sort FIELD` / `--sort -FIELD`, in order.
     pub sort: Vec<String>,
+    /// `--or "FIELD OP VALUE"`: a record matches if any of these holds (ADR 0024 §5).
+    pub or: Vec<String>,
 }
 
 // ---------------------------------------------------------------- parsing
@@ -303,6 +307,7 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
                     "missing" => refine.missing.push(value),
                     "search" => refine.search = Some(value),
                     "sort" => refine.sort.push(value),
+                    "or" => refine.or.push(value),
                     _ => filter.push((name, value)),
                 }
             }
@@ -606,6 +611,14 @@ fn query_filter(schema: &Value, exact: &Map<String, Value>, refine: &Refine) -> 
     }
     for name in &refine.missing {
         add(field_name(schema, name), "set", json!(false));
+    }
+    if !refine.or.is_empty() {
+        let alternatives = refine
+            .or
+            .iter()
+            .map(|raw| condition(schema, raw).map(|(name, op, value)| json!({name: {op: value}})))
+            .collect::<Result<Vec<_>>>()?;
+        out.insert("or".into(), json!(alternatives));
     }
     Ok(out)
 }
@@ -1724,6 +1737,20 @@ lru-cache  todo    LRU Cache  medium      -            2         true
         assert_eq!(back[0], items[0]);
         assert_eq!(back[1], json!({"id": "globex", "status": "todo", "company": "Globex"}));
         assert!(!export(&items, &schema, Format::Json).contains("null"));
+    }
+
+    #[test]
+    fn or_conditions_become_alternatives() {
+        let words = ["list", "leetcode", "--or", "difficulty=hard", "--or", "attempts>=3", "--status", "todo"];
+        let (_, params) = request(&parse_words(&words).unwrap(), &leetcode()).unwrap();
+        assert_eq!(
+            params["filter"],
+            json!({"status": "todo", "or": [{"difficulty": {"eq": "hard"}}, {"attempts": {"gte": 3}}]})
+        );
+        let (_, params) =
+            request(&parse_words(&["list", "leetcode", "--filter", "last_solved>=today-7"]).unwrap(), &leetcode())
+                .unwrap();
+        assert_eq!(params["filter"], json!({"last_solved": {"gte": "today-7"}}), "the daemon reads 'today'");
     }
 
     #[test]

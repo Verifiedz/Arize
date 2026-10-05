@@ -18,13 +18,74 @@ const MAX_SORT_KEYS: usize = 5;
 /// A checked `records.list` request.
 #[derive(Debug)]
 pub struct Query {
-    conditions: Vec<(String, Kind, Op)>,
+    conditions: Vec<Cond>,
     search: Option<String>,
     sort: Vec<(String, Kind, Direction)>,
     /// The string and enum fields `search` looks in.
     searchable: Vec<String>,
     /// For comparing `datetime` values and plain dates as moments (ADR 0024 §1).
     tz: Tz,
+}
+
+/// One part of a filter: a key and an operator, or alternatives (`"or"`, ADR 0024 §5) where
+/// a record must match every condition of at least one.
+#[derive(Debug)]
+enum Cond {
+    One(String, Kind, Op),
+    Any(Vec<Vec<Cond>>),
+}
+
+/// The conditions of one filter object. `or` only at the top: alternatives don't nest.
+fn conditions(c: &Collection, filter: &Map<String, Value>, now: &Now, top: bool) -> Result<Vec<Cond>> {
+    let mut out = Vec::new();
+    for (key, value) in filter {
+        if key == "or" && c.field("or").is_none() {
+            if !top {
+                return Err(Error::invalid_params("filter: \"or\" can't be nested inside \"or\""));
+            }
+            let alternatives = match value.as_array() {
+                Some(list) if !list.is_empty() => list,
+                _ => return Err(Error::invalid_params("filter: \"or\" takes a non-empty list of filters")),
+            };
+            let mut any = Vec::new();
+            for alternative in alternatives {
+                let Some(inner) = alternative.as_object().filter(|o| !o.is_empty()) else {
+                    return Err(Error::invalid_params("filter: each \"or\" alternative is a non-empty filter object"));
+                };
+                any.push(conditions(c, inner, now, false)?);
+            }
+            out.push(Cond::Any(any));
+            continue;
+        }
+        no_status(c, key)?;
+        let kind = kind(c, key)
+            .ok_or_else(|| Error::invalid_params(format!("cannot filter '{}' on unknown field '{key}'", c.id)))?;
+        let one = |op: Op| Cond::One(key.clone(), kind.clone(), op);
+        match value {
+            // A plain value is exact equality, exactly as before ADR 0019 (`null` = unset).
+            Value::Object(ops) => {
+                if ops.is_empty() {
+                    return Err(bad(key, "an operator object needs at least one operator"));
+                }
+                for (name, arg) in ops {
+                    out.push(one(op(c, key, &kind, name, arg, now)?));
+                }
+            }
+            // On a list, a plain value is `has` and `null` is "unset" (ADR 0024 §2).
+            Value::Null if matches!(kind, Kind::List(..)) => out.push(one(Op::Set(false))),
+            plain if matches!(kind, Kind::List(..)) => out.push(one(op(c, key, &kind, "has", plain, now)?)),
+            plain => out.push(one(Op::Eq(stored(key, &kind, plain, now)?))),
+        }
+    }
+    Ok(out)
+}
+
+/// Does `wire` meet every condition?
+fn meets(conditions: &[Cond], wire: &Value, tz: &Tz) -> bool {
+    conditions.iter().all(|cond| match cond {
+        Cond::One(key, kind, op) => holds(kind, op, wire.get(key).unwrap_or(&Value::Null), tz),
+        Cond::Any(alternatives) => alternatives.iter().any(|all| meets(all, wire, tz)),
+    })
 }
 
 /// What a key is, which decides the operators it takes and how its values compare.
@@ -68,31 +129,7 @@ impl Query {
         sort: &[String],
         now: &Now,
     ) -> Result<Self> {
-        let mut conditions = Vec::new();
-        for (key, value) in filter {
-            no_status(c, key)?;
-            let kind = kind(c, key)
-                .ok_or_else(|| Error::invalid_params(format!("cannot filter '{}' on unknown field '{key}'", c.id)))?;
-            match value {
-                // A plain value is exact equality, exactly as before ADR 0019 (`null` = unset).
-                Value::Object(ops) => {
-                    if ops.is_empty() {
-                        return Err(bad(key, "an operator object needs at least one operator"));
-                    }
-                    for (name, arg) in ops {
-                        conditions.push((key.clone(), kind.clone(), op(c, key, &kind, name, arg, now)?));
-                    }
-                }
-                // On a list, a plain value is `has` and `null` is "unset" (ADR 0024 §2).
-                Value::Null if matches!(kind, Kind::List(..)) => {
-                    conditions.push((key.clone(), kind.clone(), Op::Set(false)))
-                }
-                plain if matches!(kind, Kind::List(..)) => {
-                    conditions.push((key.clone(), kind.clone(), op(c, key, &kind, "has", plain, now)?))
-                }
-                plain => conditions.push((key.clone(), kind.clone(), Op::Eq(stored(key, &kind, plain, now)?))),
-            }
-        }
+        let conditions = conditions(c, filter, now, true)?;
 
         let search = match search {
             Some(s) if s.trim().is_empty() => return Err(Error::invalid_params("search must not be empty")),
@@ -133,7 +170,7 @@ impl Query {
     /// Does this record (its wire shape) match every condition and the search?
     pub fn matches(&self, wire: &Value) -> bool {
         let got = |key: &str| wire.get(key).unwrap_or(&Value::Null);
-        let conditions = self.conditions.iter().all(|(key, kind, op)| holds(kind, op, got(key), &self.tz));
+        let conditions = meets(&self.conditions, wire, &self.tz);
         let search = self.search.as_deref().is_none_or(|needle| {
             std::iter::once("id")
                 .chain(self.searchable.iter().map(String::as_str))
@@ -264,12 +301,37 @@ fn check_value(c: &Collection, key: &str, kind: &Kind, v: &Value) -> Result<()> 
 /// A value someone typed for `key`, as it's stored: a `datetime` read in the configured timezone
 /// (ADR 0024 §1). Everything else as given.
 fn stored(key: &str, kind: &Kind, v: &Value, now: &Now) -> Result<Value> {
+    // `today`, `today+7`, `today-30` (ADR 0024 §5): a date, in the configured timezone.
+    if let (Kind::Field(FieldType::Date | FieldType::Datetime, _), Some(s)) = (kind, v.as_str()) {
+        if let Some(day) = relative_date(s, now).map_err(|m| bad(key, &m))? {
+            return Ok(Value::String(day.format("%Y-%m-%d").to_string()));
+        }
+    }
     match (kind, v) {
         (Kind::Field(FieldType::Datetime, _), Value::String(s)) => {
             values::datetime(s, &now.tz).map(Value::String).map_err(|want| bad(key, &format!("expected {want}")))
         }
         _ => Ok(v.clone()),
     }
+}
+
+/// `today`, `today+N` or `today-N` (days) as a date; `None` for anything else.
+fn relative_date(s: &str, now: &Now) -> std::result::Result<Option<NaiveDate>, String> {
+    let Some(rest) = s.trim().strip_prefix("today") else { return Ok(None) };
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return Ok(Some(now.today()));
+    }
+    let (sign, n) = match (rest.strip_prefix('+'), rest.strip_prefix('-')) {
+        (Some(n), _) => (1, n),
+        (_, Some(n)) => (-1, n),
+        _ => return Err(format!("'{s}': write today, today+N or today-N (days)")),
+    };
+    let days: i64 = n.trim().parse().map_err(|_| format!("'{s}': write today, today+N or today-N (days)"))?;
+    now.today()
+        .checked_add_signed(chrono::Duration::days(sign * days))
+        .map(Some)
+        .ok_or_else(|| format!("'{s}' is too far away"))
 }
 
 /// Set means a value other than `null`, `""` or `[]` (ADR 0017's rule, ADR 0024 §2).
@@ -284,7 +346,19 @@ fn texts(v: &Value) -> impl Iterator<Item = &str> {
 }
 
 fn holds(kind: &Kind, op: &Op, got: &Value, tz: &Tz) -> bool {
-    let cmp = |want: &Value| -> Option<Ordering> { Some(sort_value(kind, got, tz)?.cmp(&sort_value(kind, want, tz)?)) };
+    let cmp = |want: &Value| -> Option<Ordering> {
+        // A plain date against a `datetime` compares days: "<= 2026-10-20" includes 23:59 that
+        // day (ADR 0024 §5).
+        if let (Kind::Field(FieldType::Datetime, _), Some(day)) = (kind, want.as_str().and_then(plain_date)) {
+            let got = got.as_str()?;
+            let got_day = match plain_date(got) {
+                Some(d) => d,
+                None => values::instant(got, tz)?.with_timezone(tz).date_naive(),
+            };
+            return Some(got_day.cmp(&day));
+        }
+        Some(sort_value(kind, got, tz)?.cmp(&sort_value(kind, want, tz)?))
+    };
     match op {
         Op::Eq(want) => got == want,
         // Unset matches: "stage is not rejected" includes records with no stage yet.
@@ -298,6 +372,10 @@ fn holds(kind: &Kind, op: &Op, got: &Value, tz: &Tz) -> bool {
         Op::Contains(needle) => got.as_str().is_some_and(|s| s.to_lowercase().contains(needle)),
         Op::Has(want) => got.as_array().is_some_and(|items| items.iter().any(|i| values::same(i, want))),
     }
+}
+
+fn plain_date(s: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
 }
 
 /// A value as something that orders the way its type should: ints by number, dates by date,
@@ -424,6 +502,38 @@ mod tests {
         let e = Query::new(&c, &Map::new(), None, &["stack".into()], &now()).unwrap_err();
         assert!(e.message.contains("can't be sorted"));
         assert!(query(json!({"company": {"has": "x"}})).unwrap_err().message.contains("doesn't apply"));
+    }
+
+    #[test]
+    fn relative_dates_resolve_in_the_local_timezone() {
+        // now() is 2026-10-05 08:00 in Toronto.
+        let q = query(json!({"oa_deadline": {"lte": "today+15", "gte": "today"}})).unwrap();
+        assert_eq!(ids(&q), ["acme", "google"], "2026-10-08 and 2026-10-20 are within 15 days");
+        assert_eq!(ids(&query(json!({"oa_deadline": {"lte": "today+3"}})).unwrap()), ["google"]);
+        assert!(ids(&query(json!({"oa_deadline": {"lte": "today+2"}})).unwrap()).is_empty());
+        assert_eq!(ids(&query(json!({"oa_deadline": {"gt": "today-1", "lt": "today+15"}})).unwrap()), ["google"]);
+        assert!(query(json!({"oa_deadline": {"lte": "today+week"}})).unwrap_err().message.contains("today+N"));
+        assert!(query(json!({"company": "today"})).is_ok(), "only dates read 'today'");
+    }
+
+    #[test]
+    fn or_matches_any_alternative_and_the_rest_still_applies() {
+        let q = query(json!({"or": [{"stage": "offer"}, {"salary": {"gte": 150}}]})).unwrap();
+        let mut got = ids(&q);
+        got.sort();
+        let mut want: Vec<String> = sample()
+            .iter()
+            .filter(|w| w["stage"] == "offer" || w["salary"].as_i64().is_some_and(|s| s >= 150))
+            .map(|w| w["id"].as_str().unwrap().to_owned())
+            .collect();
+        want.sort();
+        assert_eq!(got, want);
+        assert!(!got.is_empty());
+        let both = query(json!({"or": [{"stage": "offer"}, {"salary": {"gte": 150}}], "company": "Nobody"})).unwrap();
+        assert!(ids(&both).is_empty());
+        assert!(query(json!({"or": []})).is_err());
+        assert!(query(json!({"or": [{"or": [{"stage": "offer"}]}]})).unwrap_err().message.contains("nested"));
+        assert!(query(json!({"or": [{"nope": 1}]})).unwrap_err().message.contains("unknown field 'nope'"));
     }
 
     #[test]
