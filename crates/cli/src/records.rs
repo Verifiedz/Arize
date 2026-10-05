@@ -673,6 +673,15 @@ fn condition(schema: &Value, raw: &str) -> Result<(String, &'static str, Value)>
     if flag.is_empty() || value.is_empty() {
         return Err(bad());
     }
+    // A list holds several items, so `a|b` would be ambiguous: say how to ask for either one
+    // (Dev A's review of #93).
+    if is_list(schema, &field_name(schema, flag)) && value.contains('|') {
+        let either: Vec<String> = value.split('|').map(|v| format!("--or \"{flag} has {}\"", v.trim())).collect();
+        return Err(Error::invalid_params(format!(
+            "--filter '{raw}': {flag} is a list; for any of these items write {}",
+            either.join(" ")
+        )));
+    }
     if *op == "eq" && value.contains('|') {
         let items =
             value.split('|').map(|v| typed(schema, flag, v.trim()).map(|(_, v)| v)).collect::<Result<Vec<_>>>()?;
@@ -1730,6 +1739,9 @@ lru-cache  todo    LRU Cache  medium      -            2         true
             let (_, params) = request(&parse_words(words).unwrap(), &schema).unwrap();
             assert_eq!(params["filter"], json!({"tech_stack": {"has": "Rust"}}), "{words:?}");
         }
+        let e =
+            request(&parse_words(&["list", "jobs", "--filter", "tech_stack=go|rust"]).unwrap(), &schema).unwrap_err();
+        assert!(e.message.contains("--or \"tech_stack has go\" --or \"tech_stack has rust\""), "{}", e.message);
         let (_, params) = request(&parse_words(&["list", "jobs", "--tech-stack", "go"]).unwrap(), &schema).unwrap();
         assert_eq!(params["filter"], json!({"tech_stack": "go"}));
         assert_eq!(describe_field(&schema["fields"][0]), "tech_stack (list of string)");
