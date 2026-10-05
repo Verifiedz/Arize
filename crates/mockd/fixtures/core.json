@@ -93,6 +93,36 @@
                 "execution": "inline"
               },
               {
+                "op": "records.check",
+                "summary": "Report records that don't fit their collection; changes nothing",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "records.rename_field",
+                "summary": "Rename a field in a collection and every record",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "records.rename_collection",
+                "summary": "Give a collection a new id",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "records.remove_collection",
+                "summary": "Remove a collection and its records (they can be restored); needs confirmation",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "records.restore_collection",
+                "summary": "Bring a removed collection back with its records",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
                 "op": "records.remove",
                 "summary": "Delete a record",
                 "params_schema": {},
@@ -106,6 +136,10 @@
               "records.item.reopened",
               "records.item.renamed",
               "records.item.restored",
+              "records.field.renamed",
+              "records.collection.renamed",
+              "records.collection.removed",
+              "records.collection.restored",
               "records.item.removed",
               "records.collection.created"
             ]

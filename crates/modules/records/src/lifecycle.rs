@@ -12,6 +12,7 @@ use crate::schema::{Collection, RepeatComplete};
 /// first, then the record is marked done and stamped. An explicit, non-null value for the stamp
 /// field in `changes` wins over `today`, which is how a completion is back-dated.
 pub fn complete(c: &Collection, item: &Item, mut changes: Map<String, Value>, today: &str) -> Result<Item> {
+    completable(c)?;
     if item.status == Status::Done && c.repeat_complete == RepeatComplete::Refuse {
         let when = c.stamp_on_complete.as_ref().and_then(|s| item.fields.get(s)).and_then(Value::as_str);
         return Err(Error::conflict(match when {
@@ -38,6 +39,7 @@ pub fn complete(c: &Collection, item: &Item, mut changes: Map<String, Value>, to
 /// Reopening a record that isn't done is `conflict`, so a script reopening the wrong record
 /// finds out.
 pub fn reopen(c: &Collection, item: &Item, clear_stamp: bool) -> Result<Item> {
+    completable(c)?;
     if item.status != Status::Done {
         return Err(Error::conflict(format!("'{}' in '{}' is not done", item.id, c.id)));
     }
@@ -47,6 +49,14 @@ pub fn reopen(c: &Collection, item: &Item, clear_stamp: bool) -> Result<Item> {
         next.fields.remove(stamp);
     }
     Ok(next)
+}
+
+/// Reference lists have nothing to finish (ADR 0021 §1).
+fn completable(c: &Collection) -> Result<()> {
+    match c.completable {
+        true => Ok(()),
+        false => Err(Error::invalid_params(format!("'{}' has no completion (completable = false)", c.id))),
+    }
 }
 
 #[cfg(test)]

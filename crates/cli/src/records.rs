@@ -7,10 +7,11 @@
 use std::fmt::Write as _;
 
 use serde_json::{json, Map, Value};
-use shimmer_core::{Error, Result};
+use shimmer_core::{Error, ErrorCode, Result};
 
 use crate::client::Client;
 use crate::render::{self, cell, table};
+use crate::workspaces::Prompt;
 
 pub const USAGE: &str = "usage: shimmer records <command>
 
@@ -35,6 +36,14 @@ commands:
   remove COLLECTION/ID                 remove a record (it goes to the trash)
   restore COLLECTION/ID                bring a removed record back
   trash COLLECTION                     list removed records you can restore
+
+changing a collection:
+  check COLLECTION                     list records that don't fit the collection
+  rename-field COLLECTION FROM TO      rename a field in the collection and every record
+  rename-collection ID NEW_ID          give a collection a new id
+  remove-collection ID [--yes]         remove a collection and its records (asks first;
+                                       restore-collection brings it back)
+  restore-collection ID                bring a removed collection back
 
 A record can be written COLLECTION/ID or COLLECTION ID. Field names come from the
 collection: see 'shimmer records collections'. Add --json to any command for raw output.";
@@ -96,6 +105,26 @@ pub enum RecordsCmd {
     Trash {
         collection: String,
     },
+    Check {
+        collection: String,
+    },
+    RenameField {
+        collection: String,
+        from: String,
+        to: String,
+    },
+    RenameCollection {
+        id: String,
+        new_id: String,
+    },
+    /// `yes`: confirm without asking (`--yes`).
+    RemoveCollection {
+        id: String,
+        yes: bool,
+    },
+    RestoreCollection {
+        id: String,
+    },
 }
 
 /// What `records list` asks beyond exact `--FIELD VALUE` matches (ADR 0019).
@@ -121,6 +150,10 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
     let clear_stamp = sub == "reopen" && rest.iter().any(|w| w == "--clear-stamp");
     if clear_stamp {
         rest.retain(|w| w != "--clear-stamp");
+    }
+    let yes = sub == "remove-collection" && rest.iter().any(|w| w == "--yes");
+    if yes {
+        rest.retain(|w| w != "--yes");
     }
     let (positional, flags) = split(rest)?;
     let no_flags = || match flags.first() {
@@ -183,6 +216,29 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
                 return Err("nothing to update: give --FIELD VALUE or --unset FIELD".into());
             }
             Ok(RecordsCmd::Update { collection, id, set, unset })
+        }
+        "check" | "rename-field" | "rename-collection" | "remove-collection" | "restore-collection" => {
+            no_flags()?;
+            let usage = match sub.as_str() {
+                "check" => "usage: shimmer records check COLLECTION",
+                "rename-field" => "usage: shimmer records rename-field COLLECTION FROM TO",
+                "rename-collection" => "usage: shimmer records rename-collection ID NEW_ID",
+                "remove-collection" => "usage: shimmer records remove-collection ID [--yes]",
+                _ => "usage: shimmer records restore-collection ID",
+            };
+            let p = positional;
+            Ok(match (sub.as_str(), p.as_slice()) {
+                ("check", [c]) => RecordsCmd::Check { collection: c.clone() },
+                ("rename-field", [c, from, to]) => {
+                    RecordsCmd::RenameField { collection: c.clone(), from: from.clone(), to: to.clone() }
+                }
+                ("rename-collection", [id, new_id]) => {
+                    RecordsCmd::RenameCollection { id: id.clone(), new_id: new_id.clone() }
+                }
+                ("remove-collection", [id]) => RecordsCmd::RemoveCollection { id: id.clone(), yes },
+                ("restore-collection", [id]) => RecordsCmd::RestoreCollection { id: id.clone() },
+                _ => return Err(usage.into()),
+            })
         }
         "trash" => {
             no_flags()?;
@@ -261,7 +317,10 @@ impl RecordsCmd {
             | Self::Reopen { collection, .. }
             | Self::Remove { collection, .. }
             | Self::Restore { collection, .. }
-            | Self::Trash { collection } => Some(collection),
+            | Self::Trash { collection }
+            | Self::Check { collection }
+            | Self::RenameField { collection, .. } => Some(collection),
+            Self::RenameCollection { .. } | Self::RemoveCollection { .. } | Self::RestoreCollection { .. } => None,
         }
     }
 }
@@ -341,6 +400,16 @@ pub fn request(cmd: &RecordsCmd, schema: &Value) -> Result<(&'static str, Value)
         RecordsCmd::Remove { collection, id } => ("records.remove", json!({"collection": collection, "id": id})),
         RecordsCmd::Restore { collection, id } => ("records.restore", json!({"collection": collection, "id": id})),
         RecordsCmd::Trash { collection } => ("records.trash", json!({"collection": collection})),
+        RecordsCmd::Check { collection } => ("records.check", json!({"collection": collection})),
+        RecordsCmd::RenameField { collection, from, to } => (
+            "records.rename_field",
+            json!({"collection": collection, "from": field_name(schema, from), "to": to.replace('-', "_")}),
+        ),
+        RecordsCmd::RenameCollection { id, new_id } => {
+            ("records.rename_collection", json!({"id": id, "new_id": new_id}))
+        }
+        RecordsCmd::RemoveCollection { id, .. } => ("records.remove_collection", json!({"id": id})),
+        RecordsCmd::RestoreCollection { id } => ("records.restore_collection", json!({"id": id})),
     })
 }
 
@@ -437,14 +506,44 @@ fn typed(schema: &Value, flag: &str, raw: &str) -> Result<(String, Value)> {
 // ---------------------------------------------------------------- running
 
 /// Fetch the collection's schema, send the op, render the reply.
-pub async fn run(client: &mut Client, cmd: &RecordsCmd, json: bool) -> Result<String> {
+pub async fn run(client: &mut Client, cmd: &RecordsCmd, json: bool, prompt: &mut dyn Prompt) -> Result<String> {
     let schema = match cmd.collection() {
         Some(id) => schema(client, id).await?,
         None => Value::Null,
     };
-    let (op, params) = request(cmd, &schema)?;
-    let data = client.call(op, params).await?;
+    let (op, mut params) = request(cmd, &schema)?;
+    let data = match client.call(op, params.clone()).await {
+        // ADR 0021 §5: the daemon says how many records go; ask, then send that count back.
+        Err(e) if e.code == ErrorCode::ConfirmationRequired => {
+            let RecordsCmd::RemoveCollection { id, yes } = cmd else { return Err(e) };
+            let detail = e.detail.clone().unwrap_or_default();
+            if !confirm_removal(prompt, *yes, id, &detail)? {
+                return Ok(format!("kept {id}"));
+            }
+            params["confirm"] = detail;
+            client.call(op, params).await?
+        }
+        other => other?,
+    };
     Ok(if json { render::json(&data) } else { show(cmd, &data, &schema) })
+}
+
+/// Whether to go ahead with removing a collection, given the daemon's
+/// `{"records": N}`. Never waits for an answer nobody can see (CLAUDE.md §15.1).
+fn confirm_removal(prompt: &mut dyn Prompt, yes: bool, id: &str, detail: &Value) -> Result<bool> {
+    if yes {
+        return Ok(true);
+    }
+    let records = detail["records"].as_u64().unwrap_or(0);
+    if !prompt.interactive() {
+        return Err(Error::invalid_params(format!(
+            "refusing to remove '{id}' and its {records} record(s) without confirmation; pass --yes to do it anyway"
+        )));
+    }
+    eprintln!(
+        "This removes '{id}' and its {records} record(s). They go to the trash:\n  shimmer records restore-collection {id} brings them back."
+    );
+    Ok(prompt.confirm("Remove it?"))
 }
 
 async fn schema(client: &mut Client, id: &str) -> Result<Value> {
@@ -471,6 +570,19 @@ pub fn show(cmd: &RecordsCmd, data: &Value, schema: &Value) -> String {
             format!("removed {collection}/{id} (undo: shimmer records restore {collection}/{id})")
         }
         RecordsCmd::Restore { collection, id } => format!("✓ {collection}/{id} restored"),
+        RecordsCmd::Check { collection } => check_report(collection, data),
+        RecordsCmd::RenameField { collection, from, to } => format!(
+            "✓ {collection}: field '{}' is now '{}' ({} record(s) updated)",
+            field_name(schema, from),
+            to.replace('-', "_"),
+            cell(&data["updated"])
+        ),
+        RecordsCmd::RenameCollection { id, new_id } => format!("✓ {id} is now {new_id}"),
+        RecordsCmd::RemoveCollection { id, .. } => format!(
+            "removed {id} ({} record(s); undo: shimmer records restore-collection {id})",
+            cell(&data["records"])
+        ),
+        RecordsCmd::RestoreCollection { id } => format!("✓ {id} restored"),
         RecordsCmd::Trash { collection } => match data["items"].as_array().is_none_or(Vec::is_empty) {
             true => format!("nothing in {collection}'s trash"),
             false => list(data, schema),
@@ -492,6 +604,25 @@ pub fn show(cmd: &RecordsCmd, data: &Value, schema: &Value) -> String {
         RecordsCmd::Get { collection, id } => item(collection, id, data, schema),
         RecordsCmd::List { .. } => list(data, schema),
     }
+}
+
+/// `checked 42 records; 2 with problems`, then each record's problems, one per line.
+fn check_report(collection: &str, data: &Value) -> String {
+    let checked = data["checked"].as_u64().unwrap_or(0);
+    let problems = data["problems"].as_array().cloned().unwrap_or_default();
+    if problems.is_empty() {
+        return format!("checked {checked} record(s) in {collection}; all fit");
+    }
+    let mut out = format!("checked {checked} record(s) in {collection}; {} with problems", problems.len());
+    let width = problems.iter().map(|p| cell(&p["id"]).chars().count()).max().unwrap_or(0);
+    for p in &problems {
+        let id = cell(&p["id"]);
+        for (i, problem) in p["problems"].as_array().into_iter().flatten().enumerate() {
+            let shown = if i == 0 { id.as_str() } else { "" };
+            let _ = write!(out, "\n  {shown:width$}  {}", problem.as_str().unwrap_or_default());
+        }
+    }
+    out
 }
 
 fn collections(data: &Value) -> String {
@@ -547,8 +678,16 @@ fn describe_field(f: &Value) -> String {
     s
 }
 
+/// Reference collections (`completable = false`, ADR 0021) have no status to show.
+fn has_status(schema: &Value) -> bool {
+    schema["completable"] != false
+}
+
 fn item(collection: &str, id: &str, data: &Value, schema: &Value) -> String {
-    let mut out = format!("{collection}/{id}  ({})", cell(&data["status"]));
+    let mut out = match has_status(schema) {
+        true => format!("{collection}/{id}  ({})", cell(&data["status"])),
+        false => format!("{collection}/{id}"),
+    };
     let keys = columns(data, schema);
     let width = keys.iter().map(|k| k.chars().count()).max().unwrap_or(0);
     for key in keys {
@@ -564,12 +703,19 @@ fn list(data: &Value, schema: &Value) -> String {
         "no records".to_owned()
     } else {
         let keys = columns(&items[0], schema);
-        let mut header = vec!["ID".to_owned(), "STATUS".to_owned()];
+        let status = has_status(schema);
+        let mut header = vec!["ID".to_owned()];
+        if status {
+            header.push("STATUS".to_owned());
+        }
         header.extend(keys.iter().map(|k| k.to_uppercase().replace('_', " ")));
         let rows: Vec<Vec<String>> = items
             .iter()
             .map(|i| {
-                let mut row = vec![cell(&i["id"]), cell(&i["status"])];
+                let mut row = vec![cell(&i["id"])];
+                if status {
+                    row.push(cell(&i["status"]));
+                }
                 row.extend(keys.iter().map(|k| cell(&i[k.as_str()])));
                 row
             })
@@ -842,6 +988,77 @@ mod tests {
         assert_eq!(request(&trash, &Value::Null).unwrap(), ("records.trash", json!({"collection": "jobs"})));
         assert_eq!(show(&trash, &json!({"items": []}), &Value::Null), "nothing in jobs's trash");
         assert!(parse_words(&["trash"]).unwrap_err().contains("records trash COLLECTION"));
+    }
+
+    #[test]
+    fn collection_commands_parse_and_report() {
+        assert_eq!(parse_words(&["check", "jobs"]).unwrap(), RecordsCmd::Check { collection: "jobs".into() });
+        let rename = parse_words(&["rename-field", "leetcode", "last-solved", "solved-on"]).unwrap();
+        assert_eq!(
+            request(&rename, &leetcode()).unwrap(),
+            ("records.rename_field", json!({"collection": "leetcode", "from": "last_solved", "to": "solved_on"}))
+        );
+        assert_eq!(
+            parse_words(&["remove-collection", "jobs", "--yes"]).unwrap(),
+            RecordsCmd::RemoveCollection { id: "jobs".into(), yes: true }
+        );
+        assert_eq!(
+            request(&parse_words(&["rename-collection", "jobs", "apps"]).unwrap(), &Value::Null).unwrap(),
+            ("records.rename_collection", json!({"id": "jobs", "new_id": "apps"}))
+        );
+        assert!(parse_words(&["rename-field", "jobs", "a"]).unwrap_err().contains("FROM TO"));
+
+        let report = json!({"checked": 3, "problems": [
+            {"id": "acme", "problems": ["field 'stage' must be one of oa", "unknown key 'x' (not a field of 'jobs')"]}]});
+        let out = show(&RecordsCmd::Check { collection: "jobs".into() }, &report, &Value::Null);
+        assert_eq!(
+            out,
+            "checked 3 record(s) in jobs; 1 with problems\n  acme  field 'stage' must be one of oa\n        unknown key 'x' (not a field of 'jobs')"
+        );
+        let clean = show(
+            &RecordsCmd::Check { collection: "jobs".into() },
+            &json!({"checked": 2, "problems": []}),
+            &Value::Null,
+        );
+        assert_eq!(clean, "checked 2 record(s) in jobs; all fit");
+    }
+
+    struct Scripted {
+        interactive: bool,
+        answer: bool,
+    }
+
+    impl Prompt for Scripted {
+        fn interactive(&self) -> bool {
+            self.interactive
+        }
+        fn confirm(&mut self, _: &str) -> bool {
+            self.answer
+        }
+    }
+
+    #[test]
+    fn removing_a_collection_asks_at_a_terminal_and_refuses_without_one() {
+        let detail = json!({"records": 42});
+        let mut yes = Scripted { interactive: true, answer: true };
+        let mut no = Scripted { interactive: true, answer: false };
+        let mut script = Scripted { interactive: false, answer: true };
+        assert!(confirm_removal(&mut yes, false, "jobs", &detail).unwrap());
+        assert!(!confirm_removal(&mut no, false, "jobs", &detail).unwrap());
+        let e = confirm_removal(&mut script, false, "jobs", &detail).unwrap_err();
+        assert!(e.message.contains("its 42 record(s)") && e.message.contains("--yes"), "{}", e.message);
+        assert!(confirm_removal(&mut script, true, "jobs", &detail).unwrap(), "--yes needs no terminal");
+    }
+
+    #[test]
+    fn reference_collections_show_no_status() {
+        let education =
+            json!({"id": "education", "completable": false, "fields": [{"name": "school", "type": "string"}]});
+        let data = json!({"total": 1, "items": [{"id": "uni", "school": "Uni"}]});
+        let cmd = parse_words(&["list", "education"]).unwrap();
+        assert_eq!(show(&cmd, &data, &education), "ID   SCHOOL\nuni  Uni\n1 record");
+        let get = RecordsCmd::Get { collection: "education".into(), id: "uni".into() };
+        assert!(show(&get, &data["items"][0], &education).starts_with("education/uni\n"));
     }
 
     #[test]

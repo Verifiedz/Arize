@@ -852,3 +852,159 @@ async fn restore_refuses_when_the_id_or_a_unique_value_is_taken_again() {
     assert!(e.message.contains("already used by 'new'"), "{}", e.message);
     assert!(file(&env, "trash/postings/old.toml").is_some(), "still in the trash");
 }
+
+// ---------------------------------------------------------------- ADR 0021: collections over time
+
+fn add_education_collection(env: &TestEnv) {
+    env.ctx
+        .store
+        .write(
+            "collections/education.toml",
+            "[collection]\nid = \"education\"\nlabel = \"Education\"\ncompletable = false\n\n[[field]]\nname = \"school\"\ntype = \"string\"\nrequired = true\n",
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_reference_collection_has_no_status_and_no_completion() {
+    let (r, env) = setup().await;
+    add_education_collection(&env);
+    let item =
+        call(&r, &env, "records.add", json!({"collection": "education", "id": "uni", "fields": {"school": "Uni"}}))
+            .await
+            .unwrap();
+    assert_eq!(item, json!({"id": "uni", "school": "Uni"}), "no status on the wire");
+    assert!(!file(&env, "items/education/uni.toml").unwrap().contains("status"), "nor in the file");
+
+    let target = json!({"collection": "education", "id": "uni"});
+    for op in ["records.complete", "records.reopen"] {
+        let e = call(&r, &env, op, target.clone()).await.unwrap_err();
+        assert_eq!(e.code, ErrorCode::InvalidParams, "{op}");
+        assert!(e.message.contains("has no completion"), "{op}: {}", e.message);
+    }
+    for params in [json!({"filter": {"status": "todo"}}), json!({"sort": ["status"]})] {
+        let mut p = params.clone();
+        p["collection"] = json!("education");
+        let e = call(&r, &env, "records.list", p).await.unwrap_err();
+        assert!(e.message.contains("has no status"), "{params}: {}", e.message);
+    }
+    let data = call(&r, &env, "records.collections", json!({})).await.unwrap();
+    let completable = |id: &str| {
+        data["collections"].as_array().unwrap().iter().find(|c| c["id"] == id).unwrap()["completable"].clone()
+    };
+    assert_eq!((completable("education"), completable("leetcode")), (json!(false), json!(true)));
+
+    // A status line already in a file is kept as written, never rewritten away.
+    env.ctx.store.write("items/education/old.toml", "status = \"done\"\nschool = \"Old\"\n").unwrap();
+    call(&r, &env, "records.update", json!({"collection": "education", "id": "old", "fields": {"school": "Older"}}))
+        .await
+        .unwrap();
+    assert!(file(&env, "items/education/old.toml").unwrap().contains("status = \"done\""));
+}
+
+#[tokio::test]
+async fn check_reports_what_does_not_fit_and_changes_nothing() {
+    let (r, env) = setup().await;
+    add_two_sum(&r, &env).await;
+    env.ctx.store.write("items/leetcode/bad.toml", "difficulty = \"trivial\"\ncolour = \"red\"\n").unwrap();
+    env.ctx.store.write("items/leetcode/broken.toml", "status = \"maybe\"").unwrap();
+    let before = topics(&env).len();
+    let report = call(&r, &env, "records.check", json!({"collection": "leetcode"})).await.unwrap();
+    assert_eq!(report["checked"], 3);
+    let problems = report["problems"].as_array().unwrap();
+    assert_eq!(problems.len(), 2, "{report}");
+    assert_eq!(problems[0]["id"], "bad");
+    assert_eq!(problems[0]["problems"].as_array().unwrap().len(), 3, "missing title, bad difficulty, unknown key");
+    assert_eq!(problems[1]["id"], "broken");
+    assert_eq!(topics(&env).len(), before, "nothing written");
+}
+
+#[tokio::test]
+async fn rename_field_moves_values_everywhere_in_one_step() {
+    let (r, env) = setup().await;
+    add_two_sum(&r, &env).await;
+    call(
+        &r,
+        &env,
+        "records.add",
+        json!({"collection": "leetcode", "id": "lru", "fields": {"title": "LRU", "difficulty": "medium"}}),
+    )
+    .await
+    .unwrap();
+    call(&r, &env, "records.remove", json!({"collection": "leetcode", "id": "lru"})).await.unwrap();
+
+    let out =
+        call(&r, &env, "records.rename_field", json!({"collection": "leetcode", "from": "difficulty", "to": "level"}))
+            .await
+            .unwrap();
+    assert_eq!(out["updated"], 2, "the live record and the trashed one");
+    let collection = file(&env, "collections/leetcode.toml").unwrap();
+    assert!(
+        collection.contains("name = \"level\"") && collection.contains("# Built in."),
+        "comments kept: {collection}"
+    );
+    let item = call(&r, &env, "records.get", json!({"collection": "leetcode", "id": "two-sum"})).await.unwrap();
+    assert_eq!((item["level"].clone(), item.get("difficulty").cloned()), (json!("easy"), None));
+    assert!(file(&env, "trash/leetcode/lru.toml").unwrap().contains("level = \"medium\""));
+    assert_eq!(env.backend.events().pop().unwrap().topic, "records.field.renamed");
+
+    for (params, code) in [
+        (json!({"from": "nope", "to": "x"}), ErrorCode::InvalidParams),
+        (json!({"from": "url", "to": "title"}), ErrorCode::Conflict),
+        (json!({"from": "url", "to": "status"}), ErrorCode::InvalidParams),
+    ] {
+        let mut p = params.clone();
+        p["collection"] = json!("leetcode");
+        assert_eq!(call(&r, &env, "records.rename_field", p).await.unwrap_err().code, code, "{params}");
+    }
+}
+
+#[tokio::test]
+async fn rename_collection_moves_everything() {
+    let (r, env) = setup().await;
+    add_two_sum(&r, &env).await;
+    let out =
+        call(&r, &env, "records.rename_collection", json!({"id": "leetcode", "new_id": "problems"})).await.unwrap();
+    assert_eq!(out["id"], "problems");
+    assert!(file(&env, "collections/leetcode.toml").is_none());
+    assert!(file(&env, "collections/problems.toml").unwrap().contains("id = \"problems\""));
+    let item = call(&r, &env, "records.get", json!({"collection": "problems", "id": "two-sum"})).await.unwrap();
+    assert_eq!(item["title"], "Two Sum");
+    assert_eq!(env.backend.events().pop().unwrap().topic, "records.collection.renamed");
+    add_education_collection(&env);
+    let e = call(&r, &env, "records.rename_collection", json!({"id": "problems", "new_id": "education"}))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::Conflict);
+}
+
+#[tokio::test]
+async fn remove_collection_asks_first_then_restore_brings_it_all_back() {
+    let (r, env) = setup().await;
+    add_two_sum(&r, &env).await;
+    let before = topics(&env).len();
+
+    let e = call(&r, &env, "records.remove_collection", json!({"id": "leetcode"})).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::ConfirmationRequired);
+    assert_eq!(e.detail, Some(json!({"records": 1})));
+    let stale = call(&r, &env, "records.remove_collection", json!({"id": "leetcode", "confirm": {"records": 5}}))
+        .await
+        .unwrap_err();
+    assert_eq!(stale.code, ErrorCode::ConfirmationRequired, "a count that doesn't match asks again");
+    assert_eq!(topics(&env).len(), before, "nothing removed without the right confirmation");
+
+    let out = call(&r, &env, "records.remove_collection", json!({"id": "leetcode", "confirm": {"records": 1}}))
+        .await
+        .unwrap();
+    assert_eq!(out, json!({"removed": true, "records": 1}));
+    assert!(file(&env, "collections/leetcode.toml").is_none() && file(&env, "items/leetcode/two-sum.toml").is_none());
+    assert!(file(&env, "removed-collections/leetcode/items/two-sum.toml").is_some());
+    assert_eq!(env.backend.events().pop().unwrap().topic, "records.collection.removed");
+
+    call(&r, &env, "records.restore_collection", json!({"id": "leetcode"})).await.unwrap();
+    let item = call(&r, &env, "records.get", json!({"collection": "leetcode", "id": "two-sum"})).await.unwrap();
+    assert_eq!(item["title"], "Two Sum");
+    assert_eq!(env.backend.events().pop().unwrap().topic, "records.collection.restored");
+    let e = call(&r, &env, "records.restore_collection", json!({"id": "leetcode"})).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::NotFound);
+}

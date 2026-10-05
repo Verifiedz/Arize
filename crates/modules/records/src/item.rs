@@ -33,6 +33,9 @@ impl Status {
 pub struct Item {
     pub id: String,
     pub status: Status,
+    /// Whether the file has (or gets) a `status` line. New records in a `completable = false`
+    /// collection don't; a line already in a file is kept, never rewritten away (ADR 0021 §1).
+    pub status_line: bool,
     /// Set fields only. May include keys a hand-edit added that the schema does not know.
     pub fields: BTreeMap<String, Value>,
 }
@@ -93,7 +96,7 @@ pub fn first_free(base: &str, always_number: bool, mut taken: impl FnMut(&str) -
 
 impl Item {
     pub fn new(id: &str, fields: Map<String, Value>) -> Self {
-        Self { id: id.to_owned(), status: Status::Todo, fields: fields.into_iter().collect() }
+        Self { id: id.to_owned(), status: Status::Todo, status_line: true, fields: fields.into_iter().collect() }
     }
 
     /// Read a record file. Lenient on purpose: a hand-edited file with an unknown key or a native
@@ -101,6 +104,7 @@ impl Item {
     pub fn from_toml(id: &str, text: &str) -> Result<Self> {
         let bad = |msg: String| Error::module_error(format!("record file '{id}.toml': {msg}"));
         let mut table: toml::Table = toml::from_str(text).map_err(|e| bad(e.to_string()))?;
+        let status_line = table.contains_key("status");
         let status = match table.remove("status") {
             None => Status::Todo,
             Some(toml::Value::String(s)) if s == "todo" => Status::Todo,
@@ -109,12 +113,14 @@ impl Item {
         };
         table.remove("id");
         let fields = table.into_iter().map(|(k, v)| (k, toml_to_json(v))).collect();
-        Ok(Self { id: id.to_owned(), status, fields })
+        Ok(Self { id: id.to_owned(), status, status_line, fields })
     }
 
     pub fn to_toml(&self) -> String {
         let mut table = toml::Table::new();
-        table.insert("status".into(), toml::Value::String(self.status.as_str().into()));
+        if self.status_line {
+            table.insert("status".into(), toml::Value::String(self.status.as_str().into()));
+        }
         for (k, v) in &self.fields {
             if let Some(v) = json_to_toml(v) {
                 table.insert(k.clone(), v);
@@ -128,7 +134,9 @@ impl Item {
     pub fn to_wire(&self, c: &Collection) -> Value {
         let mut out = Map::new();
         out.insert("id".into(), Value::String(self.id.clone()));
-        out.insert("status".into(), Value::String(self.status.as_str().into()));
+        if c.completable {
+            out.insert("status".into(), Value::String(self.status.as_str().into()));
+        }
         for f in &c.fields {
             out.insert(f.name.clone(), self.fields.get(&f.name).cloned().unwrap_or(Value::Null));
         }

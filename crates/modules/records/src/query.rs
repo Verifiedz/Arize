@@ -56,6 +56,7 @@ impl Query {
     pub fn new(c: &Collection, filter: &Map<String, Value>, search: Option<&str>, sort: &[String]) -> Result<Self> {
         let mut conditions = Vec::new();
         for (key, value) in filter {
+            no_status(c, key)?;
             let kind = kind(c, key)
                 .ok_or_else(|| Error::invalid_params(format!("cannot filter '{}' on unknown field '{key}'", c.id)))?;
             match value {
@@ -87,6 +88,7 @@ impl Query {
                 Some(name) => (name, Direction::Descending),
                 None => (raw.as_str(), Direction::Ascending),
             };
+            no_status(c, name)?;
             let kind = kind(c, name)
                 .ok_or_else(|| Error::invalid_params(format!("cannot sort '{}' on unknown field '{name}'", c.id)))?;
             if keys.iter().any(|(k, _, _): &(String, Kind, Direction)| k == name) {
@@ -136,6 +138,14 @@ impl Query {
             }
             a["id"].as_str().cmp(&b["id"].as_str())
         });
+    }
+}
+
+/// `status` on a collection that has none is its own error, not "unknown field" (ADR 0021 §1).
+fn no_status(c: &Collection, key: &str) -> Result<()> {
+    match key == "status" && !c.completable {
+        true => Err(Error::invalid_params(format!("'{}' has no status (completable = false)", c.id))),
+        false => Ok(()),
     }
 }
 

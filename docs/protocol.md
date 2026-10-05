@@ -282,9 +282,10 @@ Clients should offer: run cleanup, force relaunch, or open the log. Never auto-f
   ]}}
 ```
 
-Illustrative excerpt — `records` actually registers eleven ops (`records.collections`,
+Illustrative excerpt — `records` actually registers sixteen ops (`records.collections`,
 `.add`, `.get`, `.list`, `.update`, `.complete`, `.reopen`, `.rename`, `.remove`, `.restore`,
-`.trash`) and eight topics; see "Records
+`.trash`, `.check`, `.rename_field`, `.rename_collection`, `.remove_collection`,
+`.restore_collection`) and twelve topics; see "Records
 ops" below and `docs/decisions/0008-records-collections-and-storage.md` for the full list.
 This example only shows two commands to keep the shape readable.
 
@@ -399,6 +400,11 @@ after a step has run leaves it `dirty`.
 | `records.remove` | inline | `{"collection","id"}` | `{"removed":true}`. The record moves to `data/records/trash/<collection>/<id>.toml` (the latest removed version of each id), out of every other op. ADR 0020. |
 | `records.restore` | inline | `{"collection","id"}` | The record, back exactly as removed; emits `records.item.restored`. `not_found` if it isn't in the trash; `conflict` if the id, or one of its `unique` values, is taken again. |
 | `records.trash` | inline | `{"collection"}` | `{"items":[…]}`: the collection's removed records, by id. |
+| `records.check` | inline | `{"collection"}` | `{"checked":N,"problems":[{"id","problems":["…"]}]}`: records that don't fit the collection (missing required, wrong type, unknown keys, unreadable). Writes nothing. ADR 0021. |
+| `records.rename_field` | inline | `{"collection","from","to"}` | `{"collection":{…},"updated":N}`. One transaction renames the field in the collection file (comments kept) and in every live and trashed record; emits `records.field.renamed`. |
+| `records.rename_collection` | inline | `{"id","new_id"}` | The collection under its new id; moves its file, records and trash in one transaction; emits `records.collection.renamed`. `conflict` if `new_id` exists. |
+| `records.remove_collection` | inline | `{"id","confirm"?}` | `{"removed":true,"records":N}`. Without a matching `confirm`, `confirmation_required` with `detail: {"records":N}`; re-send with `"confirm": {"records":N}`. Moves everything to `data/records/removed-collections/<id>/`; emits `records.collection.removed`. |
+| `records.restore_collection` | inline | `{"id"}` | The collection, back with its records and trash; emits `records.collection.restored`. |
 
 All inline — nothing here is slow enough to queue. Items on the wire are flat:
 `{"id","status",<every schema field>}`, with unset fields as `null`. `filter` on
@@ -410,7 +416,9 @@ or operator, an operator the field's type doesn't take, or a value that doesn't 
 `invalid_params`, so a typo never silently matches everything or nothing. `search` matches text
 in the id or any string or enum field, ignoring case. `sort` is a list of up to 5 keys, `-` for
 descending; unset values come last in either direction, and ties fall back to the id. ADR 0019. Each collection in
-`records.collections` carries `repeat_complete` (`"restamp"`, the default, or `"refuse"`), and,
+`records.collections` carries `repeat_complete` (`"restamp"`, the default, or `"refuse"`) and
+`completable` (`false` for reference lists: their items have no `status`, and `complete`,
+`reopen`, and filtering or sorting on `status` are `invalid_params`), and,
 when set, `description`, `title` (e.g. `"{company}: {position}"`), `related` (collection ids),
 `extra` (`[extra.<name>]` tables, passed through untouched) and per field `role` (`"deadline"`
 on a date, `"url"` on a string) and `unique`. A `unique` field's value can be taken by one
@@ -458,6 +466,8 @@ tolerate unknown topics.
 | `workspaces.workspace.reset` | `workspaces.reset` cleared `dirty` without cleanup. Payload `{workspace, prior}`. |
 | `records.item.created` / `.updated` / `.completed` / `.reopened` / `.renamed` / `.removed` / `.restored` | Record mutations. All carry `{collection, id, title, deadlines, item}` (for `.removed`, `item` is the record as it was): `item` is the full wire item, `title` the record's readable name (the collection's `title` template, or the id), `deadlines` `{field: date}` for every set field with `role = "deadline"` (ADR 0017). `.updated` also carries `changed`: the fields whose value actually changed, sorted (`[]` when nothing did). `.renamed` also carries `new_id` (`id` is the old one; `item` is under the new one). |
 | `records.collection.created` | The built-in collection was seeded on first start. |
+| `records.field.renamed` | `{collection, from, to}`. |
+| `records.collection.renamed` / `.removed` / `.restored` | `{collection, new_id}` / `{collection, records}` / `{collection}`. |
 | `fetchers.item.found` | A source returned a new, deduplicated item. |
 | `fetchers.fetch.finished` / `.failed` | A fetch run ended. |
 | `calendar.date.registered` | A dated entry was stored. |

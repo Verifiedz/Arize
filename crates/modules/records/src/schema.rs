@@ -35,6 +35,9 @@ pub struct Collection {
     /// What completing an already-`done` record does (ADR 0016 §3). Always serialised, with
     /// the default filled in, so clients never need to know the default.
     pub repeat_complete: RepeatComplete,
+    /// `false` for reference lists with nothing to finish: no status, no completing (ADR 0021
+    /// §1). Always serialised.
+    pub completable: bool,
     /// Opaque here, passed through for clients. There is no view type yet (§5).
     pub views: Vec<Value>,
     /// `[extra.<name>]` tables, kept and returned untouched (ADR 0017 §6).
@@ -122,6 +125,12 @@ struct Header {
     stamp_on_complete: Option<String>,
     #[serde(default)]
     repeat_complete: RepeatComplete,
+    #[serde(default = "yes")]
+    completable: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Collection {
@@ -198,9 +207,13 @@ impl Collection {
             fields: file.field,
             stamp_on_complete: file.collection.stamp_on_complete,
             repeat_complete: file.collection.repeat_complete,
+            completable: file.collection.completable,
             views: file.view.into_iter().map(toml_to_json).collect(),
             extra,
         };
+        if !c.completable && c.stamp_on_complete.is_some() {
+            return Err(bad("stamp_on_complete can't be set when completable = false".into()));
+        }
         if let Some(stamp) = &c.stamp_on_complete {
             match c.field(stamp) {
                 Some(f) if f.kind == FieldType::Date && f.role == Some(Role::Deadline) => {
