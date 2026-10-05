@@ -6,6 +6,10 @@ Implemented in #5 and merged to master in #6: `crates/core/src/time.rs`, `Ctx.lo
 `Config::load`'s detect-and-persist step, and `crates/modules/records/src/lib.rs`'s `complete`
 now stamping via `local_date`.
 
+One edge case from the #5 review was not fixed before merge: inserting the timezone after a
+`[general]` header that is the file's last line, with no trailing newline, corrupts
+`config.toml`. It is tracked as #9.
+
 > **Renamed since:** `swe`, `swe-*` and `SWE_*` in this ADR are now `shimmer`, `shimmer-*` and
 > `SHIMMER_*` (ADR 0011). The text below is kept as written.
 

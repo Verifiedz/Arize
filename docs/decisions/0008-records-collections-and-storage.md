@@ -60,7 +60,8 @@ schema does not know are passed through.
   `limit` defaults to 50 (max 500), `total` counts every match before paging.
 * Completing a `done` item again re-stamps it and emits another `records.item.completed`: solving a
   problem twice is two solves, which is what a heatmap wants.
-* "Today" is the UTC date from `ctx.clock`, the same UTC-only limitation as the scheduler (ADR 0004).
+* "Today" is the local calendar date from `ctx.clock` and `ctx.local_tz` (ADR 0009). It
+  was the UTC date when this ADR was written.
 
 **Events**, each committed in the same store transaction as its file write (§7.1):
 `records.item.created` / `.updated` / `.completed` carry `{collection, id, item}` with the full wire
