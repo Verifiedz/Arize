@@ -28,10 +28,14 @@ shimmer_fail() {
 
 # ---------------------------------------------------------------- urls
 
+# The default browser. When BROWSER is set it wins: over a remote session (Cursor or VS Code
+# connected to this machine) it's the helper that opens the link on the computer you're sitting at.
 shimmer_open_url() {
     for url in "$@"; do
         [ -n "$url" ] || continue
-        if shimmer_macos; then
+        if [ -n "$BROWSER" ]; then
+            "$BROWSER" "$url" >/dev/null 2>&1 &
+        elif shimmer_macos; then
             open "$url"
         elif shimmer_has xdg-open; then
             xdg-open "$url" >/dev/null 2>&1 &
