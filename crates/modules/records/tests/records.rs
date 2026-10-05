@@ -8,10 +8,15 @@ use shimmer_core::testing::TestEnv;
 use shimmer_core::{ErrorCode, Module, Result, StoreBackend};
 use shimmer_records::Records;
 
+/// A LeetCode-style collection most tests use, written in by the test itself: a fresh install
+/// has no collections (ADR 0023).
+const LEETCODE: &str = include_str!("fixtures/leetcode.toml");
+
 async fn setup() -> (Records, TestEnv) {
     let env = TestEnv::new("records");
     let records = Records::default();
     records.init(&env.ctx).await.unwrap();
+    env.ctx.store.write("collections/leetcode.toml", LEETCODE).unwrap();
     (records, env)
 }
 
@@ -40,15 +45,15 @@ async fn add_two_sum(r: &Records, env: &TestEnv) -> Value {
 }
 
 #[tokio::test]
-async fn init_seeds_leetcode_once() {
-    let (r, env) = setup().await;
-    assert!(file(&env, "collections/leetcode.toml").unwrap().contains("id = \"leetcode\""));
-    r.init(&env.ctx).await.unwrap();
-    assert_eq!(topics(&env), ["records.collection.created"], "a second start must not seed again");
-
-    let data = call(&r, &env, "records.collections", Value::Null).await.unwrap();
-    assert_eq!(data["collections"][0]["id"], "leetcode");
-    assert_eq!(data["collections"][0]["stamp_on_complete"], "last_solved");
+async fn a_fresh_install_has_no_collections() {
+    // ADR 0023: nothing is created on first start; the person picks templates.
+    let env = TestEnv::new("records");
+    let records = Records::default();
+    records.init(&env.ctx).await.unwrap();
+    records.init(&env.ctx).await.unwrap();
+    assert!(env.backend.events().is_empty(), "init writes nothing");
+    let data = call(&records, &env, "records.collections", json!({})).await.unwrap();
+    assert_eq!(data["collections"], json!([]));
 }
 
 #[tokio::test]
@@ -940,7 +945,7 @@ async fn rename_field_moves_values_everywhere_in_one_step() {
     assert_eq!(out["updated"], 2, "the live record and the trashed one");
     let collection = file(&env, "collections/leetcode.toml").unwrap();
     assert!(
-        collection.contains("name = \"level\"") && collection.contains("# Built in."),
+        collection.contains("name = \"level\"") && collection.contains("# Test fixture"),
         "comments kept: {collection}"
     );
     let item = call(&r, &env, "records.get", json!({"collection": "leetcode", "id": "two-sum"})).await.unwrap();

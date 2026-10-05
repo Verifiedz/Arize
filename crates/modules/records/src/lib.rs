@@ -21,8 +21,6 @@ use shimmer_core::{CommandSpec, Ctx, Error, ErrorCode, Execution, Manifest, Modu
 use crate::item::Item;
 use crate::schema::Collection;
 
-const LEETCODE: &str = include_str!("../templates/leetcode.toml");
-
 /// Built-in collection templates (ADR 0022), by id. Each is an ordinary collection file whose
 /// `[collection] id` is the template's id; creating one copies it with only the id (and label)
 /// changed.
@@ -30,7 +28,7 @@ const TEMPLATES: &[(&str, &str)] = &[
     ("interview-questions", include_str!("../templates/interview-questions.toml")),
     ("interviews", include_str!("../templates/interviews.toml")),
     ("job-applications", include_str!("../templates/job-applications.toml")),
-    ("leetcode", LEETCODE),
+    ("leetcode", include_str!("../templates/leetcode.toml")),
 ];
 const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 500;
@@ -69,17 +67,10 @@ impl Module for Records {
         }
     }
 
-    /// Seed the built-in LeetCode collection when there are no collections at all, so a fresh
-    /// install has something to track.
-    async fn init(&self, ctx: &Ctx) -> Result<()> {
-        let _g = self.write.lock();
-        if !ctx.store.list("collections")?.is_empty() {
-            return Ok(());
-        }
-        ctx.store.transaction(|tx| {
-            tx.put("collections/leetcode.toml", LEETCODE)?;
-            tx.emit("records.collection.created", json!({"collection": "leetcode", "template": "leetcode"}))
-        })
+    /// Nothing to set up: a fresh install starts with no collections, and the person creates the
+    /// ones they want from templates (ADR 0023, replacing ADR 0008's seeding).
+    async fn init(&self, _ctx: &Ctx) -> Result<()> {
+        Ok(())
     }
 
     fn commands(&self) -> Vec<CommandSpec> {

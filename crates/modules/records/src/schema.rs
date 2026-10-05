@@ -380,7 +380,7 @@ mod tests {
 
     use super::*;
 
-    const LEETCODE: &str = include_str!("../templates/leetcode.toml");
+    const LEETCODE: &str = include_str!("../tests/fixtures/leetcode.toml");
 
     fn leetcode() -> Collection {
         Collection::parse("leetcode", LEETCODE).unwrap()

@@ -599,7 +599,8 @@ pub fn show(cmd: &RecordsCmd, data: &Value, schema: &Value) -> String {
         RecordsCmd::Help => USAGE.into(),
         RecordsCmd::Collections => collections(data),
         // The id comes from the reply: the daemon may have made it (ADR 0018).
-        RecordsCmd::Add { collection, .. } => format!("added {collection}/{}", cell(&data["id"])),
+        // In full, never cut like a table cell: it's what the person types next.
+        RecordsCmd::Add { collection, .. } => format!("added {collection}/{}", data["id"].as_str().unwrap_or_default()),
         RecordsCmd::Rename { collection, id, new_id } => {
             format!("✓ {collection}/{id} renamed to {collection}/{new_id}")
         }
@@ -715,7 +716,9 @@ fn collections(data: &Value) -> String {
         })
         .unwrap_or_default();
     let mut out = match rows.is_empty() {
-        true => "no collections".to_owned(),
+        // A fresh install starts here (ADR 0023): say how to get one.
+        true => "no collections yet: see 'shimmer records templates', then 'shimmer records new ID --from TEMPLATE'"
+            .to_owned(),
         false => table(&["ID".into(), "LABEL".into(), "FIELDS".into()], &rows),
     };
     // In full, not cut like a table cell: the message is how the user finds the broken line.
@@ -791,7 +794,8 @@ fn list(data: &Value, schema: &Value) -> String {
         let rows: Vec<Vec<String>> = items
             .iter()
             .map(|i| {
-                let mut row = vec![cell(&i["id"])];
+                // The id in full: a cut id can't be typed back.
+                let mut row = vec![i["id"].as_str().unwrap_or_default().to_owned()];
                 if status {
                     row.push(cell(&i["status"]));
                 }
@@ -1295,7 +1299,20 @@ lru-cache  todo    LRU Cache  medium      -            2         true
 
         let only_broken = json!({"collections": [], "skipped": [message]});
         let out = show(&RecordsCmd::Collections, &only_broken, &Value::Null);
-        assert_eq!(out, format!("no collections\nskipped: {message}"));
+        assert!(out.starts_with("no collections yet: see 'shimmer records templates'"), "{out}");
+        assert!(out.ends_with(&format!("\nskipped: {message}")), "{out}");
+    }
+
+    #[test]
+    fn ids_are_never_cut() {
+        let id = "longest-substring-without-repeating-characters";
+        let add = parse_words(&["add", "leetcode", "--title", "x"]).unwrap();
+        assert_eq!(show(&add, &json!({"id": id}), &leetcode()), format!("added leetcode/{id}"));
+        let list = parse_words(&["list", "leetcode"]).unwrap();
+        let data = json!({"total": 1, "items": [{"id": id, "status": "todo", "title": "Longest Substring Without Repeating Characters"}]});
+        let out = show(&list, &data, &leetcode());
+        assert!(out.contains(id), "{out}");
+        assert!(out.contains("Longest Substring Without Repeating Cha…"), "other long cells are still cut: {out}");
     }
 
     #[test]

@@ -67,7 +67,8 @@ schema does not know are passed through.
 item, so the index can be rebuilt from the log alone (M4); `records.item.removed` carries
 `{collection, id}`; `records.collection.created` carries `{collection}`.
 
-**Seeding.** On `init`, if no collection exists, the module writes the built-in LeetCode collection,
+**Seeding** (superseded by ADR 0023: nothing is seeded any more; a fresh install has no
+collections, and LeetCode is a template like the others). On `init`, if no collection exists, the module writes the built-in LeetCode collection,
 so a fresh install has something to track. Deleting every collection brings it back on the next start;
 deleting only LeetCode does not.
 

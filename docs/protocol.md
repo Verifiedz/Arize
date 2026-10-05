@@ -468,7 +468,7 @@ tolerate unknown topics.
 | `workspaces.session.abandoned` | A launch (forced or not) was claimed but no step ran: cancelled first, or step 1 couldn't start. The workspace is back to the state it had. Payload `{workspace, reason, forced, back_to}`. |
 | `workspaces.workspace.reset` | `workspaces.reset` cleared `dirty` without cleanup. Payload `{workspace, prior}`. |
 | `records.item.created` / `.updated` / `.completed` / `.reopened` / `.renamed` / `.removed` / `.restored` | Record mutations. All carry `{collection, id, title, deadlines, item}` (for `.removed`, `item` is the record as it was): `item` is the full wire item, `title` the record's readable name (the collection's `title` template, or the id), `deadlines` `{field: date}` for every set field with `role = "deadline"` (ADR 0017). `.updated` also carries `changed`: the fields whose value actually changed, sorted (`[]` when nothing did). `.renamed` also carries `new_id` (`id` is the old one; `item` is under the new one). |
-| `records.collection.created` | A collection was created: seeded on first start, or by `records.create_collection`. Payload `{collection, template}`. |
+| `records.collection.created` | `records.create_collection` made a collection from a template. Payload `{collection, template}`. Nothing is created on first start (ADR 0023). |
 | `records.field.renamed` | `{collection, from, to}`. |
 | `records.collection.renamed` / `.removed` / `.restored` | `{collection, new_id}` / `{collection, records}` / `{collection}`. |
 | `fetchers.item.found` | A source returned a new, deduplicated item. |
