@@ -2,6 +2,7 @@
 //! `(op, params, queue control)` and leave as a `Result<Value>`.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Instant;
@@ -9,11 +10,14 @@ use std::time::Instant;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use shimmer_core::params::decode;
 use shimmer_core::{
     Clock, Ctx, Emitter, Error, Execution, HttpGateway, LaneConfig, LaneId, ModuleConfig, ModuleId, NamespacedStore,
     Origin, Priority, ProgressFn, QueueHandle, Result,
 };
 use shimmer_core::{EnqueueRequest, TaskId, TaskSubmitter};
+#[cfg(unix)]
+use shimmer_core::{LaunchBackend, Launcher};
 use shimmer_proto::{ops, ManifestData, ModuleInfo, PingData, QueueControl, QueuePriority, QueuedHandle};
 use tokio_util::sync::CancellationToken;
 
@@ -45,7 +49,23 @@ impl Core {
         backend: Arc<Backend>,
         clock: Clock,
         shutdown: CancellationToken,
+        socket: &Path,
     ) -> Arc<Self> {
+        // A module gets a populated, usable `Launcher` only if its manifest declares the
+        // `"process"` capability (ADR 0010 §4); every other module keeps `Ctx::new`'s
+        // default `Launcher::unavailable`, the same fails-closed posture `ctx.http` already
+        // has. One real backend, shared across every such module: `instance_id` (ADR 0010
+        // §9's amendment) only needs to be collision-resistant per daemon process, not per
+        // module, and sharing it means every minted session id in one daemon run draws from
+        // the same sequence, not a separate one per module.
+        #[cfg(unix)]
+        let real_launcher: Arc<dyn LaunchBackend> = Arc::new(crate::launcher::RealLaunchBackend::new(
+            backend.store.home().to_path_buf(),
+            socket.to_path_buf(),
+            clock.clone(),
+            rand::random(),
+        ));
+
         Arc::new_cyclic(|weak: &Weak<Core>| {
             let ops = registry
                 .entries
@@ -68,7 +88,8 @@ impl Core {
                 .iter()
                 .map(|e| {
                     let id = e.manifest.id.clone();
-                    let ctx = Ctx::new(
+                    #[allow(unused_mut)]
+                    let mut ctx = Ctx::new(
                         NamespacedStore::new(e.manifest.namespace.clone(), id.clone(), backend.clone(), clock.clone()),
                         HttpGateway::new(id.clone(), Arc::new(DisabledHttp)),
                         Emitter::new(id.clone(), backend.clone(), clock.clone()),
@@ -79,6 +100,10 @@ impl Core {
                         ModuleConfig::new(config.modules.get(id.as_str()).cloned().unwrap_or_else(|| json!({}))),
                         id.clone(),
                     );
+                    #[cfg(unix)]
+                    if e.manifest.capabilities.iter().any(|c| c == "process") {
+                        ctx.launcher = Launcher::new(real_launcher.clone());
+                    }
                     (id, ctx)
                 })
                 .collect();
@@ -111,11 +136,24 @@ impl Core {
                 struct P {
                     lane: Option<LaneId>,
                 }
-                let p: P = parse(params)?;
+                let p: P = decode(params)?;
                 self.queue.list(p.lane.as_ref())
             }
             ops::QUEUE_TASK => self.queue.task_view(task_id(params)?),
             ops::QUEUE_CANCEL => self.queue.cancel(task_id(params)?),
+            ops::QUEUE_REORDER => {
+                #[derive(Deserialize)]
+                struct P {
+                    lane: LaneId,
+                    task_id: String,
+                    before: Option<String>,
+                    queue_version: u64,
+                }
+                let p: P = decode(params)?;
+                let id = p.task_id.parse()?;
+                let before = p.before.map(|s| s.parse()).transpose()?;
+                self.queue.reorder(&p.lane, id, before, p.queue_version)
+            }
             _ if op.starts_with("scheduler.") => match self.scheduler.get() {
                 Some(s) => s.handle(op, params),
                 None => Err(Error::unavailable("scheduler is not running")),
@@ -208,16 +246,10 @@ impl OpRunner for Core {
     }
 }
 
-fn parse<T: for<'de> Deserialize<'de>>(params: Value) -> Result<T> {
-    // `params` may be absent on the wire, which decodes as null.
-    let params = if params.is_null() { json!({}) } else { params };
-    serde_json::from_value(params).map_err(|e| Error::invalid_params(e.to_string()))
-}
-
 fn task_id(params: Value) -> Result<TaskId> {
     #[derive(Deserialize)]
     struct P {
         task_id: String,
     }
-    parse::<P>(params)?.task_id.parse()
+    decode::<P>(params)?.task_id.parse()
 }

@@ -1,11 +1,16 @@
 //! `shimmer <command>` arguments. Hand-rolled like `shimmer mockd`'s: a handful of commands does not
-//! need a parser crate, and command packs (§15.1) will rewrite the command word before this runs.
+//! need a parser crate. Command packs (§15.1) have already rewritten any alias by the time this
+//! runs (`crate::packs::active`).
 
 use std::path::PathBuf;
 
 use serde_json::Value;
 
+use crate::packs::cmd::{self as packs, PacksCmd};
+use crate::queue::{self, QueueCmd};
 use crate::records::{self, RecordsCmd};
+use crate::scheduler::{self, SchedulerCmd};
+use crate::workspaces::{self, WorkspacesCmd};
 
 pub const USAGE: &str = "usage: shimmer [--socket PATH] [--json] <command>
 
@@ -13,6 +18,10 @@ commands:
   ping                  check the daemon is up
   manifest              list registered modules, their ops and lanes
   records …             add, list and complete records (shimmer records --help)
+  workspaces …          list, inspect and reset workspaces (shimmer workspaces --help)
+  queue …               what's running and waiting, and cancel or reorder it (shimmer queue --help)
+  scheduler …           run things on a schedule (shimmer scheduler --help)
+  packs …               command packs: themed aliases for these commands (shimmer packs --help)
   call OP [PARAMS]      send any op; PARAMS is a JSON object (default {})
   shutdown              stop the daemon
   daemon                run the daemon in the foreground (Ctrl-C to stop)
@@ -21,7 +30,9 @@ commands:
 options:
   --socket PATH         talk to this socket instead of the default; never auto-starts
   --json                print the daemon's raw JSON instead of formatted output
-  -h, --help            show this help
+  --pack NAME           use this command pack for one command ('none' for plain names);
+                        goes before the command
+  -h, --help            show this help; with --canonical, without the active pack's aliases
 
 The daemon is started automatically when it is not running.";
 
@@ -33,6 +44,10 @@ pub enum Command {
     Shutdown,
     Call { op: String, params: Value },
     Records(RecordsCmd),
+    Workspaces(WorkspacesCmd),
+    Queue(QueueCmd),
+    Scheduler(SchedulerCmd),
+    Packs(PacksCmd),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -71,6 +86,10 @@ impl Args {
         }
         let command = match (help, words.first().map(String::as_str)) {
             (true, Some("records")) => Command::Records(RecordsCmd::Help),
+            (true, Some("workspaces")) => Command::Workspaces(WorkspacesCmd::Help),
+            (true, Some("queue")) => Command::Queue(QueueCmd::Help),
+            (true, Some("scheduler")) => Command::Scheduler(SchedulerCmd::Help),
+            (true, Some("packs")) => Command::Packs(PacksCmd::Help),
             (true, _) => Command::Help,
             (false, _) => command(words)?,
         };
@@ -84,6 +103,18 @@ fn command(words: Vec<String>) -> Result<Command, String> {
     let rest: Vec<String> = words.collect();
     if word == "records" {
         return records::parse(rest).map(Command::Records);
+    }
+    if word == "workspaces" {
+        return workspaces::parse(rest).map(Command::Workspaces);
+    }
+    if word == "queue" {
+        return queue::parse(rest).map(Command::Queue);
+    }
+    if word == "scheduler" {
+        return scheduler::parse(rest).map(Command::Scheduler);
+    }
+    if word == "packs" {
+        return packs::parse(rest).map(Command::Packs);
     }
     if let Some(opt) = rest.iter().find(|w| w.starts_with('-') && w.len() > 1) {
         return Err(format!("unknown option '{}'", opt.split('=').next().unwrap_or(opt)));

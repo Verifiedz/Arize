@@ -120,3 +120,35 @@ async fn missing_and_stale_sockets_mean_nobody_is_listening() {
     assert!(matches!(stale, ConnectError::Io(_)));
     assert!(stale.nobody_listening());
 }
+
+fn task_event(topic: &str, task: &str) -> ServerFrame {
+    ServerFrame::event(Event::new(ModuleId::new("queue"), topic, json!({"task_id": task}), Default::default()))
+}
+
+#[tokio::test]
+async fn after_subscribing_events_that_arrive_before_a_response_are_kept_in_order() {
+    // `shimmer workspaces activate --wait`: subscribe, then send the op. The daemon may push the
+    // task's first events before it answers; they must reach `next_event`, not be skipped.
+    let dir = TempDir::new().unwrap();
+    serve(&sock(&dir), |f| match f {
+        ClientFrame::Hello { .. } => vec![welcome()],
+        ClientFrame::Subscribe { id, topics, .. } => {
+            assert_eq!(topics, ["queue.task.*"]);
+            vec![ServerFrame::ok(id, json!({"subscribed": 1}))]
+        }
+        ClientFrame::Request { id, .. } => vec![
+            task_event("queue.task.enqueued", "t1"),
+            task_event("queue.task.started", "t1"),
+            ServerFrame::ok(id, json!({"queued": true, "task_id": "t1"})),
+            task_event("queue.task.finished", "t1"),
+        ],
+        _ => vec![],
+    })
+    .await;
+    let mut c = Client::connect(&sock(&dir)).await.unwrap();
+    c.subscribe(&["queue.task.*"]).await.unwrap();
+    assert_eq!(c.call("workspaces.activate", json!({"id": "w"})).await.unwrap()["task_id"], "t1");
+    let topics =
+        [c.next_event().await.unwrap().topic, c.next_event().await.unwrap().topic, c.next_event().await.unwrap().topic];
+    assert_eq!(topics, ["queue.task.enqueued", "queue.task.started", "queue.task.finished"]);
+}

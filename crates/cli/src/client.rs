@@ -1,13 +1,15 @@
 //! One connection to the daemon, speaking `docs/protocol.md`: `hello` first, then requests
-//! matched to responses by id. Every failure, including a dead socket, is a `shimmer_core::Error`
-//! so the caller handles one error type and branches on `code`.
+//! matched to responses by id, and optionally a subscription to pushed events. Every failure,
+//! including a dead socket, is a `shimmer_core::Error` so the caller handles one error type and
+//! branches on `code`.
 
+use std::collections::VecDeque;
 use std::io;
 use std::path::Path;
 use std::time::Duration;
 
 use serde_json::Value;
-use shimmer_core::{Error, Result};
+use shimmer_core::{Error, Event, Result};
 use shimmer_proto::{decode_server, encode, ClientFrame, ServerFrame, PROTOCOL_VERSION};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -22,6 +24,10 @@ pub struct Client {
     rd: BufReader<OwnedReadHalf>,
     wr: OwnedWriteHalf,
     next_id: u64,
+    /// True after [`subscribe`](Self::subscribe): events are kept, not skipped.
+    subscribed: bool,
+    /// Events that arrived while waiting for a response, oldest first.
+    events: VecDeque<Event>,
 }
 
 impl Client {
@@ -30,7 +36,7 @@ impl Client {
     pub async fn connect(socket: &Path) -> std::result::Result<Self, ConnectError> {
         let stream = UnixStream::connect(socket).await.map_err(ConnectError::Io)?;
         let (rd, wr) = stream.into_split();
-        let mut client = Self { rd: BufReader::new(rd), wr, next_id: 0 };
+        let mut client = Self { rd: BufReader::new(rd), wr, next_id: 0, subscribed: false, events: VecDeque::new() };
         client.handshake().await.map_err(ConnectError::Protocol)?;
         Ok(client)
     }
@@ -52,17 +58,54 @@ impl Client {
         }
     }
 
-    /// Send one request and wait for its response. Events arriving meanwhile are skipped:
-    /// this client never subscribes, so any it sees are not for it.
+    /// Send one request and wait for its response. Events arriving meanwhile are kept for
+    /// [`next_event`](Self::next_event) once subscribed, and skipped before that.
     pub async fn call(&mut self, op: &str, params: Value) -> Result<Value> {
-        self.next_id += 1;
-        let id = self.next_id.to_string();
+        let id = self.fresh_id();
         let request =
             ClientFrame::Request { v: PROTOCOL_VERSION, id: id.clone(), op: op.to_owned(), params, queue: None };
         self.send(&request).await?;
         tokio::time::timeout(REQUEST_TIMEOUT, self.response(&id))
             .await
             .map_err(|_| Error::unavailable(format!("no response to '{op}' after {}s", REQUEST_TIMEOUT.as_secs())))?
+    }
+
+    /// Ask the daemon to push events matching `topics` (docs/protocol.md, `subscribe`). Call
+    /// it before the request whose events you want, so none can be missed.
+    pub async fn subscribe(&mut self, topics: &[&str]) -> Result<()> {
+        let id = self.fresh_id();
+        let frame = ClientFrame::Subscribe {
+            v: PROTOCOL_VERSION,
+            id: id.clone(),
+            topics: topics.iter().map(|t| t.to_string()).collect(),
+        };
+        self.send(&frame).await?;
+        self.subscribed = true;
+        tokio::time::timeout(REQUEST_TIMEOUT, self.response(&id))
+            .await
+            .map_err(|_| Error::unavailable("daemon did not acknowledge the subscription"))?
+            .map(drop)
+    }
+
+    /// The next pushed event, waiting as long as it takes: a launch can run for minutes. Only
+    /// after [`subscribe`](Self::subscribe).
+    pub async fn next_event(&mut self) -> Result<Event> {
+        if let Some(event) = self.events.pop_front() {
+            return Ok(event);
+        }
+        loop {
+            match self.recv().await? {
+                ServerFrame::Event { event, .. } => return Ok(event),
+                ServerFrame::Error { error, .. } => return Err(error),
+                // A late response to something else: not what we're waiting for.
+                ServerFrame::Welcome { .. } | ServerFrame::Response { .. } => continue,
+            }
+        }
+    }
+
+    fn fresh_id(&mut self) -> String {
+        self.next_id += 1;
+        self.next_id.to_string()
     }
 
     async fn response(&mut self, id: &str) -> Result<Value> {
@@ -76,6 +119,7 @@ impl Client {
                     };
                 }
                 ServerFrame::Error { error, .. } => return Err(error),
+                ServerFrame::Event { event, .. } if self.subscribed => self.events.push_back(event),
                 _ => continue,
             }
         }
