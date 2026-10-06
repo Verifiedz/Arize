@@ -32,6 +32,9 @@ commands:
   stop NAME [--wait]                    stop what an active workspace started (its dev server,
                                         services); windows stay open
   remove NAME                           remove a workspace that isn't running
+  edit NAME [FILE] [--path]             open its workspace.toml (or FILE in its folder, e.g.
+                                        steps/01-check.sh) in $VISUAL/$EDITOR, then check it;
+                                        --path only prints where the file is
   restore NAME                          bring a removed workspace back
 
   templates                             list ready-made workspaces to start from
@@ -75,6 +78,12 @@ pub enum WorkspacesCmd {
         id: String,
         wait: bool,
     },
+    /// `file`: inside the workspace folder; `None` is `workspace.toml`.
+    Edit {
+        id: String,
+        file: Option<String>,
+        path_only: bool,
+    },
     Remove {
         id: String,
     },
@@ -101,11 +110,12 @@ pub fn parse(words: Vec<String>) -> std::result::Result<WorkspacesCmd, String> {
         return parse_new(words.collect());
     }
     let mut positional = Vec::new();
-    let (mut yes, mut wait) = (false, false);
+    let (mut yes, mut wait, mut path_only) = (false, false, false);
     for word in words {
         match word.as_str() {
             "--yes" | "-y" => yes = true,
             "--wait" => wait = true,
+            "--path" if sub == "edit" => path_only = true,
             w if w.starts_with('-') && w.len() > 1 => {
                 return Err(format!("unknown option '{}'", w.split('=').next().unwrap_or(w)));
             }
@@ -143,6 +153,13 @@ pub fn parse(words: Vec<String>) -> std::result::Result<WorkspacesCmd, String> {
         "reset" => Ok(WorkspacesCmd::Reset { id: name(positional)?, yes }),
         "stop" => Ok(WorkspacesCmd::Stop { id: name(positional)?, wait }),
         "remove" => Ok(WorkspacesCmd::Remove { id: name(positional)? }),
+        "edit" => {
+            let mut words = positional.into_iter();
+            match (words.next(), words.next(), words.next()) {
+                (Some(id), file, None) => Ok(WorkspacesCmd::Edit { id, file, path_only }),
+                _ => Err("usage: shimmer workspaces edit NAME [FILE] [--path]".into()),
+            }
+        }
         "restore" => Ok(WorkspacesCmd::Restore { id: name(positional)? }),
         "templates" => match positional.is_empty() {
             true => Ok(WorkspacesCmd::Templates),
@@ -268,6 +285,38 @@ pub async fn run(client: &mut Client, cmd: &WorkspacesCmd, json: bool, prompt: &
         WorkspacesCmd::Activate { id, wait } => queued(client, Queued::Activate, id, *wait, json).await,
         WorkspacesCmd::Cleanup { id, wait } => queued(client, Queued::Cleanup, id, *wait, json).await,
         WorkspacesCmd::Stop { id, wait } => queued(client, Queued::Stop, id, *wait, json).await,
+        WorkspacesCmd::Edit { id, file, path_only } => {
+            // Through the daemon first: an unknown workspace is its `not_found`, not a new file.
+            client.call("workspaces.status", id_params(id)).await?;
+            let path = edit_path(&shimmer_proto::paths::shimmer_home(), id, file.as_deref())?;
+            if *path_only {
+                return Ok(path.display().to_string());
+            }
+            if !prompt.interactive() {
+                return Err(Error::invalid_params(format!(
+                    "workspaces edit needs a terminal; edit the file directly: {}",
+                    path.display()
+                )));
+            }
+            let editor =
+                editor_command(std::env::var("VISUAL").ok().as_deref(), std::env::var("EDITOR").ok().as_deref(), |p| {
+                    which(p)
+                })
+                .ok_or_else(|| Error::invalid_params("no editor found: set $EDITOR (e.g. export EDITOR=nano)"))?;
+            let status = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("{editor} \"$1\""))
+                .arg("sh")
+                .arg(&path)
+                .status()
+                .map_err(|e| Error::unavailable(format!("couldn't start {editor}: {e}")))?;
+            if !status.success() {
+                return Err(Error::unavailable(format!("{editor} exited with {status}; nothing checked")));
+            }
+            // The daemon reads the file fresh on every request, so this checks what was saved.
+            let data = client.call("workspaces.status", id_params(id)).await?;
+            Ok(out(&data, edited(id, &data)))
+        }
         WorkspacesCmd::Remove { id } => {
             let data = client.call("workspaces.remove", id_params(id)).await?;
             Ok(out(&data, format!("removed {id} (undo: shimmer workspaces restore {id})")))
@@ -452,6 +501,50 @@ fn explain(e: Error, id: &str) -> Error {
     Error::new(ErrorCode::WorkspaceDirty, message)
 }
 
+// ---------------------------------------------------------------- edit
+
+/// The file to edit: `FILE` (default `workspace.toml`) inside `data/workspaces/<id>/` in the
+/// Shimmer folder, the layout CLAUDE.md §7 documents. `FILE` must stay inside that folder.
+fn edit_path(home: &std::path::Path, id: &str, file: Option<&str>) -> Result<std::path::PathBuf> {
+    let file = file.unwrap_or("workspace.toml");
+    let inside = !file.is_empty()
+        && !file.starts_with('/')
+        && std::path::Path::new(file).components().all(|c| matches!(c, std::path::Component::Normal(_)));
+    if !inside {
+        return Err(Error::invalid_params(format!(
+            "'{file}' must be a file inside the workspace folder, like workspace.toml or steps/01-check.sh"
+        )));
+    }
+    Ok(home.join("data/workspaces").join(id).join(file))
+}
+
+/// `$VISUAL`, then `$EDITOR`, then the first of `nano`, `vi` that exists. A GUI editor needs its
+/// wait flag (`EDITOR="code --wait"`), or the check runs before you've saved.
+fn editor_command(visual: Option<&str>, editor: Option<&str>, has: impl Fn(&str) -> bool) -> Option<String> {
+    [visual, editor]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|e| !e.is_empty())
+        .map(str::to_owned)
+        .or_else(|| ["nano", "vi"].into_iter().find(|e| has(e)).map(str::to_owned))
+}
+
+fn which(program: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
+}
+
+/// After editing: fine, or exactly what's wrong now.
+fn edited(id: &str, data: &Value) -> String {
+    match data["state"].as_str() {
+        Some("invalid") => format!(
+            "✗ {id} is now invalid: {}\n  fix it with: shimmer workspaces edit {id}",
+            data["error"].as_str().unwrap_or("unknown problem")
+        ),
+        _ => format!("✓ {id} saved; it takes effect the next time you activate it"),
+    }
+}
+
 // ---------------------------------------------------------------- templates (ADR 0025)
 
 /// Where `~` and relative paths point: only the client knows (ADR 0025 §8).
@@ -575,7 +668,7 @@ fn created(id: &str, template: &str) -> String {
     [
         format!("✓ created workspace {id} from {template}"),
         format!("  start it: shimmer workspaces activate {id} --wait"),
-        format!("  change an answer: edit [env] in data/workspaces/{id}/workspace.toml in your Shimmer folder"),
+        format!("  change an answer: shimmer workspaces edit {id}   (the [env] table at the bottom)"),
     ]
     .join("\n")
 }
@@ -942,6 +1035,49 @@ mod tests {
         let e = confirm(&mut p, false, "reset", "Reset?", "deep-work", &s).unwrap_err();
         assert_eq!(e.message, "refusing to reset 'deep-work' without confirmation; pass --yes to do it anyway");
         assert!(p.asked.is_empty());
+    }
+
+    #[test]
+    fn edit_parses_and_stays_inside_the_folder() {
+        assert_eq!(
+            parse_words(&["edit", "site"]).unwrap(),
+            WorkspacesCmd::Edit { id: "site".into(), file: None, path_only: false }
+        );
+        assert_eq!(
+            parse_words(&["edit", "site", "steps/01-check.sh", "--path"]).unwrap(),
+            WorkspacesCmd::Edit { id: "site".into(), file: Some("steps/01-check.sh".into()), path_only: true }
+        );
+        assert!(parse_words(&["edit"]).unwrap_err().contains("usage"));
+        assert!(parse_words(&["status", "site", "--path"]).unwrap_err().contains("unknown option"));
+
+        let home = std::path::Path::new("/home/me/.local/share/shimmer");
+        assert_eq!(
+            edit_path(home, "site", None).unwrap(),
+            std::path::Path::new("/home/me/.local/share/shimmer/data/workspaces/site/workspace.toml")
+        );
+        assert!(edit_path(home, "site", Some("steps/09-terminal.sh")).unwrap().ends_with("site/steps/09-terminal.sh"));
+        for bad in ["../records/x.toml", "/etc/passwd", "steps/../../x", ""] {
+            assert!(edit_path(home, "site", Some(bad)).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_editor_is_visual_then_editor_then_nano_or_vi() {
+        let has = |p: &str| p == "vi";
+        assert_eq!(editor_command(Some("code --wait"), Some("nano"), has).as_deref(), Some("code --wait"));
+        assert_eq!(editor_command(Some(" "), Some("nano"), has).as_deref(), Some("nano"));
+        assert_eq!(editor_command(None, None, has).as_deref(), Some("vi"));
+        assert_eq!(editor_command(None, None, |_| false), None);
+    }
+
+    #[test]
+    fn after_editing_it_says_whether_the_file_still_works() {
+        let ok = json!({"id": "site", "state": "ready"});
+        assert!(edited("site", &ok).starts_with("✓ site saved"));
+        let broken =
+            json!({"id": "site", "state": "invalid", "error": "site/workspace.toml: unknown field `tiemout_s`"});
+        let out = edited("site", &broken);
+        assert!(out.contains("unknown field `tiemout_s`") && out.contains("shimmer workspaces edit site"), "{out}");
     }
 
     /// A scripted person who types these answers, in order.

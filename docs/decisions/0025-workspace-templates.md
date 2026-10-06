@@ -320,6 +320,13 @@ Other links to open (live site, hosting dashboard, analytics…) []: https://me.
 - `folder` and `file` answers: the CLI expands `~` and makes relative paths absolute, since
   only the client knows the person's home and current folder.
 - No pack aliases for these two, as for record templates (ADR 0022 §4).
+- `shimmer workspaces edit NAME [FILE] [--path]` opens `workspace.toml` (or `FILE` in the same
+  folder, e.g. `steps/01-check.sh`) in `$VISUAL`, then `$EDITOR`, then `nano` or `vi`, and asks
+  `workspaces.status` afterwards, so a typo is reported as soon as the editor closes rather than at
+  the next launch. Client-only: the folder is the one CLAUDE.md §7 documents, under
+  `shimmer_proto::paths::shimmer_home()`, and the person's editor writes it, as any hand edit
+  would. It refuses a `FILE` outside the folder, an unknown workspace (the daemon's `not_found`),
+  and running without a terminal (it prints the path instead). `--path` only prints the path.
 
 ## Consequences
 
