@@ -143,6 +143,23 @@ Opening an app, a folder, a URL or a terminal differs between platforms (`xdg-op
   running `COMMAND` (e.g. `claude`).
 - `shimmer_has_editor EDITOR`: for the check step.
 
+**Where windows open (`OPEN_ON`).** A step inherits the daemon's environment, which comes from
+whatever terminal last started the daemon. A Cursor or VS Code terminal connected from another
+computer carries that editor's helpers (`BROWSER`, `VSCODE_IPC_HOOK_CLI`, its `remote-cli` on
+`PATH`), so windows go to *that* computer; the machine's own desktop session keeps them local.
+Found in practice: reinstalling Shimmer from a Cursor terminal silently moved every window from
+the VM's screen to the host. So `web-project` and `vm` ask `OPEN_ON`, and the helper applies it
+when a step loads it:
+
+| `OPEN_ON` | Windows open | How |
+|---|---|---|
+| `auto` (default) | wherever the daemon was started | nothing changed |
+| `this-machine` | this computer's own screen | drops the editors' remote helpers from the environment and `PATH`, and finds the desktop session (`$XDG_RUNTIME_DIR/wayland-*`, `/tmp/.X11-unix/X0`, the session bus) |
+| `connected-computer` | the computer you're connected from | finds the newest Cursor or VS Code server's `remote-cli`, `helpers/browser.sh` and live `vscode-ipc-*.sock` |
+
+The check step fails with one sentence when the chosen place isn't available ("no desktop session
+open", "no Cursor or VS Code window connected").
+
 It branches on `$SHIMMER_PLATFORM` (CLAUDE.md §10.1), is POSIX `sh` (ADR 0012 §5: Debian's `sh`
 is `dash`), and is copied into each created workspace like any other file, so the workspace
 keeps working even if a later Shimmer changes the helper. Files outside `steps/` are already
@@ -165,6 +182,8 @@ host: your setup is a set of answers.
 | `LOCAL_URL` | url or `auto` | `auto` | wait, browser |
 | `REPO_PAGE` | choice `home`, `pulls`, `issues`, `actions`, `none` | `home` | browser |
 | `LINKS` | urls | empty | browser: live site, Vercel/Netlify/… dashboard, analytics |
+| `IDE_TERMINAL_COMMAND` | command | empty | editor: a terminal *inside* VS Code / Cursor running it |
+| `OPEN_ON` | choice `auto`, `this-machine`, `connected-computer` | `auto` | every opening step (§5) |
 | `TERMINAL_APP` | choice `auto`, `kitty`, `foot`, `alacritty`, `wezterm`, `ghostty`, `gnome-terminal`, `konsole`, `terminal`, `iterm`, `none` | `auto` | terminal |
 | `TERMINAL_COMMAND` | command | empty | terminal, e.g. `claude` |
 
@@ -195,6 +214,15 @@ What `auto` means, decided when the step runs:
   hosts only `home` is opened. No remote: nothing.
 - **Node version**: when the project has `.nvmrc` or `.node-version` and `fnm`, `nvm` or
   `volta` is installed, the install and dev-server steps use that version.
+
+**A terminal inside the editor** (`IDE_TERMINAL_COMMAND`, VS Code and Cursor only). Neither editor
+has a command-line flag for it, but both run a task marked `"runOn": "folderOpen"` in the
+folder's `.vscode/tasks.json` in their own terminal. The editor step writes that file before
+opening the folder, with a first line saying Shimmer created it; it rewrites only a file it
+created, prints the task to add when the project already has a `tasks.json` of its own, deletes
+its file when the answer is cleared, and hides it from git through `.git/info/exclude` (local,
+never committed). The editors may ask once to allow automatic tasks. It needs the editor to open
+the folder, not a single `OPEN_PATH` file.
 
 **The dev server's output and process id** go in the system temp folder,
 `${TMPDIR:-/tmp}/shimmer-<workspace id>/` (`dev-server.log`, `dev-server.pid`), never inside

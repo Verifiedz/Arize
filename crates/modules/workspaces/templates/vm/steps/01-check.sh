@@ -2,6 +2,9 @@
 . "$SHIMMER_WORKSPACE_DIR/lib/shimmer-open.sh"
 . "$SHIMMER_WORKSPACE_DIR/lib/shimmer-vm.sh"
 
+problem=$(shimmer_display_problem)
+[ -z "$problem" ] || shimmer_fail "$problem"
+
 if [ "$VM_SOFTWARE" = "custom" ]; then
     [ -n "$START_COMMAND" ] || shimmer_fail "VM_SOFTWARE is custom: set START_COMMAND in workspace.toml's [env]"
 else

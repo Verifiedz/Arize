@@ -38,6 +38,14 @@ default = "window"
 help = "headless works with VirtualBox, VMware and libvirt; UTM, Parallels and Multipass decide for themselves."
 
 [[question]]
+name = "OPEN_ON"
+prompt = "Where windows open"
+kind = "choice"
+choices = ["auto", "this-machine", "connected-computer"]
+default = "auto"
+help = "this-machine: this computer's own screen, even if Shimmer was started from a Cursor/VS Code terminal connected from elsewhere. connected-computer: the computer you're connected from. auto: wherever Shimmer was started."
+
+[[question]]
 name = "VM_HOST"
 prompt = "The VM's address for SSH"
 kind = "text"

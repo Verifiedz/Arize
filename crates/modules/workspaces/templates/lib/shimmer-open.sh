@@ -26,6 +26,73 @@ shimmer_fail() {
     exit 1
 }
 
+# ---------------------------------------------------------------- where windows open
+
+# Where editors, browsers and terminals appear (OPEN_ON). Steps inherit the daemon's settings,
+# which come from whatever terminal last started it: a Cursor or VS Code terminal connected from
+# another computer sends windows to that computer, the machine's own desktop keeps them here. So
+# a workspace can say where it wants them instead:
+#   auto                as the daemon was started (unchanged)
+#   this-machine        this computer's own screen, ignoring any editor's remote-connection helpers
+#   connected-computer  the computer you're connected from, through Cursor's or VS Code's helpers
+shimmer_use_display() {
+    case "${OPEN_ON:-auto}" in
+        this-machine)
+            unset BROWSER VSCODE_IPC_HOOK_CLI
+            PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v -e '/\.cursor-server/' -e '/\.vscode-server/' | paste -s -d: -)
+            export PATH
+            shimmer_macos && return 0
+            XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+            export XDG_RUNTIME_DIR
+            if [ -z "$WAYLAND_DISPLAY" ]; then
+                for sock in "$XDG_RUNTIME_DIR"/wayland-*; do
+                    case "$sock" in *.lock) continue ;; esac
+                    if [ -S "$sock" ]; then
+                        WAYLAND_DISPLAY=$(basename "$sock")
+                        export WAYLAND_DISPLAY
+                        break
+                    fi
+                done
+            fi
+            if [ -z "$DISPLAY" ] && [ -S /tmp/.X11-unix/X0 ]; then
+                DISPLAY=:0
+                export DISPLAY
+            fi
+            if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] && [ -S "$XDG_RUNTIME_DIR/bus" ]; then
+                DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+                export DBUS_SESSION_BUS_ADDRESS
+            fi
+            ;;
+        connected-computer)
+            bin=$(ls -td "$HOME"/.cursor-server/bin/*/*/bin "$HOME"/.cursor-server/bin/*/bin \
+                "$HOME"/.vscode-server/bin/*/bin "$HOME"/.vscode-server/cli/servers/*/server/bin 2>/dev/null | head -n 1)
+            [ -n "$bin" ] || return 0
+            [ -d "$bin/remote-cli" ] && PATH="$bin/remote-cli:$PATH" && export PATH
+            [ -f "$bin/helpers/browser.sh" ] && BROWSER="$bin/helpers/browser.sh" && export BROWSER
+            if [ -z "$VSCODE_IPC_HOOK_CLI" ]; then
+                rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+                VSCODE_IPC_HOOK_CLI=$(ls -t "$rt"/vscode-ipc-*.sock 2>/dev/null | head -n 1)
+                [ -n "$VSCODE_IPC_HOOK_CLI" ] && export VSCODE_IPC_HOOK_CLI
+            fi
+            ;;
+    esac
+}
+
+# Why windows can't open where OPEN_ON asks, or nothing. For the check step.
+shimmer_display_problem() {
+    case "${OPEN_ON:-auto}" in
+        this-machine)
+            shimmer_macos && return 0
+            [ -n "$WAYLAND_DISPLAY" ] || [ -n "$DISPLAY" ] ||
+                echo "OPEN_ON is this-machine, but this computer has no desktop session open: log in on its screen first"
+            ;;
+        connected-computer)
+            [ -n "$VSCODE_IPC_HOOK_CLI" ] && [ -S "$VSCODE_IPC_HOOK_CLI" ] ||
+                echo "OPEN_ON is connected-computer, but no Cursor or VS Code window is connected to this computer right now"
+            ;;
+    esac
+}
+
 # ---------------------------------------------------------------- urls
 
 # The default browser. When BROWSER is set it wins: over a remote session (Cursor or VS Code
@@ -125,6 +192,72 @@ shimmer_open_editor() {
         return
     fi
     shimmer_fail "$editor isn't installed"
+}
+
+# ---------------------------------------------------------------- a terminal inside the editor
+
+# A string as a JSON string literal.
+shimmer_json_string() {
+    printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+}
+
+# Make VS Code / Cursor open a terminal running COMMAND inside the editor whenever FOLDER opens:
+# a task in FOLDER/.vscode/tasks.json with `"runOn": "folderOpen"`, the editors' own feature
+# for this. Only ever writes or removes a tasks.json that Shimmer created (it says so on its
+# first line); a tasks.json of yours is left alone and the task to add is printed instead.
+# Kept out of git through .git/info/exclude, which is local and never committed. An empty
+# COMMAND removes Shimmer's file.
+shimmer_ide_terminal() {
+    folder=$1
+    command=$2
+    file="$folder/.vscode/tasks.json"
+    marker="// Created by Shimmer workspace '$SHIMMER_WORKSPACE_ID'"
+    ours=false
+    [ -f "$file" ] && head -n 1 "$file" | grep -qF "// Created by Shimmer workspace" && ours=true
+    if [ -z "$command" ]; then
+        if $ours; then
+            rm -f "$file"
+            echo "removed Shimmer's $file"
+        fi
+        return 0
+    fi
+    task=$(cat <<TASK
+    {
+      "label": $(shimmer_json_string "Shimmer: $command"),
+      "type": "shell",
+      "command": $(shimmer_json_string "$command"),
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "focus": false },
+      "runOptions": { "runOn": "folderOpen" }
+    }
+TASK
+)
+    if [ -f "$file" ] && ! $ours; then
+        echo "$file is yours, so Shimmer won't change it. To get the terminal, add this to its \"tasks\":"
+        echo "$task"
+        return 0
+    fi
+    mkdir -p "$folder/.vscode" || return 0
+    {
+        echo "$marker: opens a terminal in the editor"
+        echo "// running your command when this folder opens. Change it with: shimmer workspaces edit $SHIMMER_WORKSPACE_ID"
+        echo "// (IDE_TERMINAL_COMMAND). Shimmer rewrites this file on every launch; it's kept out of git."
+        echo "{"
+        echo '  "version": "2.0.0",'
+        echo '  "tasks": ['
+        echo "$task"
+        echo "  ]"
+        echo "}"
+    } >"$file"
+    # Hidden from `git status` on this machine only, unless the file is already tracked.
+    if git -C "$folder" rev-parse --git-dir >/dev/null 2>&1 && ! git -C "$folder" ls-files --error-unmatch .vscode/tasks.json >/dev/null 2>&1; then
+        exclude="$(git -C "$folder" rev-parse --git-path info/exclude)"
+        case "$exclude" in /*) ;; *) exclude="$folder/$exclude" ;; esac
+        mkdir -p "$(dirname "$exclude")"
+        grep -qxF "/.vscode/tasks.json" "$exclude" 2>/dev/null || echo "/.vscode/tasks.json" >>"$exclude"
+    fi
+    echo "the editor will open a terminal running: $command"
 }
 
 # ---------------------------------------------------------------- terminals
@@ -342,3 +475,7 @@ shimmer_stop_group() {
     kill -s KILL -- "-$pid" 2>/dev/null
     return 0
 }
+
+
+# Every step that loads this file opens things where OPEN_ON says.
+shimmer_use_display

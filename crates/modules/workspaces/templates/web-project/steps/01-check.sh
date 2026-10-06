@@ -1,6 +1,9 @@
 # Supervised: stop with one clear sentence before anything opens, instead of halfway.
 . "$SHIMMER_WORKSPACE_DIR/lib/shimmer-open.sh"
 
+problem=$(shimmer_display_problem)
+[ -z "$problem" ] || shimmer_fail "$problem"
+
 [ -n "$PROJECT_DIR" ] || shimmer_fail "PROJECT_DIR is empty: set it in workspace.toml's [env]"
 [ -d "$PROJECT_DIR" ] || shimmer_fail "the project folder $PROJECT_DIR doesn't exist"
 
