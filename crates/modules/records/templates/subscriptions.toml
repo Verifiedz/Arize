@@ -1,0 +1,96 @@
+# Subscriptions: one record per service you pay for regularly.
+# Created from Shimmer's subscriptions template. It's your file now: edit it freely.
+#
+# Never store full card numbers or passwords here: this is plain text in your Shimmer folder.
+# Records can't add up costs yet; --sort -cost shows the biggest ones first.
+#
+# How it works:
+#   shimmer records add <collection> --name "Cloud storage" --plan 2TB --category storage --state active \
+#       --cost 13 --currency CAD --billing-cycle monthly --renews-on 2026-10-18
+#   shimmer records list <collection> --filter "state=active" --sort -cost                 biggest first
+#   shimmer records list <collection> --filter "renews_on<=2026-10-31" --sort renews_on    renewing this month
+#   shimmer records update <collection>/<id> --state cancelled --cancelled-on 2026-10-05
+
+[collection]
+id = "subscriptions"
+label = "Subscriptions"
+description = "What you pay for regularly: cost, billing cycle, and when it renews or a trial ends"
+title = "{name}"
+# A subscription is on or off rather than finished: state says which.
+completable = false
+
+[[field]]
+name = "name"            # e.g. "Cloud storage", "Domain: example.com"
+type = "string"
+required = true
+
+[[field]]
+name = "plan"            # e.g. "Pro", "2TB"
+type = "string"
+
+[[field]]
+name = "category"        # --filter category=cloud
+type = "enum"
+values = ["software", "cloud", "ai", "storage", "domain", "education", "islamic", "news", "streaming", "fitness", "phone", "internet", "insurance", "other"]
+
+[[field]]
+name = "state"
+type = "enum"
+values = ["trial", "active", "paused", "cancelling", "cancelled"]
+
+[[field]]
+name = "cost"            # per billing cycle, whole units
+type = "int"
+
+[[field]]
+name = "currency"
+type = "string"
+
+[[field]]
+name = "billing_cycle"
+type = "enum"
+values = ["weekly", "monthly", "quarterly", "yearly"]
+
+[[field]]
+name = "renews_on"       # the next charge; the calendar can warn you
+type = "date"
+role = "deadline"
+
+[[field]]
+name = "trial_ends_on"   # cancel before a free trial starts charging
+type = "date"
+role = "deadline"
+
+[[field]]
+name = "started_on"
+type = "date"
+
+[[field]]
+name = "cancelled_on"
+type = "date"
+
+[[field]]
+name = "payment_method"  # e.g. "Visa ending 1234"; never the full number
+type = "string"
+
+[[field]]
+name = "account_email"   # which email it's under
+type = "string"
+
+[[field]]
+name = "shared_with"     # family or roommates splitting it
+type = "string"
+
+[[field]]
+name = "verdict"         # your call on it: --filter verdict=cancel
+type = "enum"
+values = ["keep", "review", "cancel"]
+
+[[field]]
+name = "manage_url"      # where to change or cancel it
+type = "string"
+role = "url"
+
+[[field]]
+name = "notes"
+type = "string"

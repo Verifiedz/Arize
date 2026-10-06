@@ -1,0 +1,96 @@
+# Interview questions: a bank of questions you practise, one record per question.
+# Created from Shimmer's interview-questions template. It's your file now: edit it freely.
+#
+# How it works:
+#   shimmer records add <collection> --question "Tell me about a conflict" --kind behavioral --confidence shaky
+#   shimmer records list <collection> --filter "confidence=shaky" --sort last_practiced
+#   shimmer records complete <collection>/<id> --confidence okay --next-review 2026-10-12
+#                                       practised it today; every practice counts (and shows on the heatmap)
+
+[collection]
+id = "interview-questions"
+label = "Interview questions"
+description = "A question bank to practise from: kind, topic, your answer, how ready you are"
+title = "{question}"
+# Completing a question means "practised it today": it stamps last_practiced.
+stamp_on_complete = "last_practiced"
+# Practising again is another practice, like solving a problem twice.
+repeat_complete = "restamp"
+related = ["interviews", "job-applications", "stories"]
+
+[[field]]
+name = "question"
+type = "string"
+required = true
+
+[[field]]
+name = "kind"            # practise one kind at a time: --filter kind=behavioral
+type = "enum"
+required = true
+values = ["behavioral", "coding", "system-design", "technical", "resume", "hiring-manager", "other"]
+
+[[field]]
+name = "difficulty"      # mostly for coding and system design
+type = "enum"
+values = ["easy", "medium", "hard"]
+
+[[field]]
+name = "topic"           # e.g. "graphs, BFS" or "leadership, conflict"
+type = "string"
+
+[[field]]
+name = "company"         # who asks it
+type = "string"
+
+[[field]]
+name = "asked_in"        # the id of the interview round, if you were asked it
+type = "string"
+
+[[field]]
+name = "asked_on"        # when you were asked it
+type = "date"
+
+[[field]]
+name = "source"          # a question you were asked, or one you found
+type = "enum"
+values = ["asked-me", "glassdoor", "leetcode-discuss", "blind", "friend", "book", "other"]
+
+[[field]]
+name = "url"             # a write-up, or the problem's page
+type = "string"
+role = "url"
+
+[[field]]
+name = "answer"          # your outline, or your STAR answer for behavioural questions
+type = "string"
+
+[[field]]
+name = "story"           # the id of the story you'd tell, from your stories collection
+type = "string"
+
+[[field]]
+name = "went"            # how it went when you were actually asked it
+type = "enum"
+values = ["nailed", "okay", "struggled", "blanked"]
+
+[[field]]
+name = "confidence"      # how ready you are now
+type = "enum"
+values = ["shaky", "okay", "solid"]
+
+[[field]]
+name = "next_review"     # when to practise it again; the calendar can remind you
+type = "date"
+role = "deadline"
+
+[[field]]
+name = "last_practiced"  # stamped by records complete
+type = "date"
+
+[[field]]
+name = "notes"
+type = "string"
+
+[[view]]
+kind = "heatmap"         # your practice days
+source = "last_practiced"

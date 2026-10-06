@@ -1,0 +1,79 @@
+# Documents: one record per important document, so nothing expires without you noticing.
+# Created from Shimmer's documents template. It's your file now: edit it freely.
+#
+# Never store document numbers here (passport, ID, permit or social insurance numbers): this is
+# plain text in your Shimmer folder, which may be copied or synced. Record what and when, and
+# where the document is kept.
+#
+# How it works:
+#   shimmer records add <collection> --name Passport --kind passport --issuer Canada --state valid \
+#       --issued-on 2021-03-02 --expires-on 2031-03-01 --renew-by 2030-09-01
+#   shimmer records list <collection> --filter "expires_on<=2027-06-01" --sort expires_on   expiring soon
+#   shimmer records list <collection> --filter "state=renewing"                           in progress
+
+[collection]
+id = "documents"
+label = "Documents"
+description = "Passports, visas, permits and licences: when they expire, when to renew, where they're kept"
+title = "{name}"
+# A document is valid, renewing or expired rather than finished: state says which.
+completable = false
+related = ["education", "employment", "addresses"]
+
+[[field]]
+name = "name"            # e.g. "Passport", "Study permit", "Driver's licence"
+type = "string"
+required = true
+
+[[field]]
+name = "kind"
+type = "enum"
+values = ["passport", "visa", "study-permit", "work-permit", "residence-permit", "national-id", "drivers-licence", "health-card", "insurance", "birth-certificate", "degree-certificate", "transcript", "vaccination-record", "other"]
+
+[[field]]
+name = "holder"          # whose it is, if you track family members' too
+type = "string"
+
+[[field]]
+name = "issuer"          # the country or authority, e.g. "Canada", "IRCC"
+type = "string"
+
+[[field]]
+name = "state"
+type = "enum"
+values = ["valid", "renewing", "expired", "lost", "cancelled"]
+
+[[field]]
+name = "issued_on"
+type = "date"
+
+[[field]]
+name = "expires_on"      # the calendar can warn you before it lapses
+type = "date"
+role = "deadline"
+
+[[field]]
+name = "renew_by"        # when to apply, allowing for processing time
+type = "date"
+role = "deadline"
+
+[[field]]
+name = "processing_time" # e.g. "about 6 weeks"
+type = "string"
+
+[[field]]
+name = "where_kept"      # e.g. "desk drawer, blue folder"
+type = "string"
+
+[[field]]
+name = "copy_location"   # where a scanned copy is, e.g. a folder path
+type = "string"
+
+[[field]]
+name = "renewal_url"     # where to renew it
+type = "string"
+role = "url"
+
+[[field]]
+name = "notes"
+type = "string"
