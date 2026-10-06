@@ -3,7 +3,7 @@
 
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
-use shimmer_core::{Error, Result};
+use shimmer_core::Result;
 
 use crate::client::Client;
 use crate::flags::Flags;
@@ -128,9 +128,8 @@ pub async fn run(client: &mut Client, cmd: &SchedulerCmd, json: bool) -> Result<
             return Ok(if json { render::json(&data) } else { list(&data, now) });
         }
         SchedulerCmd::Show { id } => {
-            let data = client.call("scheduler.list", json!({})).await?;
-            let t = find(&data, id).ok_or_else(|| Error::not_found(format!("no trigger '{id}'")))?;
-            return Ok(if json { render::json(t) } else { trigger(t, now) });
+            let data = client.call("scheduler.get", json!({"trigger_id": id})).await?;
+            return Ok(if json { render::json(&data) } else { trigger(&data, now) });
         }
         SchedulerCmd::Add(t) => {
             let mut params = json!({"schedule": t.schedule, "op": t.op, "params": t.params, "catch_up": t.catch_up});
