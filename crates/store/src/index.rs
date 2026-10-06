@@ -1,7 +1,7 @@
 //! The derived SQLite index. Never a source of truth (§1.4): every row here came from the
 //! event log, and deleting the file loses nothing.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, ErrorCode};
 use shimmer_core::{Error, Event, Result};
@@ -54,6 +54,7 @@ pub struct IndexStats {
 
 pub struct Index {
     conn: Connection,
+    path: PathBuf,
 }
 
 impl Index {
@@ -66,16 +67,16 @@ impl Index {
     /// Opening the connection alone is not enough: SQLite validates only the pages it
     /// happens to touch, so damage in the middle of the file — the header and whatever
     /// `open_conn`'s own queries read stay intact — can open successfully and even answer
-    /// some queries, yet fail the moment something touches the damaged page. That failure
-    /// would surface later, in `catch_up`, as a write error the indexer can only log as
-    /// "will heal on next catch-up" — except nothing ever revisits it, so it never does.
-    /// Running `PRAGMA quick_check` here catches that case at open time, when there is still
-    /// something useful to do about it, instead of allowing it to surface as a silent,
-    /// permanent write failure. It reads the whole file, which is cheap at this size.
+    /// some queries, yet fail the moment something touches the damaged page. Running `PRAGMA
+    /// quick_check` here catches that case at open time instead of letting it surface later
+    /// as a write failure. If it still happens later — corruption arriving *after* this check
+    /// last cleared the file, while the daemon keeps running (#10) — `apply_recovering` and
+    /// `catch_up_recovering` catch that in place, so this is not the only chance to recover.
+    /// It reads the whole file, which is cheap at this size.
     pub fn open(path: &Path) -> Result<Self> {
         match open_conn(path) {
             Ok(conn) => match quick_check_ok(&conn) {
-                Ok(true) => Ok(Self { conn }),
+                Ok(true) => Ok(Self { conn, path: path.to_path_buf() }),
                 Ok(false) => Self::recover(path, "PRAGMA quick_check reported damage"),
                 Err(e) if is_corrupt_or_not_a_database(&e) => {
                     Self::recover(path, &format!("PRAGMA quick_check itself failed: {e}"))
@@ -91,27 +92,58 @@ impl Index {
     /// every corruption case `open` detects, whether that showed up as an open failure or a
     /// failed `quick_check` on an otherwise-openable file.
     fn recover(path: &Path, reason: &str) -> Result<Self> {
-        tracing::warn!(
-            path = %path.display(),
-            reason,
-            "index.sqlite is corrupt; deleting it (and any -wal/-shm) and rebuilding from the event log"
-        );
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
-        }
-        Ok(Self { conn: open_conn(path).map_err(db_err)? })
+        warn_recovering(path, reason);
+        delete_index_files(path);
+        Ok(Self { conn: open_conn(path).map_err(db_err)?, path: path.to_path_buf() })
     }
 
-    /// Project one event. Idempotent: the same id twice is one row.
+    /// Same recovery as `recover`, but in place on an `Index` whose connection has been open
+    /// for a while — the file became corrupt *after* `open`'s `quick_check` last cleared it
+    /// (#10), so nothing will catch this short of a write actually failing against it.
+    fn recover_in_place(&mut self, reason: &str) -> Result<()> {
+        warn_recovering(&self.path, reason);
+        delete_index_files(&self.path);
+        self.conn = open_conn(&self.path).map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Project one event, recovering first if the write is failing only because the index
+    /// file itself has become corrupt since `open` (#10) — rather than leaving every event
+    /// for the rest of the session to fail the same way, with nothing ever revisiting it.
+    /// Idempotent: the same id twice is one row.
+    pub fn apply_recovering(&mut self, event: &Event, store: &Store) -> Result<()> {
+        self.apply_all_recovering(std::slice::from_ref(event), store)
+    }
+
+    /// `apply`, without the mid-session recovery check — for callers (like `catch_up`) that
+    /// already know the file is healthy, or that classify failures themselves.
     pub fn apply(&mut self, event: &Event) -> Result<()> {
         self.apply_all(std::slice::from_ref(event))
     }
 
     /// One SQLite transaction: all of `events` land or none do.
     pub fn apply_all(&mut self, events: &[Event]) -> Result<()> {
-        let tx = self.conn.transaction().map_err(db_err)?;
+        self.apply_all_raw(events).map_err(db_err)
+    }
+
+    fn apply_all_raw(&mut self, events: &[Event]) -> rusqlite::Result<()> {
+        let tx = self.conn.transaction()?;
         insert(&tx, events)?;
-        tx.commit().map_err(db_err)
+        tx.commit()
+    }
+
+    /// `apply_all`, recovering in place and replaying the whole log from `store` if the write
+    /// itself is what's failing because of mid-session corruption (#10), rather than
+    /// propagating a failure that nothing will ever come back to heal.
+    fn apply_all_recovering(&mut self, events: &[Event], store: &Store) -> Result<()> {
+        match self.apply_all_raw(events) {
+            Ok(()) => Ok(()),
+            Err(e) if is_corrupt_or_not_a_database(&e) => {
+                self.recover_in_place(&format!("write failed: {e}"))?;
+                self.catch_up(store)
+            }
+            Err(e) => Err(db_err(e)),
+        }
     }
 
     /// Bring the index up to date with the log without discarding anything.
@@ -120,13 +152,23 @@ impl Index {
         self.apply_all(&scan.events)
     }
 
+    /// `catch_up`, recovering in place first if the index file itself — not merely a lag in
+    /// the log scan — is why the attempt is failing (#10).
+    pub fn catch_up_recovering(&mut self, store: &Store) -> Result<()> {
+        let scan = store.read_events()?;
+        self.apply_all_recovering(&scan.events, store)
+    }
+
     /// Throw the projection away and rebuild it from the log, atomically: a crash midway
     /// leaves the previous consistent index.
     pub fn rebuild(&mut self, store: &Store) -> Result<()> {
         let scan = store.read_events()?;
+        let rebuild = |tx: &rusqlite::Transaction<'_>| -> rusqlite::Result<()> {
+            tx.execute("DELETE FROM events", [])?;
+            insert(tx, &scan.events)
+        };
         let tx = self.conn.transaction().map_err(db_err)?;
-        tx.execute("DELETE FROM events", []).map_err(db_err)?;
-        insert(&tx, &scan.events)?;
+        rebuild(&tx).map_err(db_err)?;
         tx.commit().map_err(db_err)
     }
 
@@ -155,15 +197,28 @@ impl Index {
     }
 }
 
-fn insert(tx: &rusqlite::Transaction<'_>, events: &[Event]) -> Result<()> {
-    let mut stmt = tx
-        .prepare_cached("INSERT OR IGNORE INTO events (id, at, source, topic, json) VALUES (?1, ?2, ?3, ?4, ?5)")
-        .map_err(db_err)?;
+fn insert(tx: &rusqlite::Transaction<'_>, events: &[Event]) -> rusqlite::Result<()> {
+    let mut stmt =
+        tx.prepare_cached("INSERT OR IGNORE INTO events (id, at, source, topic, json) VALUES (?1, ?2, ?3, ?4, ?5)")?;
     for e in events {
-        let json = serde_json::to_string(e).map_err(|e| Error::internal(format!("encode event: {e}")))?;
-        stmt.execute(params![e.id.to_string(), e.at.to_rfc3339(), e.source.as_str(), e.topic, json]).map_err(db_err)?;
+        let json = serde_json::to_string(e).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        stmt.execute(params![e.id.to_string(), e.at.to_rfc3339(), e.source.as_str(), e.topic, json])?;
     }
     Ok(())
+}
+
+fn warn_recovering(path: &Path, reason: &str) {
+    tracing::warn!(
+        path = %path.display(),
+        reason,
+        "index.sqlite is corrupt; deleting it (and any -wal/-shm) and rebuilding from the event log"
+    );
+}
+
+fn delete_index_files(path: &Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+    }
 }
 
 #[cfg(test)]
@@ -336,5 +391,74 @@ mod tests {
 
         let idx = Index::open(&store.index_path()).unwrap();
         assert_eq!(idx.stats().unwrap().events, 0, "mid-file damage must be caught, not silently kept");
+    }
+
+    /// #10: corruption that arrives *after* `open`'s `quick_check` last cleared the file —
+    /// while the daemon keeps running on the same connection — must not fail forever. Damage
+    /// everything past the first page (header + schema stay intact, exactly as `open_conn`
+    /// needs), so the very next write is certain to hit it rather than depending on whether a
+    /// given INSERT happens to land on the specific page that's damaged.
+    #[test]
+    fn apply_recovering_heals_mid_session_corruption_without_losing_events() {
+        let home = TempDir::new().unwrap();
+        let store = Store::open(home.path()).unwrap();
+        {
+            let mut idx = Index::open(&store.index_path()).unwrap();
+            for i in 0..50 {
+                let e = ev("records.item.created", i);
+                store.append_event(&e).unwrap();
+                idx.apply(&e).unwrap();
+            }
+        }
+
+        let mut bytes = std::fs::read(store.index_path()).unwrap();
+        for b in bytes.iter_mut().skip(4096) {
+            *b ^= 0xFF;
+        }
+        std::fs::write(store.index_path(), &bytes).unwrap();
+
+        let conn = open_conn(&store.index_path()).expect("open_conn must succeed despite the damage");
+        let mut idx = Index { conn, path: store.index_path() };
+
+        let new_event = ev("records.item.completed", 999);
+        store.append_event(&new_event).unwrap();
+
+        // Before the fix: a failing write here was only ever logged as "will heal on next
+        // catch-up" — a lie, since catch_up just re-applies to the same damaged file and
+        // fails the same way, forever. It must now recover in place and replay the whole
+        // log, landing on exactly what the store has, including the new event.
+        idx.apply_recovering(&new_event, &store).unwrap();
+        assert_eq!(idx.stats().unwrap().events, 51, "recovered and replayed the log, including the new event");
+    }
+
+    /// Same recovery, reached through `catch_up_recovering` (the `Lagged` broadcast-receiver
+    /// path in `crates/daemon/src/indexer.rs`) instead of a single `apply`.
+    #[test]
+    fn catch_up_recovering_heals_mid_session_corruption_without_losing_events() {
+        let home = TempDir::new().unwrap();
+        let store = Store::open(home.path()).unwrap();
+        {
+            let mut idx = Index::open(&store.index_path()).unwrap();
+            for i in 0..50 {
+                let e = ev("records.item.created", i);
+                store.append_event(&e).unwrap();
+                idx.apply(&e).unwrap();
+            }
+        }
+
+        let mut bytes = std::fs::read(store.index_path()).unwrap();
+        for b in bytes.iter_mut().skip(4096) {
+            *b ^= 0xFF;
+        }
+        std::fs::write(store.index_path(), &bytes).unwrap();
+
+        let conn = open_conn(&store.index_path()).expect("open_conn must succeed despite the damage");
+        let mut idx = Index { conn, path: store.index_path() };
+
+        let new_event = ev("records.item.completed", 999);
+        store.append_event(&new_event).unwrap();
+
+        idx.catch_up_recovering(&store).unwrap();
+        assert_eq!(idx.stats().unwrap().events, 51, "recovered and replayed the log, including the new event");
     }
 }
