@@ -335,6 +335,7 @@ be cancelled. A stale `queue_version` returns `conflict`.
 | Op | Execution | Params | Returns |
 |---|---|---|---|
 | `scheduler.list` | inline | `{}` | Triggers with `next_due`, `last_run`, `catch_up`, `paused`. |
+| `scheduler.get` | inline | `{"trigger_id"}` | One trigger, same shape as a `scheduler.list` entry, or `not_found`. |
 | `scheduler.add` | inline | `{"schedule","op","params","catch_up","lane"?,"fallback"?}` | `{"trigger_id"}` |
 | `scheduler.remove` | inline | `{"trigger_id"}` | `{"removed":true}` |
 | `scheduler.pause` | inline | `{"trigger_id"}` | `{"paused":true}` |
