@@ -205,7 +205,63 @@ async fn run_supervised(
         }
     };
 
+    prune_step_logs(home, &step.workspace_dir);
     Ok(StepOutcome { session_id: session_id.to_string(), exit_code, timed_out, log_path: log_rel })
+}
+
+/// Step logs to keep per workspace (#74): `logs/` gets a new file every supervised run
+/// (setup steps, cleanup) and nothing ever removed one before this, so it grew without bound.
+const KEEP_STEP_LOGS: usize = 10;
+
+/// Deletes every step log for `workspace_dir` beyond the newest [`KEEP_STEP_LOGS`], except
+/// the one a `dirty` state currently points at (read straight from `state.toml`, below) —
+/// run right after each supervised step's own log is written, so `logs/` stays bounded
+/// continuously rather than needing a sweep at daemon start. Best-effort: a failure to list
+/// or remove a file is swallowed, since missing a prune is harmless and must never fail the
+/// launch step that just succeeded or failed on its own merits.
+fn prune_step_logs(home: &Path, workspace_dir: &str) {
+    let mut files = workspace_log_files(home, workspace_dir);
+    // Newest first (filenames sort lexically by session id, and session ids are ULIDs, so
+    // this is also chronological order — ADR 0010 §3 "Logs").
+    files.reverse();
+    let protected = dirty_log_pointer(home, workspace_dir).map(|rel| home.join(rel));
+    for path in files.into_iter().skip(KEEP_STEP_LOGS) {
+        if protected.as_deref() == Some(path.as_path()) {
+            continue;
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+/// Every `logs/<workspace_dir>-<session_id>-<label>.log` file for this workspace, oldest
+/// first. Matches on an exact `<workspace_dir>-` prefix followed by a 26-character ULID, not
+/// a plain substring prefix, so a workspace named `foo` never matches another one's logs
+/// named `foo-bar-<session>-<label>.log`.
+fn workspace_log_files(home: &Path, workspace_dir: &str) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(home.join("logs")) else { return Vec::new() };
+    let prefix = format!("{workspace_dir}-");
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let rest = name.strip_prefix(&prefix)?.strip_suffix(".log")?;
+            let (session, _label) = rest.split_once('-')?;
+            (session.len() == 26 && session.chars().all(|c| c.is_ascii_alphanumeric())).then(|| e.path())
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+/// The log path a `dirty` state currently protects, if the workspace is dirty at all. Read
+/// directly from `data/workspaces/<workspace_dir>/state.toml` rather than through the
+/// workspaces module (the launcher has no `Ctx` into another module's store, §4) — this
+/// reads only the one field it needs from an ordinary human-readable file (§1.4), so it
+/// stays correct even as the module's own state shape grows around it.
+fn dirty_log_pointer(home: &Path, workspace_dir: &str) -> Option<String> {
+    let path = home.join("data/workspaces").join(workspace_dir).join("state.toml");
+    let table: toml::Table = std::fs::read_to_string(path).ok()?.parse().ok()?;
+    table.get("dirty")?.get("log")?.as_str().map(str::to_owned)
 }
 
 /// Relative to `$SHIMMER_HOME`, matching `docs/protocol.md`'s `workspace_dirty` detail shape
@@ -674,5 +730,60 @@ mod tests {
         assert_eq!(outcome.exit_code, None);
         tokio::time::sleep(Duration::from_millis(1200)).await;
         assert!(!grandchild_marker.exists(), "grandchild survived the process-group kill");
+    }
+
+    async fn launch_once(backend: &RealLaunchBackend) -> StepOutcome {
+        backend
+            .run(&supervised_step("deep-work", "setup", Duration::from_secs(5)), &CancellationToken::new())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn n_plus_three_launches_leave_only_the_newest_n_logs() {
+        let home = TempDir::new().unwrap();
+        write_step_script(home.path(), "deep-work", "setup", "true\n");
+        let backend = backend(&home);
+
+        let mut outcomes = Vec::new();
+        for _ in 0..KEEP_STEP_LOGS + 3 {
+            outcomes.push(launch_once(&backend).await);
+        }
+
+        let remaining = workspace_log_files(home.path(), "deep-work");
+        assert_eq!(remaining.len(), KEEP_STEP_LOGS, "exactly the newest {KEEP_STEP_LOGS} logs survive");
+        for stale in &outcomes[..3] {
+            assert!(!home.path().join(&stale.log_path).exists(), "an old, unprotected log must be pruned");
+        }
+        for fresh in &outcomes[3..] {
+            assert!(home.path().join(&fresh.log_path).exists(), "one of the newest {KEEP_STEP_LOGS} must survive");
+        }
+    }
+
+    #[tokio::test]
+    async fn pruning_never_deletes_the_log_a_dirty_state_still_points_at() {
+        let home = TempDir::new().unwrap();
+        write_step_script(home.path(), "deep-work", "setup", "true\n");
+        let backend = backend(&home);
+
+        // The very first attempt's log is the one a `dirty` state protects -- written to
+        // state.toml exactly as the workspaces module would after that attempt failed.
+        let first = launch_once(&backend).await;
+        let state_dir = home.path().join("data/workspaces/deep-work");
+        std::fs::write(
+            state_dir.join("state.toml"),
+            format!("state = \"dirty\"\n\n[dirty]\nreason = \"exit code 1\"\nlog = \"{}\"\n", first.log_path),
+        )
+        .unwrap();
+
+        // KEEP_STEP_LOGS more attempts: without protection, this alone would already be
+        // enough to prune the first attempt's log (it is now the oldest of 11).
+        for _ in 0..KEEP_STEP_LOGS {
+            launch_once(&backend).await;
+        }
+        assert!(home.path().join(&first.log_path).exists(), "the dirty state's own log must survive pruning");
+
+        let remaining = workspace_log_files(home.path(), "deep-work");
+        assert_eq!(remaining.len(), KEEP_STEP_LOGS + 1, "the cap, plus the one protected log that aged out of it");
     }
 }
