@@ -43,6 +43,8 @@ records created before this ADR keep working as they do.
   problem *was* solved that day, and is now due again. `"clear_stamp": true` removes the
   collection's `stamp_on_complete` field as well, for a completion that was simply a mistake.
   `clear_stamp` on a collection with no `stamp_on_complete` is accepted and does nothing.
+  The stamp field itself can't be `required` (a collection file that says so is rejected when
+  it's read): a `todo` record has no stamp yet, and `clear_stamp` removes it.
 - **Reopening a `todo` record is `conflict`** ("'two-sum' in 'leetcode' is not done"), not a
   silent success: a script that reopens the wrong record should find out.
 - A dedicated topic, not `records.item.updated` with `changed: ["status"]`, because the two mean
@@ -67,7 +69,10 @@ records created before this ADR keep working as they do.
 - **An explicit value for the stamp field wins over today's date.**
   `records complete jobs/amazon-sde-intern --applied-on 2026-10-03` records that you applied
   yesterday. This is the one way to back-date a completion without a second request.
-- `fields` absent or `{}` behaves exactly as today.
+- `fields` absent or `{}` behaves as today, with one difference: the required-fields check above
+  always runs, so if a collection file later marks a field `required`, completing an older record
+  that lacks it is `invalid_params` until the field is set (in the same `complete`, with
+  `fields`). That is the same rule `records.update` already follows.
 
 ### 3. `repeat_complete`: what completing a `done` record means
 

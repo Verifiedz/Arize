@@ -136,7 +136,19 @@
               },
               {
                 "op": "records.remove",
-                "summary": "Delete a record",
+                "summary": "Remove a record (it goes to the trash; records.restore brings it back); force if others refer to it",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "records.purge",
+                "summary": "Permanently delete removed records (one, or a collection's whole trash); needs confirmation",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "records.import",
+                "summary": "Add many records in one transaction; rows already there (by id or unique value) are skipped",
                 "params_schema": {},
                 "execution": "inline"
               }
@@ -153,7 +165,8 @@
               "records.collection.removed",
               "records.collection.restored",
               "records.item.removed",
-              "records.collection.created"
+              "records.collection.created",
+              "records.trash.purged"
             ]
           },
           {
@@ -397,7 +410,12 @@
             "url": null,
             "last_solved": null
           }
-        ]
+        ],
+        "titles": {
+          "two-sum": "Two Sum",
+          "lru-cache": "LRU Cache",
+          "median-of-two-sorted-arrays": "Median of Two Sorted Arrays"
+        }
       }
     },
     {

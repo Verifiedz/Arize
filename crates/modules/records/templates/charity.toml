@@ -1,0 +1,101 @@
+# Charity: one record per gift, planned or given: zakat, sadaqah, or any other charity.
+# Created from Shimmer's charity template. It's your file now: edit it freely.
+#
+# Private information: giving is personal. This file and its records are plain text in your
+# Shimmer folder, which is meant to be copyable and committable to git; if you sync your Shimmer
+# folder to a git repo, keep it private.
+#
+# This template records what you decide to give. It doesn't calculate zakat (nisab, which wealth
+# counts): ask someone knowledgeable you trust.
+#
+# How it works:
+#   shimmer records add <collection> --recipient "Islamic Relief" --kind zakat --amount 400 --currency CAD --due-on 2027-03-01
+#   shimmer records complete <collection>/<id> --method online --receipt IR-88213     given: stamps given_on
+#   shimmer records list <collection> --filter "status=todo" --sort due_on            still to give
+#   shimmer records list <collection> --filter "kind=zakat" --filter "hijri_year=1448"
+
+[collection]
+id = "charity"
+label = "Charity"
+description = "Zakat, sadaqah or any charity: to whom, how much, when, and on whose behalf"
+title = "{recipient}: {kind}"
+# Planned or pledged gifts are todo; completing one means "given": it stamps given_on.
+stamp_on_complete = "given_on"
+# A gift is given once; a new gift is a new record.
+repeat_complete = "refuse"
+
+[[field]]
+name = "recipient"       # the organisation, masjid, campaign or person (a description is fine)
+type = "string"
+required = true
+
+[[field]]
+name = "kind"
+type = "enum"
+required = true
+values = ["zakat", "zakat-al-fitr", "sadaqah", "sadaqah-jariyah", "lillah", "fidya", "kaffarah", "qurbani", "waqf", "nadhr", "general", "other"]
+
+[[field]]
+name = "cause"           # what it supports: --filter cause=water
+type = "enum"
+values = ["education", "water", "food", "orphans", "widows", "health", "masjid", "dawah", "emergency-relief", "refugees", "poverty", "other"]
+
+[[field]]
+name = "campaign"        # e.g. "Ramadan 2027 appeal"
+type = "string"
+
+[[field]]
+name = "amount"          # a whole number; cents round
+type = "int"
+
+[[field]]
+name = "currency"        # e.g. "CAD", "USD", "PKR"
+type = "string"
+
+[[field]]
+name = "method"
+type = "enum"
+values = ["online", "cash", "bank-transfer", "card", "in-kind", "payroll", "other"]
+
+[[field]]
+name = "frequency"       # for pledges and recurring gifts; each payment is still its own record
+type = "enum"
+values = ["one-time", "monthly", "yearly"]
+
+[[field]]
+name = "on_behalf_of"    # e.g. sadaqah for a parent, or someone who has passed away
+type = "string"
+
+[[field]]
+name = "hijri_year"      # the zakat year it counts toward, e.g. "1448"
+type = "string"
+
+[[field]]
+name = "due_on"          # your zakat date, a pledge payment, zakat al-fitr before Eid
+type = "date"
+role = "deadline"
+
+[[field]]
+name = "given_on"        # stamped by records complete
+type = "date"
+
+[[field]]
+name = "receipt"         # receipt number or link
+type = "string"
+
+[[field]]
+name = "tax_deductible"
+type = "bool"
+
+[[field]]
+name = "url"             # the organisation's or campaign's page
+type = "string"
+role = "url"
+
+[[field]]
+name = "notes"
+type = "string"
+
+[[view]]
+kind = "heatmap"         # the days you gave
+source = "given_on"

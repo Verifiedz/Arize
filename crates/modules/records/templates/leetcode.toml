@@ -40,8 +40,9 @@ role = "url"
 unique = true
 
 [[field]]
-name = "topic"           # e.g. "arrays, hash map"
-type = "string"
+name = "topic"           # --topic "arrays, hash map"; --filter "topic has arrays"
+type = "list"
+of = "string"
 
 [[field]]
 name = "pattern"         # practise by pattern: --filter pattern=sliding-window
