@@ -12,8 +12,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use shimmer_core::params::decode;
 use shimmer_core::{
-    Clock, Ctx, Emitter, Error, Execution, HttpGateway, LaneConfig, LaneId, ModuleConfig, ModuleId, NamespacedStore,
-    Origin, Priority, ProgressFn, QueueHandle, Result,
+    Clock, Ctx, Emitter, Error, Execution, HttpBackend, HttpGateway, LaneConfig, LaneId, ModuleConfig, ModuleId,
+    NamespacedStore, Origin, Priority, ProgressFn, QueueHandle, Result,
 };
 use shimmer_core::{EnqueueRequest, TaskId, TaskSubmitter};
 #[cfg(unix)]
@@ -21,7 +21,7 @@ use shimmer_core::{LaunchBackend, Launcher};
 use shimmer_proto::{ops, ManifestData, ModuleInfo, PingData, QueueControl, QueuePriority, QueuedHandle};
 use tokio_util::sync::CancellationToken;
 
-use crate::backend::{Backend, DisabledHttp};
+use crate::backend::Backend;
 use crate::config::Config;
 use crate::queue::{OpRunner, Promotion, QueueFront, QueueInner};
 use crate::registry::Registry;
@@ -66,6 +66,20 @@ impl Core {
             rand::random(),
         ));
 
+        // Same one-real-backend-shared-across-every-module shape as the launcher, gated the
+        // same way: a module's `ctx.http` is only ever this real gateway if its manifest
+        // declares `"network"` (ADR 0027 §4); every other module keeps `Ctx::new`'s default
+        // `DisabledHttp`. `RealHttpBackend::new`'s only fallible step is building the
+        // `reqwest` client, which cannot fail with this fixed, feature-gated TLS config.
+        let real_http: Arc<dyn HttpBackend> = Arc::new(
+            crate::http_backend::RealHttpBackend::new(
+                backend.store.home().to_path_buf(),
+                config.http.clone(),
+                clock.clone(),
+            )
+            .expect("building the http client"),
+        );
+
         Arc::new_cyclic(|weak: &Weak<Core>| {
             let ops = registry
                 .entries
@@ -88,10 +102,9 @@ impl Core {
                 .iter()
                 .map(|e| {
                     let id = e.manifest.id.clone();
-                    #[allow(unused_mut)]
                     let mut ctx = Ctx::new(
                         NamespacedStore::new(e.manifest.namespace.clone(), id.clone(), backend.clone(), clock.clone()),
-                        HttpGateway::new(id.clone(), Arc::new(DisabledHttp)),
+                        HttpGateway::new(id.clone(), Arc::new(crate::backend::DisabledHttp)),
                         Emitter::new(id.clone(), backend.clone(), clock.clone()),
                         QueueHandle::new(id.clone(), submitter.clone()),
                         clock.clone(),
@@ -103,6 +116,9 @@ impl Core {
                     #[cfg(unix)]
                     if e.manifest.capabilities.iter().any(|c| c == "process") {
                         ctx.launcher = Launcher::new(real_launcher.clone());
+                    }
+                    if e.manifest.capabilities.iter().any(|c| c == "network") {
+                        ctx.http = HttpGateway::new(id.clone(), real_http.clone());
                     }
                     (id, ctx)
                 })
