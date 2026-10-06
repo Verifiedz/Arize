@@ -1,11 +1,6 @@
 //! The real `HttpBackend` (ADR 0027): rate limiting, redirects, and the on-disk response
 //! cache. Cross-platform — unlike the launcher, nothing here is `cfg(unix)`-gated.
 
-// Nothing outside this module's own tests constructs a `RealHttpBackend` yet -- the
-// `"network"` capability gate that wires it into `Ctx` (ADR 0027 §4) is a later commit in
-// this same umbrella. Remove this once that lands.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

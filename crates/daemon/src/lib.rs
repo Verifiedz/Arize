@@ -3,8 +3,8 @@
 //! Core services live here: module registry, event bus, queue, IPC server, indexer.
 //! Modules are async tasks inside this process, reached only through `Ctx`.
 //!
-//! The real HTTP gateway (`http_backend`, ADR 0027) exists but is not wired into `Ctx` yet;
-//! `ctx.http` still fails closed until the `"network"` capability gate lands.
+//! `ctx.http` is the real gateway (`http_backend`, ADR 0027) for a module whose manifest
+//! declares `"network"`; every other module keeps `Ctx::new`'s default, `DisabledHttp`.
 
 mod backend;
 mod bus;

@@ -50,8 +50,9 @@ impl Backend {
     }
 }
 
-/// Placeholder until the gateway (rate limiting, on-disk cache) lands. Fails closed:
-/// nothing reaches the network, and callers see `unavailable`, which they may retry.
+/// The default `ctx.http` for any module that doesn't declare the `"network"` capability
+/// (ADR 0027 §4) — fails closed: nothing reaches the network, and callers see `unavailable`,
+/// which they may retry.
 pub struct DisabledHttp;
 
 #[async_trait]
