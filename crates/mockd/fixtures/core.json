@@ -81,8 +81,74 @@
                 "execution": "inline"
               },
               {
+                "op": "records.restore",
+                "summary": "Bring a removed record back from the trash",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "records.trash",
+                "summary": "List a collection's removed records",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "records.templates",
+                "summary": "List the built-in collection templates",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "records.create_collection",
+                "summary": "Create a collection from a template",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "records.check",
+                "summary": "Report records that don't fit their collection; changes nothing",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "records.rename_field",
+                "summary": "Rename a field in a collection and every record",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "records.rename_collection",
+                "summary": "Give a collection a new id",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "records.remove_collection",
+                "summary": "Remove a collection and its records (they can be restored); needs confirmation",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "records.restore_collection",
+                "summary": "Bring a removed collection back with its records",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
                 "op": "records.remove",
-                "summary": "Delete a record",
+                "summary": "Remove a record (it goes to the trash; records.restore brings it back); force if others refer to it",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "records.purge",
+                "summary": "Permanently delete removed records (one, or a collection's whole trash); needs confirmation",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "records.import",
+                "summary": "Add many records in one transaction; rows already there (by id or unique value) are skipped",
                 "params_schema": {},
                 "execution": "inline"
               }
@@ -93,8 +159,14 @@
               "records.item.completed",
               "records.item.reopened",
               "records.item.renamed",
+              "records.item.restored",
+              "records.field.renamed",
+              "records.collection.renamed",
+              "records.collection.removed",
+              "records.collection.restored",
               "records.item.removed",
-              "records.collection.created"
+              "records.collection.created",
+              "records.trash.purged"
             ]
           },
           {
@@ -338,7 +410,12 @@
             "url": null,
             "last_solved": null
           }
-        ]
+        ],
+        "titles": {
+          "two-sum": "Two Sum",
+          "lru-cache": "LRU Cache",
+          "median-of-two-sorted-arrays": "Median of Two Sorted Arrays"
+        }
       }
     },
     {

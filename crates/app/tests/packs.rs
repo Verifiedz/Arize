@@ -75,10 +75,10 @@ fn no_pack_by_default_and_packs_need_no_daemon() {
 #[cfg(unix)]
 #[test]
 fn use_links_aliases_that_run_shimmer_and_the_whole_command() {
-    let home = Home::new();
+    let home = Home::with_leetcode();
     let out = ok(shimmer(&home, &["packs", "use", "short"]));
-    assert!(out.starts_with("✓ active pack: short (Short)\n  linked 27 commands into"), "{out}");
-    assert_eq!(links(&home).len(), 27);
+    assert!(out.starts_with("✓ active pack: short (Short)\n  linked 28 commands into"), "{out}");
+    assert_eq!(links(&home).len(), 28);
 
     // On their own, through the links: ping starts the daemon; a record goes in and is completed.
     assert!(ok(bare(&home, "up", &[])).starts_with("pong"));
@@ -106,7 +106,7 @@ fn switching_swaps_the_links_and_none_removes_them() {
     assert!(links(&home).contains(&"ikuzo".to_string()));
 
     let out = ok(shimmer(&home, &["packs", "use", "ship-it"]));
-    assert!(out.contains("linked 27") && out.contains("removed 27"), "{out}");
+    assert!(out.contains("linked 28") && out.contains("removed 28"), "{out}");
     assert!(links(&home).contains(&"deploy".to_string()) && !links(&home).contains(&"ikuzo".to_string()));
 
     ok(shimmer(&home, &["packs", "use", "starship", "--no-link"]));
@@ -126,7 +126,7 @@ fn nothing_of_the_users_is_ever_overwritten_or_removed() {
     std::fs::write(bin(&home).join("deploy"), "my own deploy script").unwrap();
 
     let out = ok(shimmer(&home, &["packs", "use", "ship-it"]));
-    assert!(out.contains("linked 26") && out.contains("skipped deploy: it already exists"), "{out}");
+    assert!(out.contains("linked 27") && out.contains("skipped deploy: it already exists"), "{out}");
     ok(shimmer(&home, &["packs", "use", "none"]));
     assert_eq!(links(&home), ["deploy"]);
     assert_eq!(std::fs::read_to_string(bin(&home).join("deploy")).unwrap(), "my own deploy script");
