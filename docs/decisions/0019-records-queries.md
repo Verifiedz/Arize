@@ -43,7 +43,7 @@ Each key of `filter` (a field, `id` or `status`) takes either:
 
 | Operator | Value | Matches |
 |---|---|---|
-| `eq` | a value | equal (same as a plain value) |
+| `eq` | a value | equal: a plain value, except that it can't be `null` (use `set: false` for "unset") |
 | `ne` | a value | not equal. **Unset matches**: "stage is not `rejected`" includes records with no stage yet |
 | `lt` `lte` `gt` `gte` | a value | less / at most / greater / at least. Unset never matches |
 | `in` | a non-empty list | equal to one of them. Unset never matches |

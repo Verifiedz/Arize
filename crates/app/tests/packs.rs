@@ -75,7 +75,7 @@ fn no_pack_by_default_and_packs_need_no_daemon() {
 #[cfg(unix)]
 #[test]
 fn use_links_aliases_that_run_shimmer_and_the_whole_command() {
-    let home = Home::new();
+    let home = Home::with_leetcode();
     let out = ok(shimmer(&home, &["packs", "use", "short"]));
     assert!(out.starts_with("✓ active pack: short (Short)\n  linked 28 commands into"), "{out}");
     assert_eq!(links(&home).len(), 28);
