@@ -460,7 +460,9 @@ $SHIMMER_HOME/
   logs/                    daemon.log.<date>: rotated daily at UTC midnight, oldest deleted past
                            8 files (~a week), never archived elsewhere. A pre-rotation
                            daemon.log with no date suffix may be left over from before this
-                           scheme and is safe to delete. Also holds workspace step logs (§10.2).
+                           scheme and is safe to delete. Also holds workspace step logs (§10.2),
+                           pruned to the newest 10 per workspace after each supervised step,
+                           never deleting the one a `dirty` state's `log` still points at.
 ```
 
 **SQLite is an index, never a source of truth.** A test asserts this directly: delete the
