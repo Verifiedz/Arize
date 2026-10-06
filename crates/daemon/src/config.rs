@@ -138,16 +138,18 @@ fn persist_detected_timezone(path: &Path, existing: &str, name: &str) -> Result<
 }
 
 /// Byte offset right after the `[general]` table header line, or `None` if the file has no
-/// such table. Matches a line whose content — ignoring surrounding whitespace and a trailing
-/// `# comment` — is exactly `[general]`, not merely a line that mentions the text
-/// `"[general]"` somewhere (e.g. inside a `#`-comment or a string value), which a plain
-/// substring search would wrongly match.
+/// such table. Matches a line whose content — ignoring surrounding whitespace, a trailing
+/// `# comment`, and whitespace just inside the brackets (`[ general ]` is the same table as
+/// `[general]` in TOML, #98) — is exactly a `[general]` header, not merely a line that
+/// mentions the text `"[general]"` somewhere (e.g. inside a `#`-comment or a string value),
+/// which a plain substring search would wrongly match.
 fn general_table_header_end(existing: &str) -> Option<usize> {
     let mut offset = 0;
     for line in existing.split_inclusive('\n') {
         offset += line.len();
-        let without_comment = line.split('#').next().unwrap_or("");
-        if without_comment.trim() == "[general]" {
+        let without_comment = line.split('#').next().unwrap_or("").trim();
+        let inner = without_comment.strip_prefix('[').and_then(|s| s.strip_suffix(']'));
+        if inner.map(str::trim) == Some("general") {
             return Some(offset);
         }
     }
@@ -249,6 +251,22 @@ mod tests {
         persist_detected_timezone(&path, text, "America/New_York").unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(!written.contains("[general]local_timezone"), "must not glue onto the header line");
+        let cfg = Config::parse(&written).unwrap();
+        assert_eq!(cfg.lanes["fetchers"], 2, "existing content must survive");
+        assert_eq!(cfg.local_timezone.name(), "America/New_York");
+    }
+
+    #[test]
+    fn persist_inserts_into_a_general_header_with_spaces_inside_the_brackets() {
+        // `[ general ]` is the same TOML table as `[general]`. Before #98's fix, this was
+        // not recognized, so a second `[general]` table got appended -- and TOML rejects a
+        // table declared twice, so the daemon refused to start on the next run.
+        let text = "[lanes]\nfetchers = 2\n[ general ]\nsome_other_key = 1\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        persist_detected_timezone(&path, text, "America/New_York").unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(written.matches("general").count(), 1, "must not declare [general] a second time");
         let cfg = Config::parse(&written).unwrap();
         assert_eq!(cfg.lanes["fetchers"], 2, "existing content must survive");
         assert_eq!(cfg.local_timezone.name(), "America/New_York");
