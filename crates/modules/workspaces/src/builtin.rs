@@ -13,6 +13,7 @@ macro_rules! file {
 }
 
 const HELPER: (&str, &str) = file!("lib/shimmer-open.sh", "lib/shimmer-open.sh");
+const VM_HELPER: (&str, &str) = file!("lib/shimmer-vm.sh", "lib/shimmer-vm.sh");
 
 /// `(id, files)`, sorted by id.
 const BUILTINS: &[(&str, &[(&str, &str)])] = &[
@@ -26,6 +27,21 @@ const BUILTINS: &[(&str, &[(&str, &str)])] = &[
             file!("steps/03-background.sh", "smoke-test/steps/03-background.sh"),
             file!("cleanup.sh", "smoke-test/cleanup.sh"),
             HELPER,
+        ],
+    ),
+    (
+        "vm",
+        &[
+            file!("template.toml", "vm/template.toml"),
+            file!("workspace.toml", "vm/workspace.toml"),
+            file!("steps/01-check.sh", "vm/steps/01-check.sh"),
+            file!("steps/02-start.sh", "vm/steps/02-start.sh"),
+            file!("steps/03-wait.sh", "vm/steps/03-wait.sh"),
+            file!("steps/04-editor.sh", "vm/steps/04-editor.sh"),
+            file!("steps/05-terminal.sh", "vm/steps/05-terminal.sh"),
+            file!("cleanup.sh", "vm/cleanup.sh"),
+            HELPER,
+            VM_HELPER,
         ],
     ),
     (

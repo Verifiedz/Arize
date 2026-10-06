@@ -148,7 +148,7 @@ is `dash`), and is copied into each created workspace like any other file, so th
 keeps working even if a later Shimmer changes the helper. Files outside `steps/` are already
 allowed in a workspace folder (ADR 0012 §6 only checks `steps/`).
 
-### 6. The first two built-ins
+### 6. The built-ins
 
 **`web-project`**: develop a website or web app. Nothing in it is specific to one person or one
 host: your setup is a set of answers.
@@ -224,6 +224,52 @@ same on every machine and needs nothing installed.
 So one template walks through `ready → launching → active`, `dirty` (with `FAIL_AT = check`),
 cleanup back to `ready`, and a failed cleanup that stays `dirty`.
 
+**`vm`**: start a virtual machine, wait until it answers over SSH, then open an editor and a
+terminal inside it. Shimmer runs on the computer that hosts the VM.
+
+| Question | Kind | Default |
+|---|---|---|
+| `VM_SOFTWARE` | choice `utm`, `parallels`, `virtualbox`, `vmware`, `libvirt`, `multipass`, `custom` | required |
+| `VM_NAME` | text (VMware: the `.vmx` path) | required |
+| `START_COMMAND`, `STOP_COMMAND` | command, `custom` only | empty |
+| `START_MODE` | choice `window`, `headless` | `window` |
+| `VM_HOST` | text: hostname, IP, `~/.ssh/config` alias, or `auto` (UTM, Multipass) | empty: only start the VM |
+| `SSH_USER`, `SSH_PORT` | text | empty, `22` |
+| `SSH_PASSWORD_ITEM` | text: the **name** of a keychain entry | empty |
+| `REMOTE_EDITOR`, `REMOTE_FOLDER` | choice `none`, `cursor`, `vscode`; text | `none`, empty |
+| `TERMINAL_APP` | choice, as `web-project`'s, plus `none` | `none` |
+| `ON_STOP` | choice `suspend`, `shutdown`, `leave-running` | `suspend` |
+
+| # | Step | Mode | Does |
+|---|---|---|---|
+| 1 | `check` | supervised, 30 s | The software's command-line tool exists (on `PATH` or in its macOS app bundle), the VM exists, the editor and terminal exist, and a named keychain entry can be read. |
+| 2 | `start` | supervised, 180 s | Starts the VM unless it's already running, with its window or headless. |
+| 3 | `wait` | supervised, 300 s | Waits until the SSH port answers (`nc`, else `ssh` itself), then logs whether an SSH key works and, if not, the one `ssh-copy-id` command that fixes it. |
+| 4 | `editor` | detached | Cursor or VS Code on `REMOTE_FOLDER` inside the VM, over Remote-SSH. |
+| 5 | `terminal` | detached | A terminal on the host running `ssh` into the VM. |
+| | `cleanup.sh` | supervised, 180 s | Suspends, shuts down or leaves the VM, as `ON_STOP` says. |
+
+Each VM program's commands live in a second shared helper, `lib/shimmer-vm.sh`, copied only into
+workspaces made from `vm`.
+
+**Passwords are never answers, and Shimmer never sees one.** In order of preference, the
+template's header comment and its `wait` step steer people to:
+
+1. **An SSH key**, set up once with `ssh-copy-id` (the password is typed into `ssh` one last
+   time, never into Shimmer);
+2. **a key with a passphrase** unlocked by the login keychain (`ssh-add --apple-use-keychain`);
+3. **nothing**: with no key, `ssh` asks for the password itself, in the terminal window the
+   workspace opened, and a Remote-SSH editor asks in its own window;
+4. **`SSH_PASSWORD_ITEM`**: the name of an entry in macOS Keychain (`security`) or the Linux
+   keyring (`secret-tool`). The terminal step writes a tiny `SSH_ASKPASS` program into the
+   workspace's temp folder (mode `700`), which holds only the entry's name and reads the secret
+   when `ssh` asks (`SSH_ASKPASS_REQUIRE=force`, OpenSSH 8.4+). The password is never in
+   `workspace.toml`, a log, an environment variable, or a command line (so never in `ps`);
+   `sshpass -p` is not used for that reason.
+
+The rule generalises to every template: a question may ask for the **name** of a keychain entry,
+never for the secret itself.
+
 ### 7. Two ops
 
 | Op | Execution | Params | Result |
@@ -293,6 +339,7 @@ Other links to open (live site, hosting dashboard, analytics…) []: https://me.
 
 - More built-ins (a plain `project` template is next), user templates in `$SHIMMER_HOME`, and a
   community repository.
+- Hyper-V and other Windows VM software: the Windows launch backend is still a sketch.
 - Showing a project's tracker items on launch (`shimmer records list … --filter`), which needs
   the records query work (ADR 0019) on master first. A one-line step to add later.
 - Placing windows on Hyprland workspaces or monitors, and `vercel env pull` (needs the Vercel

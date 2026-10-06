@@ -1,0 +1,90 @@
+[template]
+label = "Virtual machine"
+description = "Start a VM (UTM, Parallels, VirtualBox, VMware, libvirt, Multipass or your own commands), wait for SSH, then open an editor and a terminal inside it"
+
+[[question]]
+name = "VM_SOFTWARE"
+prompt = "VM software"
+kind = "choice"
+choices = ["utm", "parallels", "virtualbox", "vmware", "libvirt", "multipass", "custom"]
+required = true
+help = "custom: you give the start and stop commands yourself, for anything else."
+
+[[question]]
+name = "VM_NAME"
+prompt = "The VM's name"
+kind = "text"
+required = true
+help = "As the software shows it. VMware: the path to its .vmx file. libvirt: the domain name."
+
+[[question]]
+name = "START_COMMAND"
+prompt = "Command that starts the VM (custom only)"
+kind = "command"
+help = "Only for custom, e.g. qemu-system-aarch64 … or a script of yours."
+
+[[question]]
+name = "STOP_COMMAND"
+prompt = "Command that stops the VM (custom only)"
+kind = "command"
+help = "Only for custom. Run by workspaces stop. Leave empty to leave it running."
+
+[[question]]
+name = "START_MODE"
+prompt = "Start it with its window, or headless"
+kind = "choice"
+choices = ["window", "headless"]
+default = "window"
+help = "headless works with VirtualBox, VMware and libvirt; UTM, Parallels and Multipass decide for themselves."
+
+[[question]]
+name = "VM_HOST"
+prompt = "The VM's address for SSH"
+kind = "text"
+help = "A hostname, IP or ~/.ssh/config alias. auto: ask UTM or Multipass. Leave empty to only start the VM."
+
+[[question]]
+name = "SSH_USER"
+prompt = "Your user inside the VM"
+kind = "text"
+help = "Leave empty to use your ~/.ssh/config or your local user name."
+
+[[question]]
+name = "SSH_PORT"
+prompt = "SSH port"
+kind = "text"
+default = "22"
+
+[[question]]
+name = "SSH_PASSWORD_ITEM"
+prompt = "Keychain entry holding the SSH password (optional)"
+kind = "text"
+help = "Never the password itself: the NAME of an entry in macOS Keychain or the Linux keyring. Better: leave empty and use an SSH key (ssh-copy-id), or let ssh ask you."
+
+[[question]]
+name = "REMOTE_EDITOR"
+prompt = "Editor to open inside the VM (Remote-SSH)"
+kind = "choice"
+choices = ["none", "cursor", "vscode"]
+default = "none"
+
+[[question]]
+name = "REMOTE_FOLDER"
+prompt = "Folder inside the VM to open"
+kind = "text"
+help = "e.g. /home/me/code/project. Leave empty for your home folder."
+
+[[question]]
+name = "TERMINAL_APP"
+prompt = "Terminal for an SSH session into the VM"
+kind = "choice"
+choices = ["none", "auto", "kitty", "foot", "alacritty", "wezterm", "ghostty", "gnome-terminal", "konsole", "terminal", "iterm"]
+default = "none"
+help = "auto: Terminal on macOS, the first one found on Linux. none: no SSH terminal."
+
+[[question]]
+name = "ON_STOP"
+prompt = "What workspaces stop does to the VM"
+kind = "choice"
+choices = ["suspend", "shutdown", "leave-running"]
+default = "suspend"

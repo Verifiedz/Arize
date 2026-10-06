@@ -20,6 +20,7 @@ fn file(env: &TestEnv, path: &str) -> Option<String> {
 fn answers(template: &str) -> Value {
     match template {
         "web-project" => json!({"PROJECT_DIR": "/home/me/code/site"}),
+        "vm" => json!({"VM_SOFTWARE": "virtualbox", "VM_NAME": "Debian"}),
         _ => json!({}),
     }
 }
@@ -29,8 +30,8 @@ async fn templates_lists_the_built_ins_with_their_questions() {
     let env = TestEnv::new("workspaces");
     let data = call(&Workspaces::default(), &env, "workspaces.templates", json!({})).await.unwrap();
     let ids: Vec<&str> = data["templates"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["smoke-test", "web-project"]);
-    let web = &data["templates"][1];
+    assert_eq!(ids, ["smoke-test", "vm", "web-project"]);
+    let web = &data["templates"][2];
     assert_eq!(
         web["questions"][0],
         json!({"name": "PROJECT_DIR", "prompt": "Project folder", "kind": "folder", "required": true})
@@ -121,7 +122,7 @@ async fn create_never_overwrites_and_checks_everything_first() {
     assert!(e.message.contains("not a valid workspace id"), "{}", e.message);
     let e = call(&w, &env, "workspaces.create", create("site", "nope", json!({}))).await.unwrap_err();
     assert_eq!(e.code, ErrorCode::NotFound);
-    assert!(e.message.contains("there are: smoke-test, web-project"), "{}", e.message);
+    assert!(e.message.contains("there are: smoke-test, vm, web-project"), "{}", e.message);
     assert!(env.backend.events().is_empty(), "nothing written");
 
     env.ctx.store.write("site/notes.txt", "mine").unwrap();
@@ -150,4 +151,32 @@ fn every_script_is_valid_sh() {
         }
     }
     assert!(checked >= 15, "found {checked} scripts");
+}
+
+#[tokio::test]
+async fn the_vm_template_never_takes_a_password_only_a_keychain_entry_name() {
+    // ADR 0025 §6: an answer is written to workspace.toml in plain text, so the vm template
+    // asks for the NAME of a keychain entry, and its scripts read the secret at run time.
+    let env = TestEnv::new("workspaces");
+    let w = Workspaces::default();
+    let values = json!({"VM_SOFTWARE": "utm", "VM_NAME": "Debian", "VM_HOST": "auto", "SSH_USER": "me",
+                        "SSH_PASSWORD_ITEM": "shimmer-vm-debian", "REMOTE_EDITOR": "cursor"});
+    w.handle("workspaces.create", json!({"id": "dev-vm", "template": "vm", "values": values}), &env.ctx).await.unwrap();
+    let text = file(&env, "dev-vm/workspace.toml").unwrap();
+    assert!(text.contains("SSH_PASSWORD_ITEM = \"shimmer-vm-debian\""), "{text}");
+    assert!(file(&env, "dev-vm/lib/shimmer-vm.sh").is_some(), "the vm helper is copied");
+    let questions = w.handle("workspaces.templates", json!({}), &env.ctx).await.unwrap();
+    let vm = questions["templates"].as_array().unwrap().iter().find(|t| t["id"] == "vm").unwrap();
+    let names: Vec<&str> = vm["questions"].as_array().unwrap().iter().map(|q| q["name"].as_str().unwrap()).collect();
+    assert!(!names.iter().any(|n| n.ends_with("PASSWORD")), "no question asks for a password itself: {names:?}");
+
+    let e = w
+        .handle(
+            "workspaces.create",
+            json!({"id": "x", "template": "vm", "values": {"VM_SOFTWARE": "hyperv", "VM_NAME": "a"}}),
+            &env.ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(e.message.contains("must be one of utm, parallels"), "{}", e.message);
 }
