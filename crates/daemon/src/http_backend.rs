@@ -1,7 +1,5 @@
-//! The real `HttpBackend` (ADR 0027). Rate limiting and redirects land here; the on-disk
-//! response cache is a later slice of the same umbrella.
-//!
-//! Cross-platform — unlike the launcher, nothing here is `cfg(unix)`-gated.
+//! The real `HttpBackend` (ADR 0027): rate limiting, redirects, and the on-disk response
+//! cache. Cross-platform — unlike the launcher, nothing here is `cfg(unix)`-gated.
 
 // Nothing outside this module's own tests constructs a `RealHttpBackend` yet -- the
 // `"network"` capability gate that wires it into `Ctx` (ADR 0027 §4) is a later commit in
@@ -9,11 +7,14 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use futures_util::StreamExt;
+use serde::{Deserialize, Serialize};
 use shimmer_core::{Clock, Error, HttpBackend, HttpResponse, ModuleId, Result};
 use tokio::sync::Semaphore;
 
@@ -34,7 +35,8 @@ pub struct HostLimits {
 
 /// What `Core::new` builds once from `config.toml`'s `[http]` section (a later slice) and
 /// hands to `RealHttpBackend::new`. Defaults are deliberately conservative — a module that
-/// opts into `"network"` should not be able to hammer a host by accident.
+/// opts into `"network"` should not be able to hammer a host, or this daemon's own memory
+/// or disk, by accident.
 #[derive(Clone, Debug)]
 pub struct HttpConfig {
     pub default_requests_per_sec: f64,
@@ -43,6 +45,13 @@ pub struct HttpConfig {
     pub per_host: HashMap<String, HostLimits>,
     pub timeout: Duration,
     pub max_cooldown_wait: Duration,
+    /// Total bytes the cache may hold per module before the oldest entries are evicted.
+    pub cache_max_bytes: u64,
+    /// Used when a response carries no `Cache-Control: max-age`.
+    pub cache_default_ttl: Duration,
+    /// A response body larger than this aborts the request — enforced while streaming, so
+    /// an oversized or lying `Content-Length` never gets buffered in memory first.
+    pub max_response_bytes: u64,
 }
 
 impl Default for HttpConfig {
@@ -53,6 +62,9 @@ impl Default for HttpConfig {
             per_host: HashMap::new(),
             timeout: Duration::from_secs(30),
             max_cooldown_wait: DEFAULT_MAX_COOLDOWN_WAIT,
+            cache_max_bytes: 100 * 1024 * 1024,
+            cache_default_ttl: Duration::from_secs(300),
+            max_response_bytes: 20 * 1024 * 1024,
         }
     }
 }
@@ -104,24 +116,165 @@ struct HostEntry {
     semaphore: Arc<Semaphore>,
 }
 
+/// On-disk cache metadata for one URL, within one module's cache subdirectory. Paired with a
+/// same-named `.body` file holding the raw bytes (ADR 0027 §3).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct CacheMeta {
+    url: String,
+    status: u16,
+    etag: Option<String>,
+    last_modified: Option<String>,
+    max_age_secs: Option<u64>,
+    cached_at: DateTime<Utc>,
+}
+
+impl CacheMeta {
+    fn refreshed(&self, now: DateTime<Utc>) -> Self {
+        Self { cached_at: now, ..self.clone() }
+    }
+}
+
+/// Cache-relevant fields pulled from a fresh response, before its body is read. Kept apart
+/// from `CacheMeta` since a `Synthesized` cooldown response (never a real HTTP response) has
+/// none of these.
+#[derive(Default)]
+struct ResponseMeta {
+    etag: Option<String>,
+    last_modified: Option<String>,
+    max_age_secs: Option<u64>,
+}
+
+/// `cache/http/<module>/<hash-of-the-url>.{meta.json,body}`. Reads need no lock (a `Mutex`
+/// per entry would only matter for concurrent writers of the *same* URL, which `Ctx`'s
+/// serialization of a given module's calls already makes rare enough not to bother with);
+/// writes go through `write_atomic` and never fail the request they were caching for.
+struct ResponseCache {
+    home: PathBuf,
+}
+
+impl ResponseCache {
+    fn dir(&self, module: &ModuleId) -> PathBuf {
+        self.home.join("cache/http").join(module.as_str())
+    }
+
+    fn paths(&self, module: &ModuleId, url: &str) -> (PathBuf, PathBuf) {
+        let dir = self.dir(module);
+        let key = cache_key(url);
+        (dir.join(format!("{key}.meta.json")), dir.join(format!("{key}.body")))
+    }
+
+    fn read(&self, module: &ModuleId, url: &str) -> Option<(CacheMeta, Vec<u8>)> {
+        let (meta_path, body_path) = self.paths(module, url);
+        let meta: CacheMeta = serde_json::from_str(&std::fs::read_to_string(&meta_path).ok()?).ok()?;
+        let body = std::fs::read(&body_path).ok()?;
+        Some((meta, body))
+    }
+
+    fn write(&self, module: &ModuleId, url: &str, meta: &CacheMeta, body: &[u8], max_bytes: u64) {
+        let (meta_path, body_path) = self.paths(module, url);
+        let meta_text = match serde_json::to_vec(meta) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = %e, "http cache: could not serialize metadata, not caching");
+                return;
+            }
+        };
+        if let Err(e) = shimmer_store::write_atomic(&meta_path, &meta_text) {
+            tracing::warn!(error = %e, path = %meta_path.display(), "http cache: could not write metadata");
+            return;
+        }
+        if let Err(e) = shimmer_store::write_atomic(&body_path, body) {
+            tracing::warn!(error = %e, path = %body_path.display(), "http cache: could not write body");
+        }
+        self.evict_if_over_cap(module, max_bytes);
+    }
+
+    /// Evicts whole `(meta, body)` pairs, oldest first, until this module's cache directory
+    /// is back under `max_bytes`. Grouped by the pair's shared key so an eviction never
+    /// leaves an orphaned half behind.
+    fn evict_if_over_cap(&self, module: &ModuleId, max_bytes: u64) {
+        let Ok(entries) = std::fs::read_dir(self.dir(module)) else { return };
+        let mut by_key: HashMap<String, (Option<PathBuf>, Option<PathBuf>, u64, std::time::SystemTime)> =
+            HashMap::new();
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            let Ok(file_meta) = entry.metadata() else { continue };
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+            let (key, is_body) = match name.strip_suffix(".meta.json") {
+                Some(k) => (k.to_owned(), false),
+                None => match name.strip_suffix(".body") {
+                    Some(k) => (k.to_owned(), true),
+                    None => continue,
+                },
+            };
+            let slot = by_key.entry(key).or_insert((None, None, 0, std::time::SystemTime::UNIX_EPOCH));
+            if is_body {
+                slot.1 = Some(path)
+            } else {
+                slot.0 = Some(path)
+            }
+            slot.2 += file_meta.len();
+            if let Ok(mtime) = file_meta.modified() {
+                if slot.3 == std::time::SystemTime::UNIX_EPOCH || mtime < slot.3 {
+                    slot.3 = mtime;
+                }
+            }
+        }
+        let total: u64 = by_key.values().map(|(_, _, size, _)| size).sum();
+        if total <= max_bytes {
+            return;
+        }
+        let mut pairs: Vec<_> = by_key.into_values().collect();
+        pairs.sort_by_key(|(_, _, _, mtime)| *mtime);
+        let mut over = total - max_bytes;
+        for (meta_path, body_path, size, _) in pairs {
+            if over == 0 {
+                break;
+            }
+            if let Some(p) = meta_path {
+                let _ = std::fs::remove_file(p);
+            }
+            if let Some(p) = body_path {
+                let _ = std::fs::remove_file(p);
+            }
+            over = over.saturating_sub(size);
+        }
+    }
+}
+
+/// A stable, dependency-free (FNV-1a) hash of the URL, used only as a filesystem-safe cache
+/// filename — not a security boundary, so collision resistance beyond "very unlikely for a
+/// module's own modest URL set" is not a design goal.
+fn cache_key(url: &str) -> String {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    for byte in url.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    format!("{hash:016x}")
+}
+
 /// The gateway never retries (§11.2's principle, applied here too) — one network attempt (or
-/// one synthesized cooldown response) per `get` call. Redirects are its own internal loop,
-/// not a retry: each hop is a different request to a different URL.
+/// one synthesized cooldown response, or one cache hit) per `get` call. Redirects are their
+/// own internal loop, not a retry: each hop is a different request to a different URL.
 pub struct RealHttpBackend {
     client: reqwest::Client,
     clock: Clock,
     config: HttpConfig,
     hosts: Mutex<HashMap<String, Arc<HostEntry>>>,
+    cache: ResponseCache,
 }
 
 impl RealHttpBackend {
-    pub fn new(config: HttpConfig, clock: Clock) -> Result<Self> {
+    pub fn new(home: PathBuf, config: HttpConfig, clock: Clock) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(config.timeout)
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| Error::internal(format!("building http client: {e}")))?;
-        Ok(Self { client, clock, config, hosts: Mutex::new(HashMap::new()) })
+        Ok(Self { client, clock, config, hosts: Mutex::new(HashMap::new()), cache: ResponseCache { home } })
     }
 
     fn host_entry(&self, host_key: &str) -> Arc<HostEntry> {
@@ -145,9 +298,22 @@ impl RealHttpBackend {
             .clone()
     }
 
+    fn is_fresh(&self, meta: &CacheMeta) -> bool {
+        let ttl = meta.max_age_secs.map(Duration::from_secs).unwrap_or(self.config.cache_default_ttl);
+        let ttl = chrono::Duration::from_std(ttl).unwrap_or(chrono::Duration::zero());
+        self.clock.now() < meta.cached_at + ttl
+    }
+
     /// Rate limit, wait out any cooldown (or synthesize past it), then send exactly one
-    /// request. Never follows a redirect itself — the caller's loop decides that.
-    async fn send_one(&self, module: &ModuleId, url: &reqwest::Url) -> Result<HopOutcome> {
+    /// request, optionally conditional on a cached entry's validator. Never follows a
+    /// redirect itself — the caller's loop decides that.
+    async fn send_one(
+        &self,
+        module: &ModuleId,
+        url: &reqwest::Url,
+        if_none_match: Option<&str>,
+        if_modified_since: Option<&str>,
+    ) -> Result<HopOutcome> {
         let host_key = host_key(url)?;
         let entry = self.host_entry(&host_key);
 
@@ -192,26 +358,76 @@ impl RealHttpBackend {
             .await
             .map_err(|_| Error::internal("http concurrency limiter closed unexpectedly"))?;
 
-        tracing::debug!(module = %module, url = %url.as_str(), "http: sending");
-        let resp = self.client.get(url.clone()).send().await.map_err(|e| Error::unavailable(format!("{url}: {e}")))?;
+        let mut req = self.client.get(url.clone());
+        if let Some(etag) = if_none_match {
+            req = req.header(reqwest::header::IF_NONE_MATCH, etag);
+        }
+        if let Some(lm) = if_modified_since {
+            req = req.header(reqwest::header::IF_MODIFIED_SINCE, lm);
+        }
+        tracing::debug!(module = %module, url = %url.as_str(), revalidating = if_none_match.is_some(), "http: sending");
+        let resp = req.send().await.map_err(|e| Error::unavailable(format!("{url}: {e}")))?;
         Ok(HopOutcome::Response(resp))
     }
 
-    /// Reads the body and, on a `429`/`503`, records this host's cooldown before returning.
-    async fn finish(&self, url: &reqwest::Url, resp: reqwest::Response) -> Result<HttpResponse> {
+    /// Follows redirects (each hop through its own host's limiter) until a terminal
+    /// response, sending the revalidation headers (if any) only on the first hop — a
+    /// redirect target is a different URL, with nothing of its own cached to revalidate
+    /// against.
+    async fn fetch(
+        &self,
+        module: &ModuleId,
+        mut current: reqwest::Url,
+        revalidate: Option<&CacheMeta>,
+    ) -> Result<(HttpResponse, ResponseMeta)> {
+        for hop in 0..=MAX_REDIRECTS {
+            let (if_none_match, if_modified_since) = if hop == 0 {
+                (revalidate.and_then(|m| m.etag.as_deref()), revalidate.and_then(|m| m.last_modified.as_deref()))
+            } else {
+                (None, None)
+            };
+            match self.send_one(module, &current, if_none_match, if_modified_since).await? {
+                HopOutcome::Synthesized(r) => return Ok((r, ResponseMeta::default())),
+                HopOutcome::Response(resp) => {
+                    if resp.status().is_redirection() {
+                        if hop == MAX_REDIRECTS {
+                            return Err(Error::unavailable(format!("too many redirects fetching {current}")));
+                        }
+                        if let Some(next) = redirect_target(&current, &resp) {
+                            current = next;
+                            continue;
+                        }
+                    }
+                    return self.finish(&current, resp).await;
+                }
+            }
+        }
+        unreachable!("the loop above always returns before exhausting its range")
+    }
+
+    /// Reads the body (capped, streamed) and, on a `429`/`503`, records this host's cooldown
+    /// before returning. Extracts cache-relevant headers before consuming the body, since
+    /// they're unavailable afterward.
+    async fn finish(&self, url: &reqwest::Url, resp: reqwest::Response) -> Result<(HttpResponse, ResponseMeta)> {
         let status = resp.status().as_u16();
         let retry_after = retry_after_secs(&resp);
+        let response_meta = ResponseMeta {
+            etag: header_str(&resp, reqwest::header::ETAG),
+            last_modified: header_str(&resp, reqwest::header::LAST_MODIFIED),
+            max_age_secs: max_age_from_cache_control(&resp),
+        };
         if status == 429 || status == 503 {
             self.record_cooldown(url, status, retry_after)?;
         }
-        let body = resp.bytes().await.map_err(|e| Error::unavailable(format!("{url}: {e}")))?.to_vec();
-        Ok(HttpResponse {
+        let body = read_body_capped(resp, self.config.max_response_bytes).await?;
+        let http_response = HttpResponse {
             status,
             body,
             from_cache: false,
             stale: false,
             retry_after_secs: (status == 429 || status == 503).then(|| retry_after.unwrap_or(DEFAULT_COOLDOWN_SECS)),
-        })
+        };
+        Ok((http_response, response_meta))
     }
 
     fn record_cooldown(&self, url: &reqwest::Url, status: u16, retry_after_secs: Option<u64>) -> Result<()> {
@@ -233,26 +449,92 @@ enum HopOutcome {
 #[async_trait]
 impl HttpBackend for RealHttpBackend {
     async fn get(&self, module: &ModuleId, url: &str) -> Result<HttpResponse> {
-        let mut current = parse_checked_url(url)?;
-        for hop in 0..=MAX_REDIRECTS {
-            match self.send_one(module, &current).await? {
-                HopOutcome::Synthesized(r) => return Ok(r),
-                HopOutcome::Response(resp) => {
-                    if resp.status().is_redirection() {
-                        if hop == MAX_REDIRECTS {
-                            return Err(Error::unavailable(format!("too many redirects fetching {url}")));
-                        }
-                        if let Some(next) = redirect_target(&current, &resp) {
-                            current = next;
-                            continue;
-                        }
-                    }
-                    return self.finish(&current, resp).await;
-                }
+        let parsed = parse_checked_url(url)?;
+        let cached = self.cache.read(module, url);
+
+        if let Some((meta, body)) = &cached {
+            if self.is_fresh(meta) {
+                return Ok(HttpResponse {
+                    status: meta.status,
+                    body: body.clone(),
+                    from_cache: true,
+                    stale: false,
+                    retry_after_secs: None,
+                });
             }
         }
-        unreachable!("the loop above always returns before exhausting its range")
+
+        match self.fetch(module, parsed, cached.as_ref().map(|(m, _)| m)).await {
+            Ok((resp, response_meta)) if resp.status == 304 => {
+                let Some((meta, body)) = cached else {
+                    // No cached body to pair with a bare 304 -- cannot happen in practice
+                    // (conditional headers are only ever sent when `cached` is `Some`), but
+                    // degrade to the plain response rather than inventing one.
+                    return Ok(resp);
+                };
+                let refreshed = meta.refreshed(self.clock.now());
+                self.cache.write(module, url, &refreshed, &body, self.config.cache_max_bytes);
+                let _ = response_meta;
+                Ok(HttpResponse {
+                    status: refreshed.status,
+                    body,
+                    from_cache: true,
+                    stale: false,
+                    retry_after_secs: None,
+                })
+            }
+            Ok((resp, response_meta)) => {
+                if resp.status == 200 {
+                    let meta = CacheMeta {
+                        url: url.to_owned(),
+                        status: resp.status,
+                        etag: response_meta.etag,
+                        last_modified: response_meta.last_modified,
+                        max_age_secs: response_meta.max_age_secs,
+                        cached_at: self.clock.now(),
+                    };
+                    self.cache.write(module, url, &meta, &resp.body, self.config.cache_max_bytes);
+                }
+                Ok(resp)
+            }
+            Err(e) => {
+                if let Some((meta, body)) = cached {
+                    tracing::warn!(error = %e, url, "http: refetch failed, serving stale cache (ADR 0027 §3)");
+                    return Ok(HttpResponse {
+                        status: meta.status,
+                        body,
+                        from_cache: true,
+                        stale: true,
+                        retry_after_secs: None,
+                    });
+                }
+                Err(e)
+            }
+        }
     }
+}
+
+async fn read_body_capped(resp: reqwest::Response, max_bytes: u64) -> Result<Vec<u8>> {
+    let mut stream = resp.bytes_stream();
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| Error::unavailable(format!("reading response body: {e}")))?;
+        if body.len() as u64 + chunk.len() as u64 > max_bytes {
+            return Err(Error::unavailable(format!("response body exceeds the {max_bytes}-byte cap")));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+fn header_str(resp: &reqwest::Response, name: reqwest::header::HeaderName) -> Option<String> {
+    resp.headers().get(name)?.to_str().ok().map(str::to_owned)
+}
+
+fn max_age_from_cache_control(resp: &reqwest::Response) -> Option<u64> {
+    header_str(resp, reqwest::header::CACHE_CONTROL)?
+        .split(',')
+        .find_map(|part| part.trim().strip_prefix("max-age=").and_then(|v| v.parse::<u64>().ok()))
 }
 
 fn parse_checked_url(url: &str) -> Result<reqwest::Url> {
@@ -292,10 +574,12 @@ mod tests {
     use std::net::TcpListener;
 
     use shimmer_core::ErrorCode;
+    use tempfile::TempDir;
 
     use super::*;
 
     const OK: &str = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+    const NOT_MODIFIED: &str = "HTTP/1.1 304 Not Modified\r\nContent-Length: 0\r\n\r\n";
 
     /// Hand-rolled HTTP/1.1 server on an ephemeral loopback port: serves exactly the given
     /// responses in order, one per accepted connection, and records each request's raw head
@@ -331,10 +615,20 @@ mod tests {
         fn request_count(&self) -> usize {
             self.requests.lock().unwrap().len()
         }
+
+        fn last_request_sent(&self, header: &str) -> bool {
+            self.requests
+                .lock()
+                .unwrap()
+                .last()
+                .is_some_and(|r| r.to_ascii_lowercase().contains(&header.to_ascii_lowercase()))
+        }
     }
 
-    fn backend(config: HttpConfig, clock: Clock) -> RealHttpBackend {
-        RealHttpBackend::new(config, clock).unwrap()
+    fn backend(config: HttpConfig, clock: Clock) -> (RealHttpBackend, TempDir) {
+        let home = TempDir::new().unwrap();
+        let b = RealHttpBackend::new(home.path().to_path_buf(), config, clock).unwrap();
+        (b, home)
     }
 
     fn generous_config() -> HttpConfig {
@@ -343,7 +637,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_http_scheme_is_rejected_before_any_network_work() {
-        let b = backend(generous_config(), Clock::system());
+        let (b, _home) = backend(generous_config(), Clock::system());
         let err = b.get(&ModuleId::new("test"), "ftp://example.com/file").await.unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidParams);
     }
@@ -351,7 +645,7 @@ mod tests {
     #[tokio::test]
     async fn a_plain_get_round_trips_status_and_body() {
         let server = TestServer::start(vec![OK]);
-        let b = backend(generous_config(), Clock::system());
+        let (b, _home) = backend(generous_config(), Clock::system());
         let resp = b.get(&ModuleId::new("test"), &server.url("/a")).await.unwrap();
         assert_eq!((resp.status, resp.body), (200, b"ok".to_vec()));
         assert!(!resp.from_cache && !resp.stale && resp.retry_after_secs.is_none());
@@ -364,7 +658,7 @@ mod tests {
         let server = TestServer::start(vec![OK]);
         let mut cfg = generous_config();
         cfg.default_requests_per_sec = 0.01;
-        let b = backend(cfg, Clock::system());
+        let (b, _home) = backend(cfg, Clock::system());
         tokio::time::timeout(Duration::from_secs(2), b.get(&ModuleId::new("test"), &server.url("/a")))
             .await
             .expect("the first request must not wait for a token")
@@ -378,7 +672,7 @@ mod tests {
         let mut cfg = generous_config();
         cfg.default_requests_per_sec = 0.001; // so a shared bucket would starve the second host
         cfg.default_concurrent = 1;
-        let backend = backend(cfg, Clock::system());
+        let (backend, _home) = backend(cfg, Clock::system());
         let module = ModuleId::new("test");
         tokio::time::timeout(Duration::from_secs(2), async {
             backend.get(&module, &a.url("/a")).await.unwrap();
@@ -394,15 +688,15 @@ mod tests {
         let server = TestServer::start(vec![retry_after_1s, OK]);
         let mut cfg = generous_config();
         cfg.max_cooldown_wait = Duration::from_secs(5); // comfortably above the 1s Retry-After
-        let b = backend(cfg, Clock::system());
+        let (b, _home) = backend(cfg, Clock::system());
         let module = ModuleId::new("test");
 
         let first = b.get(&module, &server.url("/a")).await.unwrap();
         assert_eq!((first.status, first.retry_after_secs), (429, Some(1)));
 
         // Second call hits the same host while it's cooling down. Since 1s <= the 5s cap,
-        // this must actually wait out the cooldown and then succeed for real -- the one
-        // place in this test suite where a short, deliberate real wait is unavoidable,
+        // this must actually wait out the cooldown and then succeed for real -- one of the
+        // few places in this test suite where a short, deliberate real wait is unavoidable,
         // since a real wait is exactly the behavior under test.
         let second =
             tokio::time::timeout(Duration::from_secs(3), b.get(&module, &server.url("/a"))).await.unwrap().unwrap();
@@ -419,7 +713,7 @@ mod tests {
         let server = TestServer::start(vec![retry_after_1h]);
         let mut cfg = generous_config();
         cfg.max_cooldown_wait = Duration::from_millis(50);
-        let b = backend(cfg, clock);
+        let (b, _home) = backend(cfg, clock);
         let module = ModuleId::new("test");
 
         let first = b.get(&module, &server.url("/a")).await.unwrap();
@@ -438,11 +732,143 @@ mod tests {
         let b_server = TestServer::start(vec![OK]);
         let redirect = format!("HTTP/1.1 302 Found\r\nLocation: {}\r\nContent-Length: 0\r\n\r\n", b_server.url("/b"));
         let a_server = TestServer::start(vec![Box::leak(redirect.into_boxed_str())]);
-        let backend = backend(generous_config(), Clock::system());
+        let (backend, _home) = backend(generous_config(), Clock::system());
 
         let resp = backend.get(&ModuleId::new("test"), &a_server.url("/a")).await.unwrap();
         assert_eq!((resp.status, resp.body), (200, b"ok".to_vec()));
         assert_eq!(b_server.request_count(), 1, "the redirect target must actually have been requested");
+    }
+
+    #[tokio::test]
+    async fn a_fresh_cache_entry_is_served_without_touching_the_network_again() {
+        // Only one response scripted: a second network hit would panic the server thread.
+        let server = TestServer::start(vec![OK]);
+        let (b, _home) = backend(generous_config(), Clock::system());
+        let module = ModuleId::new("test");
+
+        let first = b.get(&module, &server.url("/a")).await.unwrap();
+        assert!(!first.from_cache);
+
+        let second = b.get(&module, &server.url("/a")).await.unwrap();
+        assert_eq!((second.status, second.body), (200, b"ok".to_vec()));
+        assert!(second.from_cache && !second.stale);
+        assert_eq!(server.request_count(), 1, "a fresh cache hit must not touch the network");
+    }
+
+    #[tokio::test]
+    async fn an_expired_cache_entry_is_refetched() {
+        let clock = Clock::fake(DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z").unwrap().to_utc());
+        let server = TestServer::start(vec![OK, OK]);
+        let mut cfg = generous_config();
+        cfg.cache_default_ttl = Duration::from_secs(60);
+        let (b, _home) = backend(cfg, clock.clone());
+        let module = ModuleId::new("test");
+
+        b.get(&module, &server.url("/a")).await.unwrap();
+        clock.advance(Duration::from_secs(61));
+        let second = b.get(&module, &server.url("/a")).await.unwrap();
+        assert!(!second.from_cache, "past its TTL, the cache entry must trigger a real refetch");
+        assert_eq!(server.request_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_etag_is_revalidated_with_if_none_match_and_a_304_serves_the_cached_body() {
+        let etag_ok = "HTTP/1.1 200 OK\r\nETag: \"v1\"\r\nContent-Length: 2\r\n\r\nok";
+        let server = TestServer::start(vec![etag_ok, NOT_MODIFIED]);
+        let mut cfg = generous_config();
+        cfg.cache_default_ttl = Duration::ZERO; // expires immediately, forcing a revalidation
+        let (b, _home) = backend(cfg, Clock::system());
+        let module = ModuleId::new("test");
+
+        let first = b.get(&module, &server.url("/a")).await.unwrap();
+        assert_eq!(first.body, b"ok".to_vec());
+
+        let second = b.get(&module, &server.url("/a")).await.unwrap();
+        assert_eq!((second.status, second.body), (200, b"ok".to_vec()), "a 304 must still hand back the cached body");
+        assert!(second.from_cache && !second.stale);
+        assert_eq!(server.request_count(), 2, "the TTL expiry must have triggered a real revalidation request");
+        assert!(
+            server.last_request_sent("If-None-Match: \"v1\""),
+            "the cached ETag must be sent back as If-None-Match"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_oversized_response_is_rejected_without_buffering_it_all() {
+        let huge = format!("HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n{}", "x".repeat(1000));
+        let server = TestServer::start(vec![Box::leak(huge.into_boxed_str())]);
+        let mut cfg = generous_config();
+        cfg.max_response_bytes = 10;
+        let (b, _home) = backend(cfg, Clock::system());
+
+        let err = b.get(&ModuleId::new("test"), &server.url("/a")).await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn two_modules_never_share_a_cache_entry_for_the_identical_url() {
+        let server = TestServer::start(vec![OK, OK]);
+        let (b, _home) = backend(generous_config(), Clock::system());
+        let url = server.url("/a");
+
+        b.get(&ModuleId::new("one"), &url).await.unwrap();
+        let second = b.get(&ModuleId::new("two"), &url).await.unwrap();
+        assert!(!second.from_cache, "a different module must never see the first module's cache entry");
+        assert_eq!(server.request_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_failed_refetch_serves_the_stale_cached_copy() {
+        let clock = Clock::fake(DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z").unwrap().to_utc());
+        let server = TestServer::start(vec![OK]);
+        let url = server.url("/a");
+        let mut cfg = generous_config();
+        cfg.cache_default_ttl = Duration::from_secs(60);
+        let (b, _home) = backend(cfg, clock.clone());
+        let module = ModuleId::new("test");
+
+        let first = b.get(&module, &url).await.unwrap();
+        assert!(!first.from_cache);
+
+        clock.advance(Duration::from_secs(61));
+        // The server has already served its one scripted response and its listener thread
+        // has exited; give it a moment to actually close the port so the next connection
+        // attempt fails instead of racing the thread's shutdown.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let second = b.get(&module, &url).await.unwrap();
+        assert_eq!((second.status, second.body), (200, b"ok".to_vec()));
+        assert!(second.from_cache && second.stale, "a failed refetch must serve the stale cached copy, marked as such");
+    }
+
+    #[test]
+    fn eviction_removes_the_oldest_pair_first_and_never_leaves_an_orphan() {
+        let home = TempDir::new().unwrap();
+        let cache = ResponseCache { home: home.path().to_path_buf() };
+        let module = ModuleId::new("test");
+        let meta = |url: &str, at: DateTime<Utc>| CacheMeta {
+            url: url.to_owned(),
+            status: 200,
+            etag: None,
+            last_modified: None,
+            max_age_secs: None,
+            cached_at: at,
+        };
+        let t0 = DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z").unwrap().to_utc();
+        // The cap comfortably fits one pair (body + its meta.json) but not two.
+        let cap = 10_500;
+
+        cache.write(&module, "http://a", &meta("http://a", t0), &[0u8; 10_000], cap);
+        std::thread::sleep(Duration::from_millis(10)); // distinct mtimes to order eviction by
+        cache.write(&module, "http://b", &meta("http://b", t0), &[0u8; 10_000], cap);
+
+        assert!(cache.read(&module, "http://a").is_none(), "the older pair must be evicted");
+        assert!(cache.read(&module, "http://b").is_some(), "the newer pair must survive");
+        let (meta_path, body_path) = cache.paths(&module, "http://a");
+        assert!(
+            !meta_path.exists() && !body_path.exists(),
+            "eviction must remove both halves of a pair, never just one"
+        );
     }
 
     #[test]
