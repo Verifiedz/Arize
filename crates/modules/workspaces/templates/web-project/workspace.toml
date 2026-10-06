@@ -2,7 +2,8 @@
 # Created from Shimmer's web-project template. It's your folder now: edit it freely.
 #
 #   shimmer workspaces activate <id>      open it all
-#   shimmer workspaces stop <id>          stop the dev server and services (windows stay open)
+#   shimmer workspaces stop <id>          stop the dev server and services, and close what it can
+#                                         (it lists what it closed and what it left open)
 #   shimmer workspaces cleanup <id>       after a failed launch: the same, and back to ready
 #
 # Your answers are the [env] table at the bottom: change them there. "auto" is worked out each

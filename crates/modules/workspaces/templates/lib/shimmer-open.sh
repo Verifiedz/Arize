@@ -294,6 +294,12 @@ shimmer_has_terminal() {
 
 # Open TERMINAL in DIR, running COMMAND (a shell command line) if given. The terminal stays open
 # afterwards, at a shell in DIR.
+#
+# Terminals that open each window as their own program (kitty, foot, alacritty, wezterm, ghostty,
+# konsole, xterm) are started as a new program in this step's process group and recorded, so
+# `workspaces stop` can close exactly that window. GNOME Terminal and macOS Terminal / iTerm hand
+# every window to one shared program, so their windows can't be closed without closing your other
+# ones: they're recorded as left open, and stop says so.
 shimmer_open_terminal() {
     term=$1
     dir=$2
@@ -303,45 +309,153 @@ shimmer_open_terminal() {
     [ "$term" = "none" ] && return 0
     shell=${SHELL:-sh}
     # What runs inside the terminal: the command, then an interactive shell.
-    inner="cd $(shimmer_quote "$dir") && $command; exec $(shimmer_quote "$shell")"
+    if [ -n "$command" ]; then
+        inner="cd $(shimmer_quote "$dir") && $command; exec $(shimmer_quote "$shell")"
+    else
+        inner="cd $(shimmer_quote "$dir") && exec $(shimmer_quote "$shell")"
+    fi
     case "$term" in
         terminal | iterm)
-            if [ -z "$command" ]; then
-                if [ "$term" = "terminal" ]; then open -a Terminal "$dir"; else open -a iTerm "$dir"; fi
-                return
-            fi
-            line=$(printf '%s' "cd $(shimmer_quote "$dir") && $command" | sed 's/\\/\\\\/g; s/"/\\"/g')
+            line=$(printf '%s' "$inner" | sed 's/\\/\\\\/g; s/"/\\"/g')
             if [ "$term" = "terminal" ]; then
                 osascript -e "tell application \"Terminal\" to do script \"$line\"" -e 'tell application "Terminal" to activate' >/dev/null
+                shimmer_record_left_open "the Terminal window (macOS Terminal keeps all its windows in one program)"
             else
                 osascript -e 'tell application "iTerm"' -e 'set w to (create window with default profile)' \
                     -e "tell current session of w to write text \"$line\"" -e 'end tell' >/dev/null
+                shimmer_record_left_open "the iTerm window (iTerm keeps all its windows in one program)"
             fi
-            return
+            return 0
+            ;;
+        gnome-terminal)
+            gnome-terminal --working-directory="$dir" -- "$shell" -c "$inner" >/dev/null 2>&1 &
+            shimmer_record_left_open "the GNOME Terminal window (GNOME Terminal keeps all its windows in one program)"
+            return 0
+            ;;
+        kitty) kitty --directory "$dir" "$shell" -c "$inner" >/dev/null 2>&1 & ;;
+        foot) foot --working-directory="$dir" "$shell" -c "$inner" >/dev/null 2>&1 & ;;
+        alacritty) alacritty --working-directory "$dir" -e "$shell" -c "$inner" >/dev/null 2>&1 & ;;
+        wezterm) wezterm start --always-new-process --cwd "$dir" -- "$shell" -c "$inner" >/dev/null 2>&1 & ;;
+        ghostty)
+            if shimmer_macos; then
+                ghostty --working-directory="$dir" -e "$shell" -c "$inner" >/dev/null 2>&1 &
+            else
+                ghostty --gtk-single-instance=false --working-directory="$dir" -e "$shell" -c "$inner" >/dev/null 2>&1 &
+            fi
+            ;;
+        konsole) konsole --nofork --workdir "$dir" -e "$shell" -c "$inner" >/dev/null 2>&1 & ;;
+        *) (cd "$dir" && exec "$term" -e "$shell" -c "$inner") >/dev/null 2>&1 & ;;
+    esac
+    shimmer_record_closable "the $term terminal"
+    return 0
+}
+
+# ---------------------------------------------------------------- what stop can close
+
+# A window this step started as its own program: its process group (this step's own, since every
+# detached step is a group of its own, ADR 0010 §3) and what to call it.
+shimmer_record_closable() {
+    mkdir -p "$SHIMMER_STATE_DIR"
+    echo "$$ $1" >>"$SHIMMER_STATE_DIR/closable"
+}
+
+# Something this workspace opened that stop can't close, and why.
+shimmer_record_left_open() {
+    mkdir -p "$SHIMMER_STATE_DIR"
+    echo "$1" >>"$SHIMMER_STATE_DIR/left-open"
+}
+
+# For cleanup: close what can be closed (CLOSE_ON_STOP = yes), and say exactly what was closed and
+# what was left open.
+shimmer_close_windows() {
+    closable="$SHIMMER_STATE_DIR/closable"
+    left="$SHIMMER_STATE_DIR/left-open"
+    if [ -f "$closable" ]; then
+        while read -r pgid label; do
+            [ -n "$pgid" ] || continue
+            if ! kill -s 0 -- "-$pgid" 2>/dev/null; then
+                echo "already closed: $label"
+            elif [ "${CLOSE_ON_STOP:-yes}" = "yes" ]; then
+                shimmer_stop_group "$pgid"
+                echo "closed: $label"
+            else
+                echo "left open (CLOSE_ON_STOP = no): $label"
+            fi
+        done <"$closable"
+        rm -f "$closable" "$SHIMMER_STATE_DIR/browser.pgid"
+    fi
+    if [ -f "$left" ]; then
+        sort -u "$left" | while read -r what; do
+            echo "left open, close it yourself: $what"
+        done
+        rm -f "$left"
+    fi
+}
+
+# ---------------------------------------------------------------- a browser window of its own
+
+# The browser program for BROWSER_APP (auto: the first one found), for a window of its own.
+shimmer_browser_bin() {
+    case "$1" in
+        firefox) set -- firefox firefox-esr "/Applications/Firefox.app/Contents/MacOS/firefox" ;;
+        chrome) set -- google-chrome google-chrome-stable "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ;;
+        chromium) set -- chromium chromium-browser "/Applications/Chromium.app/Contents/MacOS/Chromium" ;;
+        brave) set -- brave-browser brave "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" ;;
+        edge) set -- microsoft-edge microsoft-edge-stable "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" ;;
+        *)
+            for app in firefox chrome chromium brave edge; do
+                found=$(shimmer_browser_bin "$app")
+                [ -n "$found" ] && echo "$found" && return
+            done
+            return 0
             ;;
     esac
-    if [ -z "$command" ]; then
-        case "$term" in
-            kitty) kitty --directory "$dir" >/dev/null 2>&1 & ;;
-            foot) foot --working-directory="$dir" >/dev/null 2>&1 & ;;
-            alacritty) alacritty --working-directory "$dir" >/dev/null 2>&1 & ;;
-            wezterm) wezterm start --cwd "$dir" >/dev/null 2>&1 & ;;
-            ghostty) ghostty --working-directory="$dir" >/dev/null 2>&1 & ;;
-            gnome-terminal) gnome-terminal --working-directory="$dir" >/dev/null 2>&1 & ;;
-            konsole) konsole --workdir "$dir" >/dev/null 2>&1 & ;;
-            *) (cd "$dir" && "$term" >/dev/null 2>&1 &) ;;
+    for candidate in "$@"; do
+        case "$candidate" in
+            /*) [ -x "$candidate" ] && echo "$candidate" && return ;;
+            *) shimmer_has "$candidate" && echo "$candidate" && return ;;
+        esac
+    done
+}
+
+# Open URLs in a browser window of the workspace's own: a separate copy of the browser with its
+# own profile, kept between launches in ~/.local/state/shimmer/browser-profiles/<id> so logins
+# stick, and closed by stop without touching your normal browser. Opening again while it's still
+# up adds tabs to that same window.
+shimmer_open_urls_window() {
+    app=$1
+    shift
+    bin=$(shimmer_browser_bin "$app")
+    if [ -z "$bin" ]; then
+        echo "no browser found for BROWSER_APP=$app: opening in your normal browser instead"
+        shimmer_open_url "$@"
+        return
+    fi
+    profile="${XDG_STATE_HOME:-$HOME/.local/state}/shimmer/browser-profiles/$SHIMMER_WORKSPACE_ID"
+    mkdir -p "$profile" && chmod 700 "$profile"
+    running=""
+    pgid_file="$SHIMMER_STATE_DIR/browser.pgid"
+    [ -f "$pgid_file" ] && kill -s 0 -- "-$(cat "$pgid_file")" 2>/dev/null && running=yes
+    if [ -n "$running" ]; then
+        # The workspace's window is still up: the browser hands these tabs to it.
+        case "$(basename "$bin")" in
+            firefox*) "$bin" --profile "$profile" "$@" >/dev/null 2>&1 ;;
+            *) "$bin" --user-data-dir="$profile" "$@" >/dev/null 2>&1 ;;
         esac
         return 0
     fi
-    case "$term" in
-        kitty) kitty --directory "$dir" "$shell" -c "$inner" >/dev/null 2>&1 & ;;
-        foot) foot --working-directory="$dir" "$shell" -c "$inner" >/dev/null 2>&1 & ;;
-        wezterm) wezterm start --cwd "$dir" -- "$shell" -c "$inner" >/dev/null 2>&1 & ;;
-        gnome-terminal) gnome-terminal --working-directory="$dir" -- "$shell" -c "$inner" >/dev/null 2>&1 & ;;
-        konsole) konsole --workdir "$dir" -e "$shell" -c "$inner" >/dev/null 2>&1 & ;;
-        *) "$term" -e "$shell" -c "$inner" >/dev/null 2>&1 & ;;
+    case "$(basename "$bin")" in
+        firefox*)
+            # No "restore session?" after stop closes it, and no default-browser nag.
+            [ -f "$profile/user.js" ] || printf '%s\n' \
+                'user_pref("browser.sessionstore.resume_from_crash", false);' \
+                'user_pref("browser.shell.checkDefaultBrowser", false);' >"$profile/user.js"
+            "$bin" --new-instance --profile "$profile" "$@" >/dev/null 2>&1 &
+            ;;
+        *) "$bin" --user-data-dir="$profile" --no-first-run --hide-crash-restore-bubble --new-window "$@" >/dev/null 2>&1 & ;;
     esac
-    return 0
+    mkdir -p "$SHIMMER_STATE_DIR" && echo "$$" >"$pgid_file"
+    shimmer_record_closable "the $(basename "$bin") window with this workspace's tabs"
 }
 
 # ---------------------------------------------------------------- web projects

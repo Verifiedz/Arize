@@ -67,7 +67,11 @@ async fn stop_runs_the_cleanup_script_and_goes_ready() {
     let env = env_with_site(Some(ACTIVE), true);
     env.launcher.outcomes.lock().unwrap().push_back(outcome(0));
     let w = Workspaces::default();
-    assert_eq!(call(&w, &env, "workspaces.stop").await.unwrap(), json!({"id": "site", "state": "ready"}));
+    assert_eq!(
+        call(&w, &env, "workspaces.stop").await.unwrap(),
+        json!({"id": "site", "state": "ready", "log": "logs/site-cleanup.log"}),
+        "the log, so a client can show what was closed"
+    );
     let ran = env.launcher.received.lock().unwrap().clone();
     assert_eq!(ran.len(), 1);
     assert_eq!(ran[0].step, Step::Cleanup);

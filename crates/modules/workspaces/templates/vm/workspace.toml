@@ -2,7 +2,8 @@
 # inside it. Created from Shimmer's vm template. It's your folder now: edit it freely.
 #
 #   shimmer workspaces activate <id>      start it all
-#   shimmer workspaces stop <id>          suspend or shut down the VM (ON_STOP)
+#   shimmer workspaces stop <id>          suspend or shut down the VM (ON_STOP), close the SSH
+#                                         terminal if it can, and list what it left open
 #
 # Your answers are the [env] table at the bottom: change them there.
 #

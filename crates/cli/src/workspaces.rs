@@ -417,9 +417,23 @@ async fn queued(client: &mut Client, kind: Queued, id: &str, wait: bool, json: b
         return Ok(if json { render::json(&handle) } else { queued_message(kind, id, task) });
     }
     match follow(client, task, json).await {
-        Ok(result) => Ok(if json { render::json(&result) } else { kind.done(id) }),
+        Ok(result) => Ok(if json { render::json(&result) } else { with_log(kind.done(id), &result) }),
         Err(e) if json => Err(e),
         Err(e) => Err(explain(e, id)),
+    }
+}
+
+/// After stop or cleanup: what the cleanup script said it did, e.g. "closed: the kitty terminal",
+/// "left open, close it yourself: the cursor window …" (ADR 0026). Read from its log in the
+/// Shimmer folder; nothing extra when there's no log or it can't be read.
+fn with_log(done: String, result: &Value) -> String {
+    let Some(log) = result["log"].as_str().filter(|l| !l.is_empty()) else { return done };
+    let Ok(text) = std::fs::read_to_string(shimmer_proto::paths::shimmer_home().join(log)) else { return done };
+    let lines: Vec<String> = text.lines().filter(|l| !l.trim().is_empty()).map(|l| format!("  {l}")).collect();
+    if lines.is_empty() {
+        done
+    } else {
+        format!("{done}\n{}", lines.join("\n"))
     }
 }
 

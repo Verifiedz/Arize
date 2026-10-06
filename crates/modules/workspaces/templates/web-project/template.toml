@@ -91,6 +91,22 @@ kind = "command"
 help = "VS Code and Cursor only, e.g. claude or npm run lint -- --watch. Leave empty for none. Shimmer writes .vscode/tasks.json (kept out of git); the editor may ask once to allow automatic tasks."
 
 [[question]]
+name = "BROWSER_WINDOW"
+prompt = "Open the links in your normal browser, or a window of their own"
+kind = "choice"
+choices = ["shared", "separate"]
+default = "shared"
+help = "separate: a browser window with its own profile (log in to sites once inside it; it remembers), which workspaces stop closes. shared: tabs in your normal browser, which stop can't close."
+
+[[question]]
+name = "BROWSER_APP"
+prompt = "Browser for that separate window"
+kind = "choice"
+choices = ["auto", "firefox", "chrome", "chromium", "brave", "edge"]
+default = "auto"
+help = "Only used when BROWSER_WINDOW is separate. auto: the first one installed."
+
+[[question]]
 name = "TERMINAL_APP"
 prompt = "External terminal (a separate window)"
 kind = "choice"
@@ -103,3 +119,11 @@ name = "TERMINAL_COMMAND"
 prompt = "Command to run in the external terminal"
 kind = "command"
 help = "e.g. claude. Leave empty for just a shell in the project."
+
+[[question]]
+name = "CLOSE_ON_STOP"
+prompt = "Close what it opened when you run workspaces stop"
+kind = "choice"
+choices = ["yes", "no"]
+default = "yes"
+help = "Closed: the dev server, services, kitty/foot/alacritty/wezterm/ghostty/konsole/xterm terminals, and the browser window if BROWSER_WINDOW is separate. Never closed: the editor, GNOME Terminal and macOS Terminal/iTerm windows, and tabs in your normal browser (they share a program with your other work). stop lists exactly what it closed and what it left."

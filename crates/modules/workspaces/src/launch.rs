@@ -66,7 +66,8 @@ impl Workspaces {
             tx.emit("workspaces.session.cleaned", json!({"workspace": id, "log": log}))
         })?;
         ctx.progress(1.0, "cleaned up");
-        Ok(json!({"id": id, "state": "ready"}))
+        // The log says what the script did (e.g. what it closed), for the client to show.
+        Ok(json!({"id": id, "state": "ready", "log": log}))
     }
 
     /// `workspaces.stop`: run the cleanup script on an `active` workspace, so it stops what the
@@ -107,7 +108,7 @@ impl Workspaces {
             )
         })?;
         ctx.progress(1.0, "stopped");
-        Ok(json!({"id": id, "state": "ready"}))
+        Ok(json!({"id": id, "state": "ready", "log": log.unwrap_or_default()}))
     }
 
     /// Check the workspace can launch and claim it: under the lock, read its state, apply the

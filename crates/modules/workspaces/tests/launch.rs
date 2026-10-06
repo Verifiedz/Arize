@@ -407,7 +407,7 @@ async fn cleanup_runs_the_script_supervised_and_goes_ready() {
     let w = Workspaces::default();
 
     let data = call(&w, &env, "workspaces.cleanup").await.unwrap();
-    assert_eq!(data, json!({"id": "deep-work", "state": "ready"}));
+    assert_eq!(data, json!({"id": "deep-work", "state": "ready", "log": "logs/deep-work-cleanup.log"}));
     let step = &received(&env.launcher)[0];
     assert_eq!(step.step, Step::Cleanup);
     assert_eq!(step.mode, SpawnMode::Supervised { timeout: Duration::from_secs(30) });

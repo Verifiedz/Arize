@@ -46,8 +46,30 @@ What a workspace starts falls into two groups, and only one can be stopped safel
 - **Failure leaves it `active`** and fails the task with the log, as a failed cleanup leaves a
   workspace `dirty`. A stop that half-worked is not a half-configured launch, so it doesn't
   block activating again; the next launch's check step will notice a port still taken.
-- **Windows are never closed.** The editor, browser tabs and terminals stay open (Context).
-  Templates' cleanup scripts stop processes only.
+- **Windows: only those the workspace owns are closed, and stop says which** (amended below).
+
+### 1a. Amendment: closing the windows a workspace owns, and saying what stays
+
+Testing showed "stop processes, never windows" left too much behind. Windows split by who owns
+them, and that decides what's closable:
+
+| Opened by the workspace | Closed by `stop`? | Why |
+|---|---|---|
+| Dev server, services, the VM | ✅ always (as before) | started by the workspace as its own processes |
+| A kitty / foot / alacritty / wezterm / ghostty / konsole / xterm terminal | ✅ with `CLOSE_ON_STOP = yes` (the default) | each window is its own program, started in the step's process group; started with each terminal's "new process" flag (`--always-new-process`, `--gtk-single-instance=false`, `--nofork`) |
+| Links in a browser window of the workspace's own (`BROWSER_WINDOW = separate`) | ✅ with `CLOSE_ON_STOP = yes` | a separate copy of the browser with a per-workspace profile (`~/.local/state/shimmer/browser-profiles/<id>`, kept so logins stick); a second launch hands its tabs to that window |
+| The editor (Cursor, VS Code, …) | ❌ never | one program owns all its windows, and they may hold unsaved work |
+| GNOME Terminal, macOS Terminal / iTerm windows | ❌ never | one program owns all their windows |
+| Tabs in your normal browser (`BROWSER_WINDOW = shared`, the default) | ❌ never | they share the browser with your other tabs |
+
+- Each opening step records what it opened in the workspace's temp folder: a closable window as
+  its process group, anything else with the reason it can't be closed.
+- The cleanup script closes the closable ones (`CLOSE_ON_STOP = no` keeps them) and prints one
+  line per item: `closed: …`, `already closed: …`, `left open, close it yourself: …`.
+- `workspaces.stop` and `workspaces.cleanup` now end `{"id","state":"ready","log"}`, so the CLI
+  prints that list after `--wait` instead of a bare "stopped".
+- Process-group checks use `kill -s 0 -- -PGID`: Debian's `sh` (dash) reads `kill -0 -- -PGID`
+  as a process named `--` and fails, which first made every window look "already closed".
 
 CLAUDE.md §10.3 gains one transition, `active ──stop (cleanup script)──> ready`, and its
 "Recovery is by cleanup script" bullet says the script is also what `stop` runs.
