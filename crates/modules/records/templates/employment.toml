@@ -1,0 +1,87 @@
+# Employment: one record per job you've held, for the history applications and background checks ask for.
+# Created from Shimmer's employment template. It's your file now: edit it freely.
+#
+# Private information: this file and its records are plain text in your Shimmer folder, which is
+# meant to be copyable and committable to git. Never store ID numbers or anything you wouldn't
+# want copied; if you sync your Shimmer folder to a git repo, keep it private.
+#
+# How it works:
+#   shimmer records add <collection> --company Acme --job-title "Software Engineer Intern" \
+#       --start-on 2025-05-12 --end-on 2025-08-15 --manager "Jay Patel" --may-contact true
+#   shimmer records list <collection> --sort -start_on          newest first, ready to copy into a form
+#   shimmer records list <collection> --missing end_on          your current job
+
+[collection]
+id = "employment"
+label = "Employment"
+description = "Jobs you've held: company, title, dates, manager, why you left"
+title = "{company}: {job_title}"
+# History has nothing to finish: no status, no completing.
+completable = false
+related = ["education", "addresses", "documents"]
+
+[[field]]
+name = "company"
+type = "string"
+required = true
+
+[[field]]
+name = "job_title"
+type = "string"
+
+[[field]]
+name = "employment_type"
+type = "enum"
+values = ["full-time", "part-time", "internship", "co-op", "contract", "freelance", "volunteer"]
+
+[[field]]
+name = "team"            # e.g. "Payments platform"
+type = "string"
+
+[[field]]
+name = "company_address" # forms often ask for the employer's address
+type = "string"
+
+[[field]]
+name = "city"
+type = "string"
+
+[[field]]
+name = "country"
+type = "string"
+
+[[field]]
+name = "start_on"
+type = "date"
+
+[[field]]
+name = "end_on"          # empty = you still work there
+type = "date"
+
+[[field]]
+name = "manager"         # your supervisor's name
+type = "string"
+
+[[field]]
+name = "manager_contact" # their email or phone, if you have it
+type = "string"
+
+[[field]]
+name = "may_contact"     # "may we contact this employer?"
+type = "bool"
+
+[[field]]
+name = "final_pay"       # e.g. "$45/hr"; some forms ask
+type = "string"
+
+[[field]]
+name = "reason_left"
+type = "string"
+
+[[field]]
+name = "responsibilities" # what you did, in a sentence or two
+type = "string"
+
+[[field]]
+name = "notes"
+type = "string"
