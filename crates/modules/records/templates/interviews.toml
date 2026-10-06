@@ -1,0 +1,98 @@
+# Interviews: one record per round, as many rounds of any kind as a pipeline has.
+# Created from Shimmer's interviews template. It's your file now: edit it freely.
+#
+# How it works:
+#   shimmer records add <collection> --application google-swe-ng --kind technical --round 1 --scheduled-at "2026-10-29 14:00"
+#   shimmer records complete <collection>/<id> --outcome passed      the round happened
+#   shimmer records list <collection> --application google-swe-ng --sort round
+#   shimmer records list <collection> --filter "scheduled_at>=today" --sort scheduled_at   what's coming up
+#   shimmer records list <collection> --filter "thank_you_sent!=true"     who you still owe a note
+#
+# Questions worth practising go in an interview-questions collection too, with asked_in set to
+# the round's id.
+
+[collection]
+id = "interviews"
+label = "Interviews"
+description = "One record per interview round, linked to a job application"
+title = "{application}: {kind}"
+# Completing a round means it happened: it stamps today's date in done_on.
+stamp_on_complete = "done_on"
+repeat_complete = "refuse"
+related = ["job-applications", "interview-questions", "stories", "offers"]
+
+[[field]]
+name = "application"     # the id of the job in your job-applications collection
+type = "string"
+required = true
+
+[[field]]
+name = "kind"
+type = "enum"
+required = true
+values = ["recruiter-screen", "oa", "take-home", "case-study", "technical", "system-design", "behavioral", "hiring-manager", "team-match", "other"]
+
+[[field]]
+name = "round"
+type = "int"
+
+[[field]]
+name = "scheduled_at"    # "2026-10-29 14:00" in your timezone, or just the day
+type = "datetime"
+role = "deadline"
+
+[[field]]
+name = "format"
+type = "enum"
+values = ["video", "phone", "onsite", "async"]
+
+[[field]]
+name = "interviewer"
+type = "string"
+
+[[field]]
+name = "prep"            # what to study for it
+type = "string"
+
+[[field]]
+name = "duration_min"    # 45 for a screen, 240 for an onsite
+type = "int"
+
+[[field]]
+name = "questions_asked" # what came up, as you remember it
+type = "string"
+
+[[field]]
+name = "went"            # your read of how it went
+type = "enum"
+values = ["great", "good", "mixed", "poor"]
+
+[[field]]
+name = "difficulty"      # how hard the round was
+type = "enum"
+values = ["easy", "medium", "hard"]
+
+[[field]]
+name = "outcome"         # their decision, which can take weeks
+type = "enum"
+values = ["waiting", "passed", "failed"]
+
+[[field]]
+name = "feedback"        # what the recruiter told you
+type = "string"
+
+[[field]]
+name = "thank_you_sent"
+type = "bool"
+
+[[field]]
+name = "next_step"       # e.g. "recruiter will email by Friday"
+type = "string"
+
+[[field]]
+name = "done_on"         # stamped by records complete
+type = "date"
+
+[[field]]
+name = "notes"           # what they asked, how it went
+type = "string"

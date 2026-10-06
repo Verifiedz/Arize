@@ -18,7 +18,7 @@ code today:
 
 | Mechanism | What it does |
 |---|---|
-| **records** | Typed collections. Each collection is a TOML file that declares its fields (`string`, `enum`, `date`, …); each record is its own TOML file. Handles add, list, filter, update, complete and remove. LeetCode ships built in. |
+| **records** | Typed collections. Each collection is a TOML file that declares its fields (`string`, `enum`, `date`, …); each record is its own TOML file. Handles add, list, filter, update, complete and remove. Ready-made templates (LeetCode, job applications, interviews, …) create a tracker with one command; a fresh install starts with none. |
 | **queue** | The single pipeline every unit of background work runs through. Work is split into lanes, each with its own concurrency limit. |
 | **scheduler** | Owns *when* work happens: recurring and one-shot triggers that enqueue tasks on the queue. It never runs anything itself. |
 | **event bus** | How the pieces react to each other. Every change is published as an event (`records.item.completed`, …) and appended to a log. Modules never call each other directly. |
@@ -88,6 +88,8 @@ cargo run -q -- ping          # starts the daemon if needed, then: "pong (daemon
 ### Track records
 
 ```sh
+shimmer records templates                    # ready-made trackers to start from
+shimmer records new leetcode --from leetcode # create a LeetCode tracker from its template
 shimmer records collections                  # list collections and their fields
 shimmer records add leetcode two-sum --title "Two Sum" --difficulty easy
 shimmer records list leetcode --status todo  # --FIELD VALUE filters on an exact value
@@ -134,8 +136,8 @@ shimmer records add jobs acme --company Acme --stage saved
 shimmer records list jobs --stage saved
 ```
 
-The built-in `leetcode.toml` sits in the same folder and is a good reference. You can edit it
-too.
+Every collection created from a template (`shimmer records new ID --from TEMPLATE`) lands in the
+same folder as an ordinary, commented file, and is a good reference. You can edit those too.
 
 ### Other commands
 

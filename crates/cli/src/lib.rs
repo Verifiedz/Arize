@@ -7,6 +7,7 @@
 mod args;
 mod autostart;
 mod client;
+mod csv;
 mod flags;
 pub mod packs;
 mod queue;
@@ -149,7 +150,7 @@ async fn execute(args: &Args, help: String) -> Result<Option<String>> {
     let Some(mut client) = connect(args).await? else { return Ok(None) };
 
     if let Command::Records(cmd) = &args.command {
-        return records::run(&mut client, cmd, args.json).await.map(Some);
+        return records::run(&mut client, cmd, args.json, &mut workspaces::Terminal).await.map(Some);
     }
     if let Command::Queue(cmd) = &args.command {
         return queue::run(&mut client, cmd, args.json).await.map(Some);

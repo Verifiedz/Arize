@@ -46,7 +46,10 @@ belongs to this machine, so copying your Shimmer folder elsewhere doesn't bring 
 | records get | `naruhodo` | `blame` | `scan` | `rget` |
 | records update | `senpai` | `amend` | `retrofit` | `rset` |
 | records complete | `yatta` | `lgtm` | `landed` | `rdone` |
+| records reopen | `mou-ikkai` | `regression` | `re-entry` | `rreopen` |
+| records rename | `kaimei` | `rebrand` | `redesignate` | `rmv` |
 | records remove | `sayonara` | `wontfix` | `airlock` | `rrm` |
+| records restore | `okaeri` | `revert` | `salvage` | `rundo` |
 | workspaces list | `minna` | `envs` | `sectors` | `wlist` |
 | workspaces status | `nani` | `standup` | `diagnostics` | `wst` |
 | workspaces activate | `ikuzo` | `deploy` | `engage` | `wgo` |
@@ -95,7 +98,7 @@ On the right of each alias goes the command it runs, by its op name:
 | `scheduler.list`, `.add`, `.pause`, `.resume`, `.remove` | `shimmer scheduler <verb>` |
 
 The queue and scheduler commands are optional for your own packs: name them if you like. The
-built-in packs name all 25.
+built-in packs name all 28.
 
 Then check it, and turn it on:
 
