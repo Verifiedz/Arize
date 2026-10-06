@@ -403,10 +403,27 @@ async fn pause_resume_and_remove() {
     assert_eq!(c.call("scheduler.remove", json!({"trigger_id": id})).await.unwrap()["removed"], true);
     assert!(trigger(&mut c, &id).await.is_none());
     assert!(!env.home.path().join(format!("data/scheduler/triggers/{id}.json")).exists());
-    for op in ["scheduler.remove", "scheduler.pause", "scheduler.resume"] {
+    for op in ["scheduler.remove", "scheduler.pause", "scheduler.resume", "scheduler.get"] {
         assert_eq!(c.call(op, json!({"trigger_id": id})).await.unwrap_err().code, ErrorCode::NotFound, "{op}");
     }
     assert_eq!(c.call("scheduler.frobnicate", json!({})).await.unwrap_err().code, ErrorCode::UnknownOp);
+    stop(d).await;
+}
+
+/// #76: `scheduler show` used to call `scheduler.list` and pick its one trigger out. `get`
+/// is the odd-one-out fix — same shape as a `scheduler.list` entry, or `not_found`.
+#[tokio::test]
+async fn get_returns_one_trigger_in_the_list_shape_or_not_found() {
+    let env = Env::fake_clock();
+    let d = env.start().await;
+    let mut c = Client::connect(&env.sock).await;
+    let id = add(&mut c, json!({"every": DAY}), "demo.echo", "backfill").await;
+
+    let got = c.call("scheduler.get", json!({"trigger_id": id})).await.unwrap();
+    let listed = trigger(&mut c, &id).await.unwrap();
+    assert_eq!(got, listed, "scheduler.get must return exactly the shape its scheduler.list entry has");
+
+    assert_eq!(c.call("scheduler.get", json!({"trigger_id": "nope"})).await.unwrap_err().code, ErrorCode::NotFound);
     stop(d).await;
 }
 

@@ -319,6 +319,7 @@ impl Scheduler {
     pub fn handle(&self, op: &str, params: Value) -> Result<Value> {
         match op {
             "scheduler.list" => Ok(self.list()),
+            "scheduler.get" => self.get(&trigger_id(params)?),
             "scheduler.add" => self.add(params),
             "scheduler.remove" => self.remove(&trigger_id(params)?),
             "scheduler.pause" => self.set_paused(&trigger_id(params)?, true),
@@ -328,18 +329,17 @@ impl Scheduler {
     }
 
     fn list(&self) -> Value {
-        let triggers: Vec<Value> = self
-            .lock()
-            .values()
-            .map(|e| {
-                let s = &e.stored;
-                json!({"id": s.spec.id, "source": s.source, "schedule": s.spec.schedule, "op": s.spec.op,
-                       "params": s.spec.params, "catch_up": s.spec.catch_up, "lane": s.spec.lane,
-                       "fallback": s.spec.fallback, "next_due": s.next_due, "last_run": s.last_run,
-                       "paused": s.paused, "done": s.done})
-            })
-            .collect();
+        let triggers: Vec<Value> = self.lock().values().map(|e| trigger_view(&e.stored)).collect();
         json!({ "triggers": triggers })
+    }
+
+    /// One trigger, in exactly the shape a `scheduler.list` entry has (#76) — `queue show`
+    /// uses `queue.task` and `workspaces status` uses `workspaces.status`; this was the odd
+    /// one out, picking its one trigger out of the full list instead.
+    fn get(&self, id: &str) -> Result<Value> {
+        let st = self.lock();
+        let e = st.get(id).ok_or_else(|| Error::not_found(format!("no trigger '{id}'")))?;
+        Ok(trigger_view(&e.stored))
     }
 
     fn add(&self, params: Value) -> Result<Value> {
@@ -409,6 +409,15 @@ impl Scheduler {
         e.stored = next;
         Ok(json!({ "paused": paused }))
     }
+}
+
+/// The wire shape of one trigger, shared by `scheduler.list` (one per entry) and
+/// `scheduler.get` (one, by id) so they can never drift apart.
+fn trigger_view(s: &Stored) -> Value {
+    json!({"id": s.spec.id, "source": s.source, "schedule": s.spec.schedule, "op": s.spec.op,
+           "params": s.spec.params, "catch_up": s.spec.catch_up, "lane": s.spec.lane,
+           "fallback": s.spec.fallback, "next_due": s.next_due, "last_run": s.last_run,
+           "paused": s.paused, "done": s.done})
 }
 
 fn trigger_id(params: Value) -> Result<String> {
