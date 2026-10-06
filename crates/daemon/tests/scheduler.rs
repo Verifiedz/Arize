@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use common::*;
 use serde_json::{json, Value};
-use swe_core::{CatchUp, ErrorCode, Event, Schedule, TriggerId, TriggerSpec};
+use shimmer_core::{CatchUp, ErrorCode, Event, Schedule, TriggerId, TriggerSpec};
 
 const DAY: u64 = 86_400;
 
@@ -65,7 +65,7 @@ fn fired_times(events: &[Event]) -> Vec<String> {
 }
 
 fn logged(env: &Env, topic: &str) -> Vec<Event> {
-    swe_store::Store::open(env.home.path())
+    shimmer_store::Store::open(env.home.path())
         .unwrap()
         .read_events()
         .unwrap()

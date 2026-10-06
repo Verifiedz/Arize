@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use swe_core::{Error, Event, EventSink, HttpBackend, HttpResponse, ModuleId, Result, StoreBackend, TxPlan};
-use swe_store::Store;
+use shimmer_core::{Error, Event, EventSink, HttpBackend, HttpResponse, ModuleId, Result, StoreBackend, TxPlan};
+use shimmer_store::Store;
 
 use crate::bus::Bus;
 

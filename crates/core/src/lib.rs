@@ -1,4 +1,4 @@
-//! `swe-core`: the shared contract between daemon, modules and clients.
+//! `shimmer-core`: the shared contract between daemon, modules and clients.
 //!
 //! Change-controlled (CLAUDE.md §4). Depends on nothing internal, and never learns what a
 //! user is (§1.5): no identity, session or token types belong here.
@@ -13,9 +13,11 @@ pub mod ids;
 pub mod launcher;
 pub mod manifest;
 pub mod module;
+pub mod params;
 pub mod queue;
 pub mod retry;
 pub mod store;
+pub mod sync;
 pub mod task;
 pub mod time;
 pub mod trigger;
@@ -38,6 +40,7 @@ pub use module::Module;
 pub use queue::{EnqueueRequest, QueueHandle, TaskHandle, TaskSubmitter};
 pub use retry::RetryPolicy;
 pub use store::{NamespacedStore, StoreBackend, Tx, TxPlan, Write};
+pub use sync::WriteLock;
 pub use task::{Fallback, NotifyPriority, Origin, Priority, Task, TaskOutcome};
 pub use time::{local_date, LocalTimezone};
 pub use trigger::{CatchUp, Schedule, TriggerSpec};

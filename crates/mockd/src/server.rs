@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use swe_core::{Clock, Error, ErrorCode, Event, ModuleId, Result};
-use swe_proto::{
+use shimmer_core::{Clock, Error, ErrorCode, Event, ModuleId, Result};
+use shimmer_proto::{
     decode_client, encode, is_valid_pattern, ops, topic_matches, ClientFrame, ManifestData, ServerFrame,
     MAX_LINE_BYTES, PROTOCOL_VERSION,
 };
@@ -340,7 +340,7 @@ fn builtin(shared: &Shared, op: &str) -> Result<Value> {
         ops::CORE_PING => Ok(json!({"pong": true, "uptime_s": shared.started.elapsed().as_secs()})),
         ops::CORE_MANIFEST => Ok(serde_json::to_value(ManifestData {
             protocol: PROTOCOL_VERSION,
-            lanes: vec![swe_core::LaneConfig::new("default", 4)],
+            lanes: vec![shimmer_core::LaneConfig::new("default", 4)],
             modules: Vec::new(),
         })
         .unwrap_or_default()),

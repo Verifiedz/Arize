@@ -1,7 +1,10 @@
 # 0008. Records: where collections live, the file layout, and the ops
 
-Status: proposed (M1) · Raised by Dev B · Needs sign-off: Dev A (changes a path in CLAUDE.md §7) ·
+Status: accepted (M1, #2) · Raised by Dev B · Signed off: Dev A (changes a path in CLAUDE.md §7) ·
 Dev C notified (item shape on the wire)
+
+> **Renamed since:** `swe`, `swe-*` and `SWE_*` in this ADR are now `shimmer`, `shimmer-*` and
+> `SHIMMER_*` (ADR 0011). The text below is kept as written.
 
 ## Context
 
@@ -27,7 +30,9 @@ to match. The file name is the collection id and must equal `[collection] id`.
   rule 9).
 
 A malformed collection file fails only the requests that use it (`invalid_params`, naming the file),
-never the module's `init`.
+never the module's `init`. `records.collections` lists every other collection and names each malformed
+file under `"skipped"`, the same way `records.list` reports unreadable record files (added after
+issue #29: the op used to fail as a whole, and the CLI calls it before every command).
 
 **Records are one flat TOML file each:** `data/records/items/<collection>/<id>.toml`, holding
 `status` (`todo` | `done`) and the field values. The id is the file name, so it is limited to
@@ -42,7 +47,7 @@ schema does not know are passed through.
 
 | Op | Params | Returns |
 |---|---|---|
-| `records.collections` | `{}` | `{"collections": [...]}`: each definition as JSON |
+| `records.collections` | `{}` | `{"collections": [...]}`: each definition as JSON (+ `"skipped"` if any file was malformed) |
 | `records.add` | `{"collection", "id", "fields"?}` | the new item; `conflict` if the id exists |
 | `records.get` | `{"collection", "id"}` | the item |
 | `records.list` | `{"collection", "filter"?, "limit"?, "offset"?}` | `{"items", "total"}` (+ `"skipped"` if any file was unreadable) |
@@ -55,16 +60,18 @@ schema does not know are passed through.
   `limit` defaults to 50 (max 500), `total` counts every match before paging.
 * Completing a `done` item again re-stamps it and emits another `records.item.completed`: solving a
   problem twice is two solves, which is what a heatmap wants.
-* "Today" is the UTC date from `ctx.clock`, the same UTC-only limitation as the scheduler (ADR 0004).
+* "Today" is the local calendar date from `ctx.clock` and `ctx.local_tz` (ADR 0009). It
+  was the UTC date when this ADR was written.
 
 **Events**, each committed in the same store transaction as its file write (§7.1):
 `records.item.created` / `.updated` / `.completed` carry `{collection, id, item}` with the full wire
 item, so the index can be rebuilt from the log alone (M4); `records.item.removed` carries
 `{collection, id}`; `records.collection.created` carries `{collection}`.
 
-**Seeding.** On `init`, if no collection exists, the module writes the built-in LeetCode collection,
-so a fresh install has something to track. Deleting every collection brings it back on the next start;
-deleting only LeetCode does not.
+**Seeding.** *Superseded by ADR 0023: nothing is seeded any more. A fresh install has no
+collections, and LeetCode is a template like the others.* What this ADR originally decided, kept
+for the record: on `init`, if no collection existed, the module wrote the built-in LeetCode
+collection, so a fresh install had something to track.
 
 **Concurrency.** Inline requests run concurrently, so the module serialises its own read-check-write
 sequences with a lock. Two `records.add` calls for the same id cannot both succeed.

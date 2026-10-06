@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use swe_core::{CommandSpec, Error, Event, LaneConfig};
+use shimmer_core::{CommandSpec, Error, Event, LaneConfig};
 
 /// Client → daemon.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -7,7 +7,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use swe_core::{CatchUp, Error, Result, Schedule};
+use shimmer_core::{CatchUp, Error, Result, Schedule};
 
 /// A firing later than this after its scheduled time counts as *missed*, not on time. Wide
 /// enough that a busy poll never turns a normal firing into a "catch-up".

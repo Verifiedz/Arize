@@ -1,4 +1,4 @@
-//! Shared harness for the end-to-end tests: the real `swe` binary in a throwaway `$SWE_HOME`.
+//! Shared harness for the end-to-end tests: the real `shimmer` binary in a throwaway `$SHIMMER_HOME`.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -6,6 +6,9 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
+
+/// The LeetCode-style collection the records tests use (crates/modules/records/tests/fixtures).
+pub const LEETCODE: &str = include_str!("../../../modules/records/tests/fixtures/leetcode.toml");
 
 pub struct Home {
     pub dir: TempDir,
@@ -16,15 +19,27 @@ impl Home {
         Self { dir: TempDir::new().unwrap() }
     }
 
+    /// A home with a LeetCode-style collection already in it. A fresh install has no
+    /// collections (ADR 0023), so tests that use one write it in themselves.
+    pub fn with_leetcode() -> Self {
+        let home = Self::new();
+        let dir = home.dir.path().join("home/data/records/collections");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("leetcode.toml"), LEETCODE).unwrap();
+        home
+    }
+
     pub fn socket(&self) -> PathBuf {
         self.dir.path().join("d.sock")
     }
 
-    pub fn swe(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_swe"))
+    pub fn shimmer(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_shimmer"))
             .args(args)
-            .env("SWE_HOME", self.dir.path().join("home"))
-            .env("SWE_SOCKET", self.socket())
+            .env("SHIMMER_HOME", self.dir.path().join("home"))
+            .env("SHIMMER_SOCKET", self.socket())
+            // The CLI's own settings (the active command pack, ADR 0013): never the developer's.
+            .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
             .output()
             .unwrap()
     }
@@ -34,7 +49,7 @@ impl Home {
 impl Drop for Home {
     fn drop(&mut self) {
         if self.socket().exists() {
-            let _ = self.swe(&["shutdown"]);
+            let _ = self.shimmer(&["shutdown"]);
         }
     }
 }

@@ -14,11 +14,11 @@ Unix domain socket, stream mode.
 
 | Platform | Socket path |
 |---|---|
-| Linux | `$XDG_RUNTIME_DIR/swe/daemon.sock`, falling back to `$SWE_HOME/daemon.sock` |
-| macOS | `$SWE_HOME/daemon.sock` |
-| Windows | Named pipe `\\.\pipe\swe-daemon` (deferred; not before M6) |
+| Linux | `$XDG_RUNTIME_DIR/shimmer/daemon.sock`, falling back to `$SHIMMER_HOME/daemon.sock` |
+| macOS | `$SHIMMER_HOME/daemon.sock` |
+| Windows | Named pipe `\\.\pipe\shimmer-daemon` (deferred; not before M6) |
 
-The path is also exported to workspace scripts as `SWE_SOCKET`.
+The path is also exported to workspace scripts as `SHIMMER_SOCKET`.
 
 If the socket file exists but connecting returns `ECONNREFUSED`, the daemon died without
 cleaning up. Clients should unlink it and start a daemon.
@@ -169,7 +169,7 @@ Topic patterns support a trailing `*` on a segment boundary: `records.*`,
 `topics` shape.
 
 The event object is byte-identical to the one appended to
-`$SWE_HOME/events/YYYY-MM-DD.jsonl`. One definition in `swe-core`. The one exception to
+`$SHIMMER_HOME/events/YYYY-MM-DD.jsonl`. One definition in `shimmer-core`. The one exception to
 "every streamed event is logged" is `queue.task.progress`, which is streamed only.
 
 **Backpressure:** each connection has a bounded event queue (1024). If a client does not
@@ -282,8 +282,11 @@ Clients should offer: run cleanup, force relaunch, or open the log. Never auto-f
   ]}}
 ```
 
-Illustrative excerpt — `records` actually registers seven ops (`records.collections`,
-`.add`, `.get`, `.list`, `.update`, `.complete`, `.remove`) and five topics; see "Records
+Illustrative excerpt — `records` actually registers twenty ops (`records.collections`,
+`.templates`, `.create_collection`,
+`.add`, `.get`, `.list`, `.update`, `.complete`, `.reopen`, `.rename`, `.remove`, `.restore`,
+`.trash`, `.purge`, `.check`, `.rename_field`, `.rename_collection`, `.remove_collection`,
+`.restore_collection`, `.import`) and thirteen topics; see "Records
 ops" below and `docs/decisions/0008-records-collections-and-storage.md` for the full list.
 This example only shows two commands to keep the shape readable.
 
@@ -350,34 +353,97 @@ emails.
 
 | Op | Execution | Params | Returns |
 |---|---|---|---|
-| `workspaces.list` | inline | `{}` | Each with `state`, and `dirty_reason` when dirty. |
-| `workspaces.status` | inline | `{"id"}` | Full state, last session, log path. |
-| `workspaces.activate` | queued (`workspaces`) | `{"id"}` | Task handle. Fails `workspace_dirty` if dirty. |
-| `workspaces.cleanup` | queued (`workspaces`) | `{"id"}` | Task handle. On success, `dirty → ready`. |
-| `workspaces.force_relaunch` | queued (`workspaces`) | `{"id"}` | Task handle. Activates despite `dirty`. Emits `workspaces.session.forced`. |
-| `workspaces.reset` | inline | `{"id"}` | Clears `dirty` without running cleanup. Last resort. |
+| `workspaces.list` | inline | `{}` | `{"workspaces":[{"id","label","state"}]}`, sorted by id. `dirty_reason` when dirty; `error` when invalid. |
+| `workspaces.status` | inline | `{"id"}` | `{"id","label","description"?,"state","steps":[{"index","name","mode","timeout_s"?,"description"?}],"cleanup_timeout_s"?,"has_cleanup_script","last_session"}`. When dirty also `dirty_reason`, `log` and `dirty:{reason,failed_step,failed_at,log}`; when launching, `running_step`; when invalid, `error`. |
+| `workspaces.activate` | queued (`workspaces`) | `{"id"}` | Task handle. The task ends `{"id","state":"active","session_id"}`, or fails (see below). |
+| `workspaces.cleanup` | queued (`workspaces`) | `{"id"}` | Task handle. Runs `cleanup.{sh,ps1}` supervised; on success `dirty → ready`. |
+| `workspaces.force_relaunch` | queued (`workspaces`) | `{"id"}` | Task handle. Launches a `dirty` workspace anyway; emits `workspaces.session.forced` before any step runs. |
+| `workspaces.reset` | inline | `{"id"}` | `{"id","state":"ready"}`. Clears `dirty` without running cleanup. Last resort; also clears an unreadable `state.toml`. |
 
-`state` is one of `ready`, `launching`, `active`, `dirty`. **`active` means the launch
-succeeded and nothing more** — there is no liveness check, so a client must not present it
-as "currently running".
+`state` is one of `ready`, `launching`, `active`, `dirty`, or `invalid` when the workspace's
+`workspace.toml` or `state.toml` can't be read; `error` then says why, one problem per line
+when both files are broken (ADR 0012 §6). An invalid workspace carries no `dirty_reason`,
+`dirty`, `log` or `running_step`, so a stale reason from before it broke can't hide the real
+error. One invalid workspace never hides the others in `list`. **`active` means the launch succeeded
+and nothing more** — there is no liveness check, so a client must not present it as
+"currently running". `last_session` is `null` until the first launch, then
+`{"id","started_at","forced","outcome"}` with `outcome` one of `launched`, `dirty`, `cancelled`.
+
+**When `workspace_dirty` arrives.** `activate` is queued, so the request itself always
+returns a task handle; the refusal or failure comes as the task's failure
+(`queue.task.failed` with `code` and `detail`), shaped as in "`workspace_dirty` detail" above.
+That is the same error whether the workspace was already dirty or a step has just failed.
+Every other refusal (`invalid_params` for a bad `workspace.toml` or a missing script,
+`conflict` while already launching, `not_found`) also arrives on the task. Nothing has run
+when the task fails that way, and the same holds for a launch cancelled before its first step
+(`module_error`, "cancelled before any step ran").
+
+**Steps run one at a time** and the first failure stops the launch (ADR 0012 §5): a
+supervised step fails on a non-zero exit, a timeout or a signal; a detached step succeeds
+once started. The workspace is then `dirty`. If the very first step can't be started at all
+(e.g. no launch backend), or the launch is cancelled before its first step, nothing ran, so
+the workspace goes back to the state it had and `workspaces.session.abandoned` records why; the
+task fails with that error (`unavailable`, or `module_error` when cancelled). Cancelling a launch
+after a step has run leaves it `dirty`.
 
 ## Records ops
 
 | Op | Execution | Params | Returns |
 |---|---|---|---|
-| `records.collections` | inline | `{}` | `{"collections":[...]}`, each collection definition as JSON. |
-| `records.add` | inline | `{"collection","id","fields"?}` | The new item. `conflict` if the id exists. |
+| `records.collections` | inline | `{}` | `{"collections":[...]}`, each collection definition as JSON (+ `"skipped"` naming each malformed collection file). |
+| `records.add` | inline | `{"collection","id"?,"fields"?}` | The new item, which carries its `id`. Without an `id`, one is made from the collection's `title` (`"Two Sum"` → `two-sum`, then `two-sum-2`, …), or from today's date (`2026-10-05-1`) when there's no title to use. An explicit `id` that exists is `conflict`. ADR 0018. |
 | `records.get` | inline | `{"collection","id"}` | The item. |
-| `records.list` | inline | `{"collection","filter"?,"limit"?,"offset"?}` | `{"items","total"}` (+ `"skipped"` if a hand-edited file was unreadable). |
-| `records.update` | inline | `{"collection","id","fields"}` | The item. A `null` field value unsets it. |
-| `records.complete` | inline | `{"collection","id"}` | The item, now `done`, with its `stamp_on_complete` field set. |
-| `records.remove` | inline | `{"collection","id"}` | `{"removed":true}` |
+| `records.list` | inline | `{"collection","filter"?,"search"?,"sort"?,"limit"?,"offset"?}` | `{"items","total","titles"}` (+ `"skipped"` if a hand-edited file was unreadable). `titles` is `{id: title}` for the listed items (ADR 0024 §5). Ordered by `sort`, then by id. See below. |
+| `records.update` | inline | `{"collection","id","fields"}` | The item. A `null` field value unsets it. A list field takes a whole new list or `{"add":[…],"remove":[…]}` (ADR 0024 §2). Setting a `unique` field to a value another record has is `conflict`, naming that record. |
+| `records.complete` | inline | `{"collection","id","fields"?}` | The item, now `done`, with its `stamp_on_complete` field set. `fields` are applied first, with `records.update`'s rules; an explicit value for the stamp field wins over today (back-dating). One `records.item.completed`. When the record is already `done`: re-stamped again, unless the collection says `repeat_complete = "refuse"`, then `conflict`. |
+| `records.rename` | inline | `{"collection","id","new_id"}` | The item under its new id. One transaction moves the file, rewrites every `ref` to it, and emits `records.item.renamed`. `conflict` if `new_id` exists; `not_found` if `id` doesn't. ADR 0018. |
+| `records.reopen` | inline | `{"collection","id","clear_stamp"?}` | The item, now `todo`. The stamp is kept unless `clear_stamp`. `conflict` if it isn't `done`. ADR 0016. |
+| `records.remove` | inline | `{"collection","id","force"?}` | `{"removed":true}`. The record moves to `data/records/trash/<collection>/<id>.toml` (the latest removed version of each id), out of every other op. ADR 0020. If other records refer to it through a `ref` field, `conflict` with `detail: {"referred_by":["collection/id",…]}` unless `force` (ADR 0024 §3). |
+| `records.restore` | inline | `{"collection","id"}` | The record, back exactly as removed; emits `records.item.restored`. `not_found` if it isn't in the trash; `conflict` if the id, or one of its `unique` values, is taken again. |
+| `records.trash` | inline | `{"collection"}` | `{"items":[…]}`: the collection's removed records, by id. |
+| `records.purge` | inline | `{"collection","id"?,"confirm"?}` | `{"purged":N}`. Permanently deletes one trashed record, or the whole trash. Without a matching `confirm`, `confirmation_required` with `detail: {"records":N}`; re-send with `"confirm": {"records":N}`. `{"purged":0}` without asking when the trash is empty; `not_found` for an `id` not in it. Emits `records.trash.purged`. ADR 0024 §5. |
+| `records.import` | inline | `{"collection","rows":[{…}],"dry_run"?,"skip_invalid"?}` | `{"added":[ids],"skipped":[{"row","reason"}],"invalid":[{"row","error"}],"written":bool}`. Each row (an object of field values, plus optional `id` and `status`) is checked like `records.add` and against the other rows; rows numbered from 1. A row whose id or `unique` value exists is skipped. Everything added is written in one transaction, one `records.item.created` each; nothing is written on a `dry_run`, or while any row is invalid unless `skip_invalid`. At most 5000 rows. ADR 0024 §4. |
+| `records.templates` | inline | `{}` | `{"templates":[…]}`: each built-in template as `records.collections` shows a collection, by id. ADR 0022. |
+| `records.create_collection` | inline | `{"id","template","label"?}` | The new collection. Copies the template's file (comments kept) with only `id` and `label` changed, checks it, and writes it with `records.collection.created` in one transaction. `conflict` if the id exists; `not_found` naming the templates for an unknown one. |
+| `records.check` | inline | `{"collection"}` | `{"checked":N,"problems":[{"id","problems":["…"]}]}`: records that don't fit the collection (missing required, wrong type, unknown keys, unreadable, `ref`s to records that don't exist). Writes nothing. ADR 0021. |
+| `records.rename_field` | inline | `{"collection","from","to"}` | `{"collection":{…},"updated":N}`. One transaction renames the field in the collection file (comments kept) and in every live and trashed record; emits `records.field.renamed`. |
+| `records.rename_collection` | inline | `{"id","new_id"}` | The collection under its new id; moves its file, records and trash, and rewrites `collection = "…"` in every ref field pointing into it, in one transaction; emits `records.collection.renamed`. `conflict` if `new_id` exists. |
+| `records.remove_collection` | inline | `{"id","confirm"?}` | `{"removed":true,"records":N}`. Without a matching `confirm`, `confirmation_required` with `detail: {"records":N}`; re-send with `"confirm": {"records":N}`. Moves everything to `data/records/removed-collections/<id>/`; emits `records.collection.removed`. |
+| `records.restore_collection` | inline | `{"id"}` | The collection, back with its records and trash; emits `records.collection.restored`. |
 
 All inline — nothing here is slow enough to queue. Items on the wire are flat:
 `{"id","status",<every schema field>}`, with unset fields as `null`. `filter` on
-`records.list` is exact equality (`null` matches unset); an unknown filter key is
-`invalid_params`, so a typo never silently matches everything. See
-`docs/decisions/0008-records-collections-and-storage.md`.
+`records.list` maps each key (a field, `id` or `status`) to either a plain value, exact equality
+(`null` matches unset), or an object of operators that must all hold: `eq`, `ne` (unset
+matches), `lt`/`lte`/`gt`/`gte` (int, date, and enum by listed order), `in` (a non-empty list),
+`set` (`true`/`false`; `""` and `[]` count as unset), `contains` (text, ignoring case) and `has`
+(list fields only: the list holds this item, strings ignoring case; a plain value on a list
+means `has`). `"or": [{…},{…}]` holds alternative filters: a record matches if it matches any one,
+and every other key still applies; `or` doesn't nest. On `date` and `datetime` fields a value may
+be `"today"`, `"today+N"` or `"today-N"` (days), resolved by the daemon in the configured
+timezone; a plain date compared with a `datetime` compares days. ADR 0024 §5. An unknown key
+or operator, an operator the field's type doesn't take, or a value that doesn't fit is
+`invalid_params`, so a typo never silently matches everything or nothing. `search` matches text
+in the id or any string, enum or ref field (and their list items), ignoring case. `sort` is a
+list of up to 5 keys, `-` for descending (lists can't be sorted; `datetime`s sort as instants, a
+plain date as the start of its day); unset values come last in either direction, and ties fall
+back to the id. ADR 0019. Each collection in
+`records.collections` carries `repeat_complete` (`"restamp"`, the default, or `"refuse"`) and
+`completable` (`false` for reference lists: their items have no `status`, and `complete`,
+`reopen`, and filtering or sorting on `status` are `invalid_params`), and,
+when set, `description`, `title` (e.g. `"{company}: {position}"`), `related` (collection ids),
+`extra` (`[extra.<name>]` tables, passed through untouched) and per field `role` (`"deadline"`
+on a date or datetime, `"url"` on a string), `unique`, `of` (what a `list` holds: `string`,
+`enum` or `ref`) and `collection` (where a `ref` points). Field types (ADR 0024): `string`,
+`int`, `bool`, `date` (`"2026-10-20"`), `enum`, `datetime` (UTC RFC 3339 like
+`"2026-10-21T06:59:00Z"`, or a plain date; input without an offset is read in the configured
+timezone), `list` (a JSON array; empty means unset) and `ref` (the target record's id, checked
+on write; a title renders a list as its items joined with `, `). A `unique` field's value can be taken by one
+record only (`conflict` on `records.add`, `records.update`, or `records.complete` with
+`fields`); unset and `""` don't count. See
+`docs/decisions/0008-records-collections-and-storage.md`,
+`docs/decisions/0016-records-completion-lifecycle.md` and
+`docs/decisions/0017-records-integration-metadata.md`.
 
 Module ops are namespaced `<module>.<verb>`. The daemon routes on the prefix; a collision
 between two modules is a startup failure, not a runtime surprise.
@@ -404,16 +470,22 @@ tolerate unknown topics.
 | `queue.task.failed` | Task failed. Payload includes `error`, `attempts`, `lane`, `origin`. |
 | `queue.task.cancelled` | Task cancelled before or during execution. |
 | `queue.task.promoted` | A task jumped the lane. Payload lists displaced task ids. |
+| `queue.task.reordered` | A waiting task moved within its lane. Payload `{task_id, lane, before, queue_version}`. |
 | `scheduler.trigger.fired` | Trigger fired and enqueued a task. |
 | `scheduler.trigger.skipped` | Trigger fired while its previous task was still pending (`reason: "overlap"`), or its task could not be enqueued (`reason: "enqueue_failed"`). |
 | `scheduler.trigger.missed` | A `catch_up` policy dropped due occurrences. Payload `{trigger_id, count, catch_up}`. |
 | `scheduler.trigger.added` / `.removed` / `.paused` / `.resumed` | Trigger lifecycle. |
-| `workspaces.session.launched` | All launch steps succeeded. |
-| `workspaces.session.dirty` | A launch step failed. Payload carries the failed step and log. |
-| `workspaces.session.forced` | Force relaunch of a dirty workspace, with prior reason. |
-| `workspaces.session.cleaned` | Cleanup script succeeded; state back to `ready`. |
-| `records.item.created` / `.updated` / `.completed` / `.removed` | Record mutations. |
-| `records.collection.created` | A collection definition was seeded or hand-added. |
+| `workspaces.session.launched` | All launch steps succeeded. Payload `{workspace, session_id, forced, steps}`. |
+| `workspaces.session.dirty` | A launch step failed, a launch was cancelled part-way, or the daemon restarted mid-launch. Payload `{workspace, reason, failed_step, failed_at, log}` (+ `session_id`, `forced`, `has_cleanup_script` when a launch was running). |
+| `workspaces.session.forced` | Force relaunch of a dirty workspace, before any step runs. Payload `{workspace, prior}`, `prior` being the dirty state it overrides. |
+| `workspaces.session.cleaned` | Cleanup script succeeded; state back to `ready`. Payload `{workspace, log}`. |
+| `workspaces.session.abandoned` | A launch (forced or not) was claimed but no step ran: cancelled first, or step 1 couldn't start. The workspace is back to the state it had. Payload `{workspace, reason, forced, back_to}`. |
+| `workspaces.workspace.reset` | `workspaces.reset` cleared `dirty` without cleanup. Payload `{workspace, prior}`. |
+| `records.item.created` / `.updated` / `.completed` / `.reopened` / `.renamed` / `.removed` / `.restored` | Record mutations. All carry `{collection, id, title, deadlines, item}` (for `.removed`, `item` is the record as it was): `item` is the full wire item, `title` the record's readable name (the collection's `title` template, or the id), `deadlines` `{field: date}` for every set field with `role = "deadline"` (ADR 0017). `.updated` also carries `changed`: the fields whose value actually changed, sorted (`[]` when nothing did). `.renamed` also carries `new_id` (`id` is the old one; `item` is under the new one) and `references` (how many `ref` values were rewritten to point at the new id). |
+| `records.collection.created` | `records.create_collection` made a collection from a template. Payload `{collection, template}`. Nothing is created on first start (ADR 0023). |
+| `records.field.renamed` | `{collection, from, to}`. |
+| `records.collection.renamed` / `.removed` / `.restored` | `{collection, new_id}` / `{collection, records}` / `{collection}`. |
+| `records.trash.purged` | `records.purge` deleted trashed records for good. `{collection, records}`, plus `id` when one record was purged. ADR 0024 §5. |
 | `fetchers.item.found` | A source returned a new, deduplicated item. |
 | `fetchers.fetch.finished` / `.failed` | A fetch run ended. |
 | `calendar.date.registered` | A dated entry was stored. |
@@ -429,7 +501,7 @@ user.
 
 ## Mock daemon
 
-`crates/tui` develops against the mock daemon, `swe mockd`: a subcommand of the `swe` binary
+`crates/tui` develops against the mock daemon, `shimmer mockd`: a subcommand of the `shimmer` binary
 (`app` is the only binary, CLAUDE.md §3), implemented in `crates/mockd`, which depends on
 `core` and `proto` only. It speaks this protocol, serving canned responses from
 `crates/mockd/fixtures/*.json` and replaying a scripted event timeline. Built at M1. The
@@ -440,8 +512,8 @@ daemon: a `confirmation_required` round-trip, a `workspace_dirty` failure, a
 `core.stream.lagged` drop, and a long queued task emitting progress.
 
 ```
-$ swe mockd --fixtures crates/mockd/fixtures --socket /tmp/swe-mock.sock
-$ swe tui --socket /tmp/swe-mock.sock
+$ shimmer mockd --fixtures crates/mockd/fixtures --socket /tmp/shimmer-mock.sock
+$ shimmer tui --socket /tmp/shimmer-mock.sock
 ```
 
 Both flags are required, so the mock can never silently take over the real daemon's socket.

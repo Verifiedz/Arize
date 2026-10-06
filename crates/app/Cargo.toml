@@ -1,5 +1,5 @@
 [package]
-name = "swe"
+name = "shimmer"
 description = "The only binary. Dispatches to the daemon, the mock daemon and the CLI (TUI dispatch lands with its crate)."
 version.workspace = true
 edition.workspace = true
@@ -11,16 +11,17 @@ publish.workspace = true
 workspace = true
 
 [[bin]]
-name = "swe"
+name = "shimmer"
 path = "src/main.rs"
 
 [dependencies]
-swe-core = { path = "../core" }
-swe-proto = { path = "../proto" }
-swe-daemon = { path = "../daemon" }
-swe-mockd = { path = "../mockd" }
-swe-cli = { path = "../cli" }
-swe-records = { path = "../modules/records" }
+shimmer-core = { path = "../core" }
+shimmer-proto = { path = "../proto" }
+shimmer-daemon = { path = "../daemon" }
+shimmer-mockd = { path = "../mockd" }
+shimmer-cli = { path = "../cli" }
+shimmer-records = { path = "../modules/records" }
+shimmer-workspaces = { path = "../modules/workspaces" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 tracing = "0.1"
 tracing-appender = "0.2"
@@ -28,5 +29,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 serde_json = "1"
-swe-store = { path = "../store" }
+shimmer-store = { path = "../store" }
 tempfile = "3"

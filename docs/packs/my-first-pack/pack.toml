@@ -1,0 +1,25 @@
+# An example command pack, to copy and change. See docs/packs/README.md.
+#
+#   cp -r docs/packs/my-first-pack "$SHIMMER_HOME/packs/"    # or ~/.local/share/shimmer/packs/
+#   shimmer packs check my-first-pack
+#   shimmer packs use my-first-pack
+#   hello                                                      # = shimmer ping
+
+[pack]
+id = "my-first-pack"          # must match the folder name
+label = "My First Pack"       # shown in 'shimmer packs list'
+
+[alias]                       # "alias" = the command it runs ('shimmer packs --help' lists them all)
+"hello"    = "core.ping"
+"bye"      = "core.shutdown"
+"jot"      = "records.add"
+"tasks"    = "records.list"
+"finished" = "records.complete"
+"focus"    = "workspaces.activate"
+"how-is"   = "workspaces.status"
+
+# Animations are coming in a later version. The format is already fixed, so you can add them now:
+# each file must be plain text inside this folder.
+#
+# [anim]
+# "workspaces.activate" = "anim/focus.txt"

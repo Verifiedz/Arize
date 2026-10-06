@@ -1,0 +1,59 @@
+# Addresses: one record per place you've lived, for the address history background checks ask for
+# (often the last 7 years).
+# Created from Shimmer's addresses template. It's your file now: edit it freely.
+#
+# Private information: this file and its records are plain text in your Shimmer folder, which is
+# meant to be copyable and committable to git. If you sync your Shimmer folder to a git repo,
+# keep it private.
+#
+# How it works:
+#   shimmer records add <collection> --street "12 Main St" --city Toronto --country Canada \
+#       --start-on 2022-09-01 --end-on 2024-04-30
+#   shimmer records list <collection> --sort -start_on                         newest first
+#   shimmer records list <collection> --filter "end_on>=2019-10-05" --sort -start_on   the last 7 years
+
+[collection]
+id = "addresses"
+label = "Addresses"
+description = "Where you've lived and when, for background checks"
+title = "{street}, {city}"
+# History has nothing to finish: no status, no completing.
+completable = false
+related = ["education", "employment", "documents"]
+
+[[field]]
+name = "street"          # number and street
+type = "string"
+required = true
+
+[[field]]
+name = "unit"            # apartment or unit
+type = "string"
+
+[[field]]
+name = "city"
+type = "string"
+
+[[field]]
+name = "region"          # state or province
+type = "string"
+
+[[field]]
+name = "postal_code"
+type = "string"
+
+[[field]]
+name = "country"
+type = "string"
+
+[[field]]
+name = "start_on"
+type = "date"
+
+[[field]]
+name = "end_on"          # empty = you live there now
+type = "date"
+
+[[field]]
+name = "notes"
+type = "string"

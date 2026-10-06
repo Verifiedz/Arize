@@ -1,4 +1,4 @@
-//! `swe-proto`: wire types for `docs/protocol.md`. Change-controlled (CLAUDE.md §4).
+//! `shimmer-proto`: wire types for `docs/protocol.md`. Change-controlled (CLAUDE.md §4).
 //!
 //! Pure data and pure functions: no sockets, no runtime. Clients and the daemon each own
 //! their own I/O and share only these types.
@@ -30,6 +30,7 @@ pub mod ops {
     pub const QUEUE_LIST: &str = "queue.list";
     pub const QUEUE_TASK: &str = "queue.task";
     pub const QUEUE_CANCEL: &str = "queue.cancel";
+    pub const QUEUE_REORDER: &str = "queue.reorder";
 }
 
 /// Topics the daemon itself defines.

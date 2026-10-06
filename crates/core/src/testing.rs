@@ -174,6 +174,7 @@ mod tests {
             step: Step::Launch { index, count, name: name.into() },
             mode: SpawnMode::Supervised { timeout: Duration::from_secs(30) },
             user_env: vec![],
+            session_id: None,
         }
     }
 

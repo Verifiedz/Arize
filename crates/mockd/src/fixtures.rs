@@ -10,15 +10,15 @@
 //! * `timeline`: events replayed once per connection, starting at its first `subscribe`.
 //!
 //! Everything is checked at load time and reported with the file name: a typo in a fixture
-//! should fail `swe mockd` at startup, not surface as a puzzling client bug.
+//! should fail `shimmer mockd` at startup, not surface as a puzzling client bug.
 
 use std::fs;
 use std::path::Path;
 
 use serde::Deserialize;
 use serde_json::Value;
-use swe_core::Error;
-use swe_proto::ManifestData;
+use shimmer_core::Error;
+use shimmer_proto::ManifestData;
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -207,7 +207,7 @@ mod tests {
     use std::path::PathBuf;
 
     use serde_json::json;
-    use swe_core::ErrorCode;
+    use shimmer_core::ErrorCode;
 
     use super::*;
 

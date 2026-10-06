@@ -1,0 +1,154 @@
+# Contributing to Shimmer
+
+This page gets you from a fresh clone to passing tests and a working `shimmer ping`. For the design
+itself, `CLAUDE.md` is the source of truth: if this page and `CLAUDE.md` disagree, `CLAUDE.md`
+wins.
+
+## Prerequisites
+
+- **Rust, stable, installed with [rustup](https://rustup.rs).** `rust-toolchain.toml` pins the
+  stable channel with `rustfmt` and `clippy`, so rustup fetches the right toolchain the first
+  time you build.
+- **git.**
+- **Linux or macOS.** Windows isn't supported yet: the daemon talks over a Unix socket, and the
+  Windows named-pipe transport is deferred (`docs/protocol.md`).
+- **python3**, for the dependency-rule check below. Any recent version, no packages needed.
+
+## Setup
+
+```sh
+git clone https://github.com/Verifiedz/Shimmer.git
+cd Shimmer
+cargo build
+cargo test --workspace
+cargo run -q -- ping        # "pong (daemon up 0s)": the daemon started and answered
+cargo run -q -- shutdown
+```
+
+`cargo run -q --` is the `shimmer` command. The first command you run starts the daemon in the
+background; you never start it by hand. Your data goes to `~/.local/share/shimmer` (Linux) or
+`~/Library/Application Support/shimmer` (macOS). To experiment without touching it, point `SHIMMER_HOME`
+at a scratch folder: `SHIMMER_HOME=/tmp/shimmer-play cargo run -q -- ping`.
+
+### The dev launcher
+
+Typing `cargo run -q --` gets old, and it only works from inside the repo. Install a launcher:
+
+```sh
+.dev/install-dev-launcher.sh
+```
+
+It writes a small `shimmer` script into `~/.cargo/bin` (already on your `PATH` if you installed Rust
+with rustup) that runs `cargo run -q --manifest-path <your clone>/Cargo.toml -p shimmer -- "$@"`.
+So `shimmer` works from any folder and always runs your latest code, rebuilding first when something
+changed. It points at the clone you ran the script from, wherever that is.
+
+It refuses to replace an existing `~/.cargo/bin/shimmer`. If that file is an older launcher (say, from
+a clone you moved), re-run with `--force` to replace it.
+
+One thing to know: the daemon keeps running the binary it was started from. After changing daemon
+or module code, run `shimmer shutdown` and the next command starts a daemon with your new code.
+
+## Before every push
+
+CI (`.github/workflows/ci.yml`) runs these four checks on Linux and macOS. Run them locally
+first; all four must pass.
+
+```sh
+python3 .dev/check-deps.py                              # dependency rules, CLAUDE.md §3
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+`cargo fmt --all` (without `--check`) fixes formatting for you.
+
+`check-deps.py` enforces who may depend on whom. In short: modules never depend on each other
+or on `store`/`daemon`, and clients (`cli`, `tui`, `mockd`) depend only on `core` and `proto`.
+If it fails, the fix is almost always to emit an event instead of making a direct call.
+
+## Who owns what
+
+From `CLAUDE.md` §13:
+
+| Dev | Owns |
+|---|---|
+| A | `crates/daemon` (registry, bus, queue, scheduler, gateway, IPC, indexer), `crates/store`, `crates/mockd`, `crates/app` |
+| B | `crates/modules/*`, `crates/cli` |
+| C | `crates/tui` |
+
+Changes to a crate you don't own go through a PR its owner reviews. Two exceptions spelled out
+in §13: Dev C may add fixture cases to `crates/mockd/fixtures`, and Dev B may add a
+module-registration line in `crates/app` without Dev A's review.
+
+**`crates/core` and `crates/proto` are shared and change-controlled** (§4). They are the
+contract everyone builds against, so a change there needs an ADR in `docs/decisions/` plus
+sign-off from both Dev A and Dev B. A protocol change also needs Dev C told and the protocol
+version bumped. If your change seems to need a new type or field in `core`, don't copy the type
+locally to get around this; write the ADR.
+
+## Branch workflow
+
+- **Larger work** gets a long-lived feature branch with a **draft PR into `master`**, opened
+  early so everyone can see where it's heading.
+- Build it in **small child branches**, each with its own PR **into the feature branch**. Small
+  PRs are quick to review.
+- When the feature is done, mark the draft PR ready. **`master` needs 2 approvals** to merge.
+
+A small, self-contained change (a doc fix, one bug) can be a single branch with a PR straight
+into `master`. It still needs 2 approvals.
+
+Never commit straight to `master`.
+
+## Writing an ADR
+
+An ADR (architecture decision record) writes down a design choice that `CLAUDE.md` and
+`docs/protocol.md` leave open, so it is decided once, in the open, rather than silently in code.
+Write one when you change `core` or `proto`, change something `CLAUDE.md` specifies, or make a
+design call the next person would otherwise have to guess at.
+
+1. Copy an existing one in `docs/decisions/`. `0003-queue-ordering-and-lane-defaults.md` is a
+   short example; `0008-records-collections-and-storage.md` a fuller one.
+2. Take the next free number: if the highest is `0010-…`, yours is `0011-short-title.md`.
+3. Keep the shape: a `# NNNN. Title` heading; a `Status:` line (start at `proposed`) saying who
+   raised it and whose sign-off it needs; then `## Context` (the problem), `## Decision` (what
+   we'll do and why), and optionally what is deliberately left out.
+4. Open it in a PR, alone or with the code it describes, and ask the people the `Status:` line
+   names to review. Update the status to `accepted` when they sign off.
+
+Docs-only changes and changes inside a crate you own that follow existing rules don't need one.
+
+## Where to start reading
+
+1. **`CLAUDE.md`** §1–§3 for what we're building and how it's laid out. The rest as you need it.
+2. **`crates/core/src/module.rs`**: the `Module` trait. Every feature is a module implementing it.
+3. **`crates/core/src/ctx.rs`**: `Ctx`, the only thing a module receives. What's in it is
+   everything a module is allowed to do.
+4. **`crates/core/src/testing.rs`**: the in-memory `Ctx` used in module tests. Every module is
+   tested against it, not a real filesystem.
+5. **`crates/modules/records`**: a complete module using all three, and its tests.
+6. **`docs/protocol.md`**: how clients talk to the daemon.
+
+## Trying the mock daemon
+
+`shimmer mockd` serves the real protocol from canned responses and a scripted event timeline, so you
+can build or test a client without a real daemon:
+
+```sh
+shimmer mockd --fixtures crates/mockd/fixtures --socket /tmp/shimmer-mock.sock
+```
+
+In a second terminal, point any command at it with `--socket`:
+
+```sh
+shimmer --socket /tmp/shimmer-mock.sock ping
+shimmer --socket /tmp/shimmer-mock.sock manifest
+```
+
+Both flags are required, so the mock can never take over the real daemon's socket, and a command
+given `--socket` never auto-starts a daemon. Fixtures cover the paths that are hard to reach on a
+real daemon: a `confirmation_required` round-trip, a `workspace_dirty` failure, a lagged event
+stream and a long task with progress. The fixture format is in `crates/mockd/fixtures/README.md`;
+add a case by adding a file there.
+
+Without the dev launcher, replace `shimmer` with `cargo run -q --`.

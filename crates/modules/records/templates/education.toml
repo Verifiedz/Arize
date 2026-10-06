@@ -1,0 +1,74 @@
+# Education: one record per school, for the history job applications and background checks ask for.
+# Created from Shimmer's education template. It's your file now: edit it freely.
+#
+# Private information: this file and its records are plain text in your Shimmer folder, which is
+# meant to be copyable and committable to git. Never store ID numbers or anything you wouldn't
+# want copied; if you sync your Shimmer folder to a git repo, keep it private.
+#
+# How it works:
+#   shimmer records add <collection> --school "University of X" --degree BSc --major "Computer Science" \
+#       --start-on 2022-09-01 --end-on 2026-05-15 --graduated true
+#   shimmer records list <collection> --sort -start_on          newest first, ready to copy into a form
+#   shimmer records check <collection>                          what's still missing
+
+[collection]
+id = "education"
+label = "Education"
+description = "Schools, degrees and dates, for applications and background checks"
+title = "{school}: {degree}"
+# History has nothing to finish: no status, no completing.
+completable = false
+related = ["employment", "addresses", "documents"]
+
+[[field]]
+name = "school"
+type = "string"
+required = true
+
+[[field]]
+name = "degree"          # e.g. "BSc", "MSc", "High school diploma"
+type = "string"
+
+[[field]]
+name = "major"           # e.g. "Computer Science"
+type = "string"
+
+[[field]]
+name = "minor"
+type = "string"
+
+[[field]]
+name = "city"
+type = "string"
+
+[[field]]
+name = "country"
+type = "string"
+
+[[field]]
+name = "start_on"
+type = "date"
+
+[[field]]
+name = "end_on"          # when you finished, or are expected to; empty if not known yet
+type = "date"
+
+[[field]]
+name = "graduated"       # forms often ask whether the degree was completed
+type = "bool"
+
+[[field]]
+name = "gpa"             # as text, since scales differ: "3.7/4.0", "First class"
+type = "string"
+
+[[field]]
+name = "honors"          # e.g. "Dean's list", "cum laude"
+type = "string"
+
+[[field]]
+name = "registrar"       # who verifies it: the registrar's office email or phone
+type = "string"
+
+[[field]]
+name = "notes"
+type = "string"
