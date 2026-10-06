@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use shimmer_core::{Clock, Error, HttpBackend, HttpResponse, ModuleId, Result};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// A cooling-down host is never waited on past this if the real `Retry-After` is longer —
 /// the caller gets the last-known failure back immediately instead (ADR 0027 §3).
@@ -121,6 +121,14 @@ struct CacheMeta {
     last_modified: Option<String>,
     max_age_secs: Option<u64>,
     cached_at: DateTime<Utc>,
+    /// The paired `.body` file's exact length, checked on every [`ResponseCache::read`].
+    /// `write` writes the body first and this meta last, so meta is the commit marker — but a
+    /// crash or a swallowed disk error between the two writes can still leave this meta sitting
+    /// next to a body from a *different* generation (e.g. a stale body left from a previous
+    /// write, with a fresh meta failing to land). A length mismatch means the pair does not
+    /// belong together, so it reads back as a miss exactly like a wholly absent pair (ADR 0027
+    /// §3; PR #109 review).
+    body_len: u64,
 }
 
 impl CacheMeta {
@@ -162,11 +170,27 @@ impl ResponseCache {
         let (meta_path, body_path) = self.paths(module, url);
         let meta: CacheMeta = serde_json::from_str(&std::fs::read_to_string(&meta_path).ok()?).ok()?;
         let body = std::fs::read(&body_path).ok()?;
+        if body.len() as u64 != meta.body_len {
+            // A torn pair from two different writes (see `write`'s doc comment) -- treat it
+            // exactly like a wholly missing entry rather than serving a mismatched body.
+            return None;
+        }
         Some((meta, body))
     }
 
+    /// Body first, meta last — meta is the commit marker (ADR 0027 §3). Writing the other order
+    /// let a meta update outrun a failed body write: a fresh meta (new ETag) paired with the
+    /// previous, stale body would then serve that stale body as fresh forever, since the next
+    /// `get` would send the new ETag and accept the resulting 304 at face value (PR #109
+    /// review). `meta.body_len` (checked in `read`) catches the mirror case — a body write that
+    /// lands but whose meta write then fails or crashes — so neither write order can leave a
+    /// torn pair readable as valid.
     fn write(&self, module: &ModuleId, url: &str, meta: &CacheMeta, body: &[u8], max_bytes: u64) {
         let (meta_path, body_path) = self.paths(module, url);
+        if let Err(e) = shimmer_store::write_atomic(&body_path, body) {
+            tracing::warn!(error = %e, path = %body_path.display(), "http cache: could not write body");
+            return;
+        }
         let meta_text = match serde_json::to_vec(meta) {
             Ok(b) => b,
             Err(e) => {
@@ -177,9 +201,6 @@ impl ResponseCache {
         if let Err(e) = shimmer_store::write_atomic(&meta_path, &meta_text) {
             tracing::warn!(error = %e, path = %meta_path.display(), "http cache: could not write metadata");
             return;
-        }
-        if let Err(e) = shimmer_store::write_atomic(&body_path, body) {
-            tracing::warn!(error = %e, path = %body_path.display(), "http cache: could not write body");
         }
         self.evict_if_over_cap(module, max_bytes);
     }
@@ -346,7 +367,11 @@ impl RealHttpBackend {
             tokio::time::sleep(wait).await;
         }
 
-        let _permit = entry
+        // Held past `send_one`'s own return and only dropped once the body is fully read
+        // (`finish`'s caller holds it through `read_body_capped`) -- the per-host cap bounds
+        // concurrent *downloads*, not just concurrent "send the headers and let go" (PR #109
+        // review).
+        let permit = entry
             .semaphore
             .clone()
             .acquire_owned()
@@ -362,7 +387,7 @@ impl RealHttpBackend {
         }
         tracing::debug!(module = %module, url = %url.as_str(), revalidating = if_none_match.is_some(), "http: sending");
         let resp = req.send().await.map_err(|e| Error::unavailable(format!("{url}: {e}")))?;
-        Ok(HopOutcome::Response(resp))
+        Ok(HopOutcome::Response(resp, permit))
     }
 
     /// Follows redirects (each hop through its own host's limiter) until a terminal
@@ -383,17 +408,20 @@ impl RealHttpBackend {
             };
             match self.send_one(module, &current, if_none_match, if_modified_since).await? {
                 HopOutcome::Synthesized(r) => return Ok((r, ResponseMeta::default())),
-                HopOutcome::Response(resp) => {
+                HopOutcome::Response(resp, permit) => {
                     if resp.status().is_redirection() {
                         if hop == MAX_REDIRECTS {
                             return Err(Error::unavailable(format!("too many redirects fetching {current}")));
                         }
                         if let Some(next) = redirect_target(&current, &resp) {
+                            // This hop's permit is dropped here (a redirect has no body worth
+                            // holding it for); the next hop acquires its own, from its own
+                            // host's semaphore.
                             current = next;
                             continue;
                         }
                     }
-                    return self.finish(&current, resp).await;
+                    return self.finish(&current, resp, permit).await;
                 }
             }
         }
@@ -402,8 +430,15 @@ impl RealHttpBackend {
 
     /// Reads the body (capped, streamed) and, on a `429`/`503`, records this host's cooldown
     /// before returning. Extracts cache-relevant headers before consuming the body, since
-    /// they're unavailable afterward.
-    async fn finish(&self, url: &reqwest::Url, resp: reqwest::Response) -> Result<(HttpResponse, ResponseMeta)> {
+    /// they're unavailable afterward. Takes ownership of this hop's concurrency permit purely
+    /// to hold it alive (and so release it) across the body read -- the per-host `concurrent`
+    /// cap must bound the download, not just the time to get headers back (PR #109 review).
+    async fn finish(
+        &self,
+        url: &reqwest::Url,
+        resp: reqwest::Response,
+        _permit: OwnedSemaphorePermit,
+    ) -> Result<(HttpResponse, ResponseMeta)> {
         let status = resp.status().as_u16();
         let retry_after = retry_after_secs(&resp);
         let response_meta = ResponseMeta {
@@ -437,7 +472,10 @@ impl RealHttpBackend {
 }
 
 enum HopOutcome {
-    Response(reqwest::Response),
+    /// The permit is this hop's own host's concurrency slot, carried along so the caller can
+    /// decide how long to hold it (redirect: drop now; terminal response: hold through the body
+    /// read in `finish`) instead of `send_one` releasing it the moment headers arrive.
+    Response(reqwest::Response, OwnedSemaphorePermit),
     Synthesized(HttpResponse),
 }
 
@@ -487,6 +525,7 @@ impl HttpBackend for RealHttpBackend {
                         last_modified: response_meta.last_modified,
                         max_age_secs: response_meta.max_age_secs,
                         cached_at: self.clock.now(),
+                        body_len: resp.body.len() as u64,
                     };
                     self.cache.write(module, url, &meta, &resp.body, self.config.cache_max_bytes);
                 }
@@ -837,6 +876,86 @@ mod tests {
     }
 
     #[test]
+    fn a_body_that_does_not_match_its_meta_reads_back_as_a_miss() {
+        // Simulates the torn-pair case `write`'s doc comment describes: a body lands, but the
+        // meta next to it belongs to a different generation (stale, or from a failed write).
+        let home = TempDir::new().unwrap();
+        let cache = ResponseCache { home: home.path().to_path_buf() };
+        let module = ModuleId::new("test");
+        let t0 = DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z").unwrap().to_utc();
+        let meta = CacheMeta {
+            url: "http://a".to_owned(),
+            status: 200,
+            etag: None,
+            last_modified: None,
+            max_age_secs: None,
+            cached_at: t0,
+            body_len: 2,
+        };
+        cache.write(&module, "http://a", &meta, b"ok", u64::MAX);
+        assert_eq!(cache.read(&module, "http://a").unwrap().1, b"ok".to_vec());
+
+        // Overwrite just the body, as a torn write would -- the meta's `body_len` no longer
+        // matches.
+        let (_meta_path, body_path) = cache.paths(&module, "http://a");
+        std::fs::write(&body_path, b"a much longer stale body").unwrap();
+        assert!(cache.read(&module, "http://a").is_none(), "a body/meta length mismatch must read back as a miss");
+    }
+
+    #[tokio::test]
+    async fn the_concurrency_permit_is_held_through_the_body_read_not_just_the_headers() {
+        // Each connection is handled on its own thread the instant it's accepted -- the server
+        // itself must not be the thing serializing the two requests, only the backend's
+        // per-host semaphore may do that. `/a`'s handler sends a slow body (headers + one byte,
+        // a real sleep, then the rest); `/b`'s handler reports when its request actually
+        // reached the server. With `default_concurrent = 1` on one shared host, `/b` must not
+        // reach the server until `/a`'s body (not just its headers) has been fully read.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let test_start = std::time::Instant::now();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut conn, _) = listener.accept().unwrap();
+                let tx = tx.clone();
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 8192];
+                    let n = conn.read(&mut buf).unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    if request.contains("/a") {
+                        conn.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\no").unwrap();
+                        std::thread::sleep(Duration::from_millis(200));
+                        conn.write_all(b"k").unwrap();
+                    } else {
+                        let _ = tx.send(test_start.elapsed());
+                        conn.write_all(OK.as_bytes()).unwrap();
+                    }
+                });
+            }
+        });
+
+        let mut cfg = generous_config();
+        cfg.default_concurrent = 1;
+        let (b, _home) = backend(cfg, Clock::system());
+        let module = ModuleId::new("test");
+        let url_a = format!("http://{addr}/a");
+        let url_b = format!("http://{addr}/b");
+
+        let (ra, rb) = tokio::join!(b.get(&module, &url_a), b.get(&module, &url_b));
+        assert_eq!(ra.unwrap().body, b"ok".to_vec());
+        assert_eq!(rb.unwrap().body, b"ok".to_vec());
+
+        let b_arrived = rx.recv_timeout(Duration::from_secs(1)).expect("the /b request never reached the server");
+        assert!(
+            b_arrived >= Duration::from_millis(150),
+            "the /b request reached the server after only {b_arrived:?} -- the per-host \
+             concurrency permit must be held until /a's body is fully read, not released once \
+             /a's headers come back"
+        );
+    }
+
+    #[test]
     fn eviction_removes_the_oldest_pair_first_and_never_leaves_an_orphan() {
         let home = TempDir::new().unwrap();
         let cache = ResponseCache { home: home.path().to_path_buf() };
@@ -848,6 +967,7 @@ mod tests {
             last_modified: None,
             max_age_secs: None,
             cached_at: at,
+            body_len: 10_000,
         };
         let t0 = DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z").unwrap().to_utc();
         // The cap comfortably fits one pair (body + its meta.json) but not two.
