@@ -7,6 +7,7 @@
 #   shimmer records complete <collection>/<id>                                applied: stamps applied_on
 #   shimmer records update <collection>/<id> --stage interviewing             where it stands after
 #   shimmer records list <collection> --filter "stage!=rejected" --sort apply_by
+#   shimmer records list <collection> --filter "oa_deadline<=today+7" --sort oa_deadline   OAs due this week
 
 [collection]
 id = "job-applications"
@@ -18,7 +19,7 @@ title = "{company}: {position}"
 stamp_on_complete = "applied_on"
 # Applying happens once: completing again is refused (reopen it first if you must).
 repeat_complete = "refuse"
-related = ["interviews", "interview-questions"]
+related = ["interviews", "interview-questions", "stories", "offers", "networking-events", "outreach"]
 
 # ---- the posting -------------------------------------------------------------------------
 
@@ -47,6 +48,11 @@ values = ["full-time", "part-time", "internship", "co-op", "contract"]
 name = "level"
 type = "enum"
 values = ["intern", "new-grad", "junior", "mid", "senior", "staff"]
+
+[[field]]
+name = "tech_stack"      # from the posting: --tech-stack "Go, Kubernetes"; --filter "tech_stack has go"
+type = "list"
+of = "string"
 
 [[field]]
 name = "location"        # a city, or "Remote"
@@ -107,8 +113,8 @@ type = "date"
 role = "deadline"
 
 [[field]]
-name = "oa_deadline"     # the online assessment is due
-type = "date"
+name = "oa_deadline"     # the online assessment is due: "2026-10-20 23:59" in your timezone, or just the day
+type = "datetime"
 role = "deadline"
 
 [[field]]

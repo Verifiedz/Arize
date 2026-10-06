@@ -7,6 +7,9 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
+/// The LeetCode-style collection the records tests use (crates/modules/records/tests/fixtures).
+pub const LEETCODE: &str = include_str!("../../../modules/records/tests/fixtures/leetcode.toml");
+
 pub struct Home {
     pub dir: TempDir,
 }
@@ -14,6 +17,16 @@ pub struct Home {
 impl Home {
     pub fn new() -> Self {
         Self { dir: TempDir::new().unwrap() }
+    }
+
+    /// A home with a LeetCode-style collection already in it. A fresh install has no
+    /// collections (ADR 0023), so tests that use one write it in themselves.
+    pub fn with_leetcode() -> Self {
+        let home = Self::new();
+        let dir = home.dir.path().join("home/data/records/collections");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("leetcode.toml"), LEETCODE).unwrap();
+        home
     }
 
     pub fn socket(&self) -> PathBuf {

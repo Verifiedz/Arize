@@ -10,6 +10,7 @@ mod item;
 mod lifecycle;
 mod query;
 mod schema;
+mod values;
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -21,19 +22,31 @@ use shimmer_core::{CommandSpec, Ctx, Error, ErrorCode, Execution, Manifest, Modu
 use crate::item::Item;
 use crate::schema::Collection;
 
-const LEETCODE: &str = include_str!("../templates/leetcode.toml");
-
 /// Built-in collection templates (ADR 0022), by id. Each is an ordinary collection file whose
 /// `[collection] id` is the template's id; creating one copies it with only the id (and label)
 /// changed.
 const TEMPLATES: &[(&str, &str)] = &[
+    ("addresses", include_str!("../templates/addresses.toml")),
+    ("certifications", include_str!("../templates/certifications.toml")),
+    ("charity", include_str!("../templates/charity.toml")),
+    ("documents", include_str!("../templates/documents.toml")),
+    ("education", include_str!("../templates/education.toml")),
+    ("employment", include_str!("../templates/employment.toml")),
     ("interview-questions", include_str!("../templates/interview-questions.toml")),
     ("interviews", include_str!("../templates/interviews.toml")),
     ("job-applications", include_str!("../templates/job-applications.toml")),
-    ("leetcode", LEETCODE),
+    ("leetcode", include_str!("../templates/leetcode.toml")),
+    ("networking-events", include_str!("../templates/networking-events.toml")),
+    ("offers", include_str!("../templates/offers.toml")),
+    ("outreach", include_str!("../templates/outreach.toml")),
+    ("projects", include_str!("../templates/projects.toml")),
+    ("stories", include_str!("../templates/stories.toml")),
+    ("subscriptions", include_str!("../templates/subscriptions.toml")),
 ];
 const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 500;
+/// Most rows one `records.import` takes (ADR 0024 §4).
+const MAX_IMPORT_ROWS: usize = 5000;
 
 #[derive(Default)]
 pub struct Records {
@@ -62,6 +75,7 @@ impl Module for Records {
                 "records.collection.restored",
                 "records.item.removed",
                 "records.collection.created",
+                "records.trash.purged",
             ]
             .map(String::from)
             .to_vec(),
@@ -69,17 +83,10 @@ impl Module for Records {
         }
     }
 
-    /// Seed the built-in LeetCode collection when there are no collections at all, so a fresh
-    /// install has something to track.
-    async fn init(&self, ctx: &Ctx) -> Result<()> {
-        let _g = self.write.lock();
-        if !ctx.store.list("collections")?.is_empty() {
-            return Ok(());
-        }
-        ctx.store.transaction(|tx| {
-            tx.put("collections/leetcode.toml", LEETCODE)?;
-            tx.emit("records.collection.created", json!({"collection": "leetcode", "template": "leetcode"}))
-        })
+    /// Nothing to set up: a fresh install starts with no collections, and the person creates the
+    /// ones they want from templates (ADR 0023, replacing ADR 0008's seeding).
+    async fn init(&self, _ctx: &Ctx) -> Result<()> {
+        Ok(())
     }
 
     fn commands(&self) -> Vec<CommandSpec> {
@@ -127,8 +134,8 @@ impl Module for Records {
             ),
             (
                 "records.remove",
-                "Remove a record (it goes to the trash; records.restore brings it back)",
-                with(json!({})),
+                "Remove a record (it goes to the trash; records.restore brings it back); force if others refer to it",
+                with(json!({"force": {"type": "boolean"}})),
             ),
             ("records.restore", "Bring a removed record back from the trash", with(json!({}))),
             (
@@ -165,6 +172,20 @@ impl Module for Records {
                 "Remove a collection and its records (they can be restored); needs confirmation",
                 json!({"type": "object", "required": ["id"], "properties": {
                     "id": {"type": "string"}, "confirm": {"type": "object"}}}),
+            ),
+            (
+                "records.import",
+                "Add many records in one transaction; rows already there (by id or unique value) are skipped",
+                json!({"type": "object", "required": ["collection", "rows"], "properties": {
+                    "collection": {"type": "string"},
+                    "rows": {"type": "array", "items": {"type": "object"}, "maxItems": MAX_IMPORT_ROWS},
+                    "dry_run": {"type": "boolean"}, "skip_invalid": {"type": "boolean"}}}),
+            ),
+            (
+                "records.purge",
+                "Permanently delete removed records (one, or a collection's whole trash); needs confirmation",
+                json!({"type": "object", "required": ["collection"], "properties": {
+                    "collection": {"type": "string"}, "id": {"type": "string"}, "confirm": {"type": "object"}}}),
             ),
             (
                 "records.restore_collection",
@@ -206,6 +227,8 @@ impl Module for Records {
             "records.rename_collection" => self.rename_collection(ctx, decode(params)?),
             "records.remove_collection" => self.remove_collection(ctx, decode(params)?),
             "records.restore_collection" => self.restore_collection(ctx, decode(params)?),
+            "records.import" => self.import(ctx, decode(params)?),
+            "records.purge" => self.purge(ctx, decode(params)?),
             _ => Err(Error::unknown_op(format!("records has no op '{op}'"))),
         }
     }
@@ -215,6 +238,36 @@ impl Module for Records {
 struct Target {
     collection: String,
     id: String,
+}
+
+/// `records.remove`: `force` removes a record others still refer to (ADR 0024 §3).
+#[derive(Deserialize)]
+struct Remove {
+    collection: String,
+    id: String,
+    #[serde(default)]
+    force: bool,
+}
+
+/// `records.purge` (ADR 0024 §5).
+#[derive(Deserialize)]
+struct Purge {
+    collection: String,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    confirm: Option<Value>,
+}
+
+/// `records.import` (ADR 0024 §4).
+#[derive(Deserialize)]
+struct Import {
+    collection: String,
+    rows: Vec<Value>,
+    #[serde(default)]
+    dry_run: bool,
+    #[serde(default)]
+    skip_invalid: bool,
 }
 
 #[derive(Deserialize)]
@@ -328,7 +381,7 @@ impl Records {
         Ok(data)
     }
 
-    fn add(&self, ctx: &Ctx, p: Add) -> Result<Value> {
+    fn add(&self, ctx: &Ctx, mut p: Add) -> Result<Value> {
         let c = load_collection(ctx, &p.collection)?;
         if let Some(id) = &p.id {
             item::check_id(id)?;
@@ -336,11 +389,15 @@ impl Records {
         if let Some((k, _)) = p.fields.iter().find(|(_, v)| v.is_null()) {
             return Err(Error::invalid_params(format!("field '{k}' is null; leave it out to leave it unset")));
         }
+        values::normalize(&c, &mut p.fields, &now(ctx))?;
+        // An empty list is unset (ADR 0024 §2): nothing to store.
+        p.fields.retain(|_, v| !v.is_null());
         c.check_values(&p.fields)?;
         c.check_required(&p.fields)?;
 
         // Under the write lock, so nothing can take the id or a unique value in between.
         let _g = self.write.lock();
+        check_refs(ctx, &c, &p.fields)?;
         let exists = |id: &str| Ok(ctx.store.read_string(&item_path(&c.id, id))?.is_some());
         let id = match p.id {
             Some(id) if exists(&id)? => {
@@ -352,7 +409,7 @@ impl Records {
                 let fields = p.fields.clone().into_iter().collect();
                 match c.render_title(&fields).map(|t| item::slug(&t)).filter(|s| !s.is_empty()) {
                     Some(base) => item::first_free(&base, false, exists)?,
-                    None => item::first_free(&today(ctx), true, exists)?,
+                    None => item::first_free(&now(ctx).today().format("%Y-%m-%d").to_string(), true, exists)?,
                 }
             }
         };
@@ -370,7 +427,7 @@ impl Records {
 
     fn list(&self, ctx: &Ctx, p: ListParams) -> Result<Value> {
         let c = load_collection(ctx, &p.collection)?;
-        let query = query::Query::new(&c, &p.filter, p.search.as_deref(), &p.sort)?;
+        let query = query::Query::new(&c, &p.filter, p.search.as_deref(), &p.sort, &now(ctx))?;
         let limit = p.limit.unwrap_or(DEFAULT_LIMIT);
         if !(1..=MAX_LIMIT).contains(&limit) {
             return Err(Error::invalid_params(format!("limit must be between 1 and {MAX_LIMIT}")));
@@ -383,7 +440,7 @@ impl Records {
                 continue;
             };
             // One bad hand-edit must not hide every other record.
-            match ctx.store.read_string(&path)?.map(|text| Item::from_toml(id, &text)) {
+            match read_item(ctx, &path, id) {
                 Some(Ok(item)) => {
                     let wire = item.to_wire(&c);
                     if query.matches(&wire) {
@@ -399,19 +456,31 @@ impl Records {
         query.sort(&mut matching);
         let total = matching.len();
         let items: Vec<Value> = matching.into_iter().skip(p.offset).take(limit).collect();
-        let mut out = json!({"items": items, "total": total});
+        // What to call each listed record (ADR 0024 §5), so clients never render titles.
+        let titles: Map<String, Value> = items
+            .iter()
+            .filter_map(|w| {
+                let id = w["id"].as_str()?;
+                let fields = w.as_object()?.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                Some((id.to_owned(), json!(c.title_of(id, &fields))))
+            })
+            .collect();
+        let mut out = json!({"items": items, "total": total, "titles": titles});
         if !skipped.is_empty() {
             out["skipped"] = json!(skipped);
         }
         Ok(out)
     }
 
-    fn update(&self, ctx: &Ctx, p: WithFields) -> Result<Value> {
+    fn update(&self, ctx: &Ctx, mut p: WithFields) -> Result<Value> {
         let c = load_collection(ctx, &p.collection)?;
-        c.check_changes(&p.fields)?;
+        values::normalize(&c, &mut p.fields, &now(ctx))?;
 
         let _g = self.write.lock();
         let before = load_item(ctx, &c, &p.id)?;
+        values::patch_lists(&c, &mut p.fields, &before.fields)?;
+        c.check_changes(&p.fields)?;
+        check_refs(ctx, &c, &p.fields)?;
         check_unique(ctx, &c, &p.id, &p.fields)?;
         let mut item = before.clone();
         item.apply(p.fields);
@@ -428,14 +497,17 @@ impl Records {
     }
 
     /// Done, stamped, and any `fields` set, in one transaction with one event (ADR 0016 §2).
-    fn complete(&self, ctx: &Ctx, p: WithFields) -> Result<Value> {
+    fn complete(&self, ctx: &Ctx, mut p: WithFields) -> Result<Value> {
         let c = load_collection(ctx, &p.collection)?;
-        let today = today(ctx);
+        let now = now(ctx);
+        values::normalize(&c, &mut p.fields, &now)?;
 
         let _g = self.write.lock();
         let current = load_item(ctx, &c, &p.id)?;
+        values::patch_lists(&c, &mut p.fields, &current.fields)?;
+        check_refs(ctx, &c, &p.fields)?;
         check_unique(ctx, &c, &p.id, &p.fields)?;
-        let item = lifecycle::complete(&c, &current, p.fields, &today)?;
+        let item = lifecycle::complete(&c, &current, p.fields, &now)?;
         self.save(ctx, &c, &item, "records.item.completed")
     }
 
@@ -462,13 +534,29 @@ impl Records {
             return Err(Error::conflict(format!("'{}' already has a record '{}'", c.id, p.new_id)));
         }
         item.id = p.new_id.clone();
+        // Every reference to it follows, in the same transaction (ADR 0024 §3).
+        let mut repointed = Vec::new();
+        let mut references = 0;
+        for (other, mut record) in referrers(ctx, &c.id, &p.id)? {
+            references += collections::repoint(&other, &mut record, &c.id, &p.id, &p.new_id);
+            // A record that points at itself is the one being moved.
+            if other.id == c.id && record.id == p.id {
+                collections::repoint(&c, &mut item, &c.id, &p.id, &p.new_id);
+                continue;
+            }
+            repointed.push((item_path(&other.id, &record.id), record.to_toml()));
+        }
         let wire = item.to_wire(&c);
         let mut event = payload(&c, &item, &wire);
         event["id"] = json!(p.id);
         event["new_id"] = json!(p.new_id);
+        event["references"] = json!(references);
         ctx.store.transaction(|tx| {
             tx.put(&new_path, item.to_toml())?;
             tx.delete(&item_path(&c.id, &p.id))?;
+            for (path, text) in repointed {
+                tx.put(&path, text)?;
+            }
             tx.emit("records.item.renamed", event)
         })?;
         Ok(wire)
@@ -527,8 +615,12 @@ impl Records {
                 continue;
             };
             checked += 1;
-            let found = match ctx.store.read_string(&path)?.map(|text| Item::from_toml(id, &text)) {
-                Some(Ok(item)) => collections::problems(&c, &item),
+            let found = match read_item(ctx, &path, id) {
+                Some(Ok(item)) => {
+                    let mut found = collections::problems(&c, &item);
+                    found.extend(dangling(ctx, &c, &item.fields)?);
+                    found
+                }
                 Some(Err(e)) => vec![e.message],
                 None => continue,
             };
@@ -599,7 +691,17 @@ impl Records {
             return Err(Error::conflict(format!("there is already a collection '{}'", p.new_id)));
         }
         let text = collections::set_id(&c.id, &collection_text(ctx, &c.id)?, &p.new_id)?;
+        // Ref fields pointing into it, here or in any other collection, follow (ADR 0024 §3).
+        let (text, _) = collections::retarget_refs(&p.new_id, &text, &c.id, &p.new_id)?;
         let new = Collection::parse(&p.new_id, &text)?;
+        let mut retargeted = Vec::new();
+        for other in all_collections(ctx)?.into_iter().filter(|o| o.id != c.id) {
+            let (changed_text, n) =
+                collections::retarget_refs(&other.id, &collection_text(ctx, &other.id)?, &c.id, &p.new_id)?;
+            if n > 0 {
+                retargeted.push((collection_path(&other.id), changed_text));
+            }
+        }
         let moves = [
             subtree(ctx, &format!("items/{}", c.id), &format!("items/{}", p.new_id))?,
             subtree(ctx, &format!("trash/{}", c.id), &format!("trash/{}", p.new_id))?,
@@ -609,6 +711,9 @@ impl Records {
             tx.put(&collection_path(&p.new_id), text)?;
             tx.delete(&collection_path(&c.id))?;
             apply_moves(tx, moves)?;
+            for (path, text) in retargeted {
+                tx.put(&path, text)?;
+            }
             tx.emit("records.collection.renamed", json!({"collection": c.id, "new_id": p.new_id}))
         })?;
         Ok(serde_json::to_value(new).unwrap_or_default())
@@ -673,6 +778,147 @@ impl Records {
         Ok(serde_json::to_value(c).unwrap_or_default())
     }
 
+    /// Add many records at once (ADR 0024 §4): each row checked as `records.add` checks one, and
+    /// against the other rows; rows already there skipped; everything written in one transaction,
+    /// or nothing when a row is invalid (unless `skip_invalid`) or on a dry run.
+    fn import(&self, ctx: &Ctx, p: Import) -> Result<Value> {
+        let c = load_collection(ctx, &p.collection)?;
+        if p.rows.len() > MAX_IMPORT_ROWS {
+            return Err(Error::invalid_params(format!(
+                "an import takes at most {MAX_IMPORT_ROWS} rows, got {}; split the file",
+                p.rows.len()
+            )));
+        }
+        let now = now(ctx);
+        let _g = self.write.lock();
+
+        // What's already there: ids, and the values unique fields hold.
+        let dir = format!("items/{}", c.id);
+        let mut taken_ids = std::collections::BTreeSet::new();
+        let mut taken_values: Vec<(String, Value, String)> = Vec::new();
+        for path in ctx.store.list(&dir)? {
+            let Some(id) = path.strip_prefix(&format!("{dir}/")).and_then(|p| p.strip_suffix(".toml")) else {
+                continue;
+            };
+            taken_ids.insert(id.to_owned());
+            if let Some(Ok(record)) = ctx.store.read_string(&path)?.map(|text| Item::from_toml(id, &text)) {
+                for (field, value) in c.unique_values(&record.fields_map()) {
+                    taken_values.push((field.to_owned(), value.clone(), id.to_owned()));
+                }
+            }
+        }
+
+        let (mut added, mut skipped, mut invalid) = (Vec::new(), Vec::new(), Vec::new());
+        let mut explicit = std::collections::BTreeSet::new();
+        for (i, row) in p.rows.into_iter().enumerate() {
+            let n = i + 1;
+            let item = match import_row(ctx, &c, row, &now) {
+                Ok(item) => item,
+                Err(e) => {
+                    invalid.push(json!({"row": n, "error": e.message}));
+                    continue;
+                }
+            };
+            let (item, given_id) = item;
+            if let Some(id) = &given_id {
+                if !explicit.insert(id.clone()) {
+                    invalid.push(json!({"row": n, "error": format!("id '{id}' is in the import twice")}));
+                    continue;
+                }
+                if taken_ids.contains(id) {
+                    skipped.push(json!({"row": n, "reason": format!("'{}' already has a record '{id}'", c.id)}));
+                    continue;
+                }
+            }
+            let fields = item.fields_map();
+            let clash = c.unique_values(&fields).into_iter().find_map(|(field, value)| {
+                taken_values
+                    .iter()
+                    .find(|(f, v, _)| f == field && v == value)
+                    .map(|(_, _, by)| (field, value, by.clone()))
+            });
+            if let Some((field, value, by)) = clash {
+                let shown = value.as_str().map_or_else(|| value.to_string(), str::to_owned);
+                skipped.push(json!({"row": n, "reason": format!("{field} '{shown}' is already used by '{by}'")}));
+                continue;
+            }
+            let mut item = item;
+            if given_id.is_none() {
+                let base = c.render_title(&item.fields).map(|t| item::slug(&t)).filter(|s| !s.is_empty());
+                let taken = |id: &str| Ok(taken_ids.contains(id) || explicit.contains(id));
+                item.id = match base {
+                    Some(base) => item::first_free(&base, false, taken)?,
+                    None => item::first_free(&now.today().format("%Y-%m-%d").to_string(), true, taken)?,
+                };
+            }
+            taken_ids.insert(item.id.clone());
+            for (field, value) in c.unique_values(&fields) {
+                taken_values.push((field.to_owned(), value.clone(), item.id.clone()));
+            }
+            added.push(item);
+        }
+
+        let ids: Vec<&str> = added.iter().map(|i| i.id.as_str()).collect();
+        let write = !p.dry_run && (invalid.is_empty() || p.skip_invalid) && !added.is_empty();
+        let out = json!({"added": ids, "skipped": skipped, "invalid": invalid, "written": write});
+        if write {
+            ctx.store.transaction(|tx| {
+                for item in &added {
+                    tx.put(&item_path(&c.id, &item.id), item.to_toml())?;
+                    tx.emit("records.item.created", payload(&c, item, &item.to_wire(&c)))?;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(out)
+    }
+
+    /// Permanently delete trashed records, after the caller confirms how many it was shown, as
+    /// removing a collection asks (ADR 0024 §5, ADR 0021 §5). This is the one op that can't be
+    /// undone, so it never runs on a guess.
+    fn purge(&self, ctx: &Ctx, p: Purge) -> Result<Value> {
+        let c = load_collection(ctx, &p.collection)?;
+        let _g = self.write.lock();
+        let paths = match &p.id {
+            Some(id) => {
+                item::check_id(id)?;
+                let path = trash_path(&c.id, id);
+                if ctx.store.read_string(&path)?.is_none() {
+                    return Err(Error::not_found(format!("no removed record '{id}' in '{}'", c.id)));
+                }
+                vec![path]
+            }
+            None => ctx.store.list(&format!("trash/{}", c.id))?,
+        };
+        let records = paths.len();
+        if records == 0 {
+            return Ok(json!({"purged": 0}));
+        }
+        let expected = json!({"records": records});
+        if p.confirm.as_ref() != Some(&expected) {
+            let what = match &p.id {
+                Some(id) => format!("'{id}' from '{}'s trash", c.id),
+                None => format!("all {records} record(s) in '{}'s trash", c.id),
+            };
+            return Err(Error::new(
+                ErrorCode::ConfirmationRequired,
+                format!("purging permanently deletes {what}; confirm with {{\"records\": {records}}}"),
+            )
+            .with_detail(expected));
+        }
+        let mut event = json!({"collection": c.id, "records": records});
+        if let Some(id) = &p.id {
+            event["id"] = json!(id);
+        }
+        ctx.store.transaction(|tx| {
+            for path in &paths {
+                tx.delete(path)?;
+            }
+            tx.emit("records.trash.purged", event)
+        })?;
+        Ok(json!({"purged": records}))
+    }
+
     /// Write `item` and emit `topic` with its payload, in one transaction (§7.1).
     fn save(&self, ctx: &Ctx, c: &Collection, item: &Item, topic: &str) -> Result<Value> {
         let wire = item.to_wire(c);
@@ -684,10 +930,30 @@ impl Records {
     }
 
     /// Move the record to the trash and say what went, in one transaction (ADR 0020 §1–2).
-    fn remove(&self, ctx: &Ctx, t: Target) -> Result<Value> {
+    fn remove(&self, ctx: &Ctx, t: Remove) -> Result<Value> {
         let c = load_collection(ctx, &t.collection)?;
         let _g = self.write.lock();
         let item = load_item(ctx, &c, &t.id)?;
+        // Never quietly leave references pointing at nothing (ADR 0024 §3).
+        let pointing: Vec<String> = referrers(ctx, &c.id, &t.id)?
+            .into_iter()
+            .filter(|(o, r)| !(o.id == c.id && r.id == t.id))
+            .map(|(o, r)| format!("{}/{}", o.id, r.id))
+            .collect();
+        if !pointing.is_empty() && !t.force {
+            let shown: Vec<&str> = pointing.iter().take(5).map(String::as_str).collect();
+            let more = match pointing.len() > 5 {
+                true => format!(" and {} more", pointing.len() - 5),
+                false => String::new(),
+            };
+            return Err(Error::conflict(format!(
+                "'{}' in '{}' is referred to by {}{more}; remove those first, or force it and leave them pointing at nothing",
+                t.id,
+                c.id,
+                shown.join(", ")
+            ))
+            .with_detail(json!({"referred_by": pointing})));
+        }
         let event = payload(&c, &item, &item.to_wire(&c));
         ctx.store.transaction(|tx| {
             tx.put(&trash_path(&c.id, &t.id), item.to_toml())?;
@@ -783,10 +1049,115 @@ fn check_unique(ctx: &Ctx, c: &Collection, id: &str, values: &Map<String, Value>
     Ok(())
 }
 
-/// Today's local date (ADR 0009), `YYYY-MM-DD`: a late-evening action west of UTC must not
-/// count as tomorrow.
-fn today(ctx: &Ctx) -> String {
-    shimmer_core::local_date(ctx.clock.now(), &ctx.local_tz).format("%Y-%m-%d").to_string()
+/// One import row as a record (with an empty id when it gave none), checked as `records.add`
+/// checks: `id` and `status` are optional keys, everything else a field; `null` is unset.
+fn import_row(ctx: &Ctx, c: &Collection, row: Value, now: &values::Now) -> Result<(Item, Option<String>)> {
+    let Value::Object(mut fields) = row else {
+        return Err(Error::invalid_params("a row must be an object of field values"));
+    };
+    let id = match fields.remove("id") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(id)) if id.is_empty() => None,
+        Some(Value::String(id)) => {
+            item::check_id(&id)?;
+            Some(id)
+        }
+        Some(other) => return Err(Error::invalid_params(format!("id must be text, got {other}"))),
+    };
+    let status = match fields.remove("status") {
+        None | Some(Value::Null) => item::Status::Todo,
+        Some(v) if v == "todo" && c.completable => item::Status::Todo,
+        Some(v) if v == "done" && c.completable => item::Status::Done,
+        Some(v) => {
+            return Err(Error::invalid_params(match c.completable {
+                true => format!("status must be \"todo\" or \"done\", got {v}"),
+                false => format!("'{}' has no status (completable = false)", c.id),
+            }))
+        }
+    };
+    fields.retain(|_, v| !v.is_null() && v.as_str() != Some(""));
+    values::normalize(c, &mut fields, now)?;
+    fields.retain(|_, v| !v.is_null());
+    c.check_values(&fields)?;
+    c.check_required(&fields)?;
+    check_refs(ctx, c, &fields)?;
+    let mut item = Item::new(id.as_deref().unwrap_or_default(), fields);
+    item.status = status;
+    item.status_line = c.completable;
+    Ok((item, id))
+}
+
+/// Every ref in `values` points at a record that exists (ADR 0024 §3).
+fn check_refs(ctx: &Ctx, c: &Collection, values: &Map<String, Value>) -> Result<()> {
+    match dangling(ctx, c, values)?.into_iter().next() {
+        Some(problem) => Err(Error::invalid_params(problem)),
+        None => Ok(()),
+    }
+}
+
+/// What's wrong with the refs in `values`: a target collection that doesn't exist, or a record
+/// that isn't in it.
+fn dangling<'a>(
+    ctx: &Ctx,
+    c: &Collection,
+    values: impl IntoIterator<Item = (&'a String, &'a Value)>,
+) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for (field, target, id) in c.refs_in(values) {
+        if ctx.store.read_string(&collection_path(target))?.is_none() {
+            out.push(format!(
+                "field '{field}' points into collection '{target}', but there is no {}",
+                collection_path(target)
+            ));
+        } else if item::check_id(id).is_err() || ctx.store.read_string(&item_path(target, id))?.is_none() {
+            out.push(format!("field '{field}': no record '{id}' in '{target}'"));
+        }
+    }
+    Ok(out)
+}
+
+/// Every record, in any collection, with a ref to `id` in `target`, with its collection.
+/// Unreadable collections and records are skipped, as in `records.collections` and `list`.
+fn referrers(ctx: &Ctx, target: &str, id: &str) -> Result<Vec<(Collection, Item)>> {
+    let mut out = Vec::new();
+    for c in all_collections(ctx)? {
+        if c.ref_fields_to(target).next().is_none() {
+            continue;
+        }
+        let dir = format!("items/{}", c.id);
+        for path in ctx.store.list(&dir)? {
+            let Some(rid) = path.strip_prefix(&format!("{dir}/")).and_then(|p| p.strip_suffix(".toml")) else {
+                continue;
+            };
+            let Some(Ok(record)) = ctx.store.read_string(&path)?.map(|text| Item::from_toml(rid, &text)) else {
+                continue;
+            };
+            if c.refs_in(&record.fields).iter().any(|(_, t, i)| *t == target && *i == id) {
+                out.push((c.clone(), record));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Every collection that parses.
+fn all_collections(ctx: &Ctx) -> Result<Vec<Collection>> {
+    let mut out = Vec::new();
+    for path in ctx.store.list("collections")? {
+        let Some(id) = path.strip_prefix("collections/").and_then(|p| p.strip_suffix(".toml")) else { continue };
+        if let Ok(c) = load_collection(ctx, id) {
+            out.push(c);
+        }
+    }
+    Ok(out)
+}
+
+/// The current moment in the configured timezone (ADR 0009, ADR 0024 §1). "Today" comes from
+/// here, so a late-evening action west of UTC never counts as tomorrow. The zone is looked up by
+/// the name `core` already parsed, so it can't fail; UTC is only a formality.
+fn now(ctx: &Ctx) -> values::Now {
+    let tz = ctx.local_tz.name().parse().unwrap_or(chrono_tz::UTC);
+    values::Now { at: ctx.clock.now(), tz }
 }
 
 fn load_collection(ctx: &Ctx, id: &str) -> Result<Collection> {
@@ -803,6 +1174,16 @@ fn load_item(ctx: &Ctx, c: &Collection, id: &str) -> Result<Item> {
     match ctx.store.read_string(&item_path(&c.id, id))? {
         Some(text) => Item::from_toml(id, &text),
         None => Err(Error::not_found(format!("no record '{id}' in '{}'", c.id))),
+    }
+}
+
+/// A record file as an item, for the ops that scan a collection (`list`, `check`). A file that
+/// can't be read at all (not UTF-8, an I/O error) is an `Err` for that one record, like one that
+/// doesn't parse, so it never hides the rest. `None` when it's gone.
+fn read_item(ctx: &Ctx, path: &str, id: &str) -> Option<Result<Item>> {
+    match ctx.store.read_string(path) {
+        Ok(text) => text.map(|text| Item::from_toml(id, &text)),
+        Err(e) => Some(Err(Error::invalid_params(format!("record file '{id}.toml' can't be read: {}", e.message)))),
     }
 }
 

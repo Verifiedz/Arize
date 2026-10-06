@@ -24,8 +24,8 @@ fn index_event_count(home: &Home) -> u64 {
     Index::open(&index_path(home)).unwrap().stats().unwrap().events
 }
 
-/// One completed record: `records.collection.created` (seeding LeetCode) +
-/// `records.item.created` + `records.item.completed` — 3 events. Shuts the daemon down so
+/// One completed record (the collection is written in by `Home::with_leetcode`, not seeded):
+/// `records.item.created` + `records.item.completed`, 2 events. Shuts the daemon down so
 /// the index file sits still while the test tampers with it before the next restart.
 fn seed_and_stop(home: &Home) {
     call(
@@ -40,10 +40,10 @@ fn seed_and_stop(home: &Home) {
 
 #[test]
 fn a_corrupt_index_does_not_stop_the_daemon_starting() {
-    let home = Home::new();
+    let home = Home::with_leetcode();
     seed_and_stop(&home);
     let before = index_event_count(&home);
-    assert_eq!(before, 3, "collection.created + item.created + item.completed");
+    assert_eq!(before, 2, "item.created + item.completed (nothing is seeded on first start, ADR 0023)");
 
     std::fs::write(index_path(&home), b"not a sqlite file at all, just garbage bytes").unwrap();
 
@@ -65,7 +65,7 @@ fn a_corrupt_index_does_not_stop_the_daemon_starting() {
 /// real restart of the real binary benefits from catching it anyway.
 #[test]
 fn a_mid_file_corrupt_index_that_still_opens_gets_caught_and_rebuilt() {
-    let home = Home::new();
+    let home = Home::with_leetcode();
     for i in 0..200 {
         call(
             &home,
@@ -92,7 +92,7 @@ fn a_mid_file_corrupt_index_that_still_opens_gets_caught_and_rebuilt() {
 
 #[test]
 fn a_truncated_index_does_not_stop_the_daemon_starting() {
-    let home = Home::new();
+    let home = Home::with_leetcode();
     seed_and_stop(&home);
     let before = index_event_count(&home);
 
@@ -108,7 +108,7 @@ fn a_truncated_index_does_not_stop_the_daemon_starting() {
 
 #[test]
 fn deleting_the_index_entirely_still_rebuilds_it_on_restart() {
-    let home = Home::new();
+    let home = Home::with_leetcode();
     seed_and_stop(&home);
     let before = index_event_count(&home);
 
@@ -124,7 +124,7 @@ fn deleting_the_index_entirely_still_rebuilds_it_on_restart() {
 
 #[test]
 fn an_empty_index_file_was_never_a_failure_case() {
-    let home = Home::new();
+    let home = Home::with_leetcode();
     seed_and_stop(&home);
     let before = index_event_count(&home);
 

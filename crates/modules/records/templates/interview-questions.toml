@@ -16,7 +16,7 @@ title = "{question}"
 stamp_on_complete = "last_practiced"
 # Practising again is another practice, like solving a problem twice.
 repeat_complete = "restamp"
-related = ["interviews", "job-applications"]
+related = ["interviews", "job-applications", "stories"]
 
 [[field]]
 name = "question"
@@ -65,7 +65,7 @@ name = "answer"          # your outline, or your STAR answer for behavioural que
 type = "string"
 
 [[field]]
-name = "story"           # which of your stories you'd tell; one story covers many questions
+name = "story"           # the id of the story you'd tell, from your stories collection
 type = "string"
 
 [[field]]

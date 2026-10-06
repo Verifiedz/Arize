@@ -1,13 +1,23 @@
-# Built in. Written to $SHIMMER_HOME/data/records/collections/ on first start; edit it freely there.
+# LeetCode: one record per problem you're working on.
+# Created from Shimmer's leetcode template. It's your file now: add, remove or rename fields
+# freely (shimmer records check <collection> tells you if a record stops fitting).
+#
+# How it works:
+#   shimmer records add <collection> --title "Two Sum" --number 1 --difficulty easy --pattern two-pointers
+#   shimmer records complete <collection>/two-sum --confidence solid --time-min 12 --next-review 2026-10-19
+#                                       solved it today; every solve counts (and shows on the heatmap)
+#   shimmer records list <collection> --filter "confidence=shaky" --sort next_review
 
 [collection]
 id = "leetcode"
 label = "LeetCode"
-description = "Problems by difficulty, with a heatmap of the days you solved them"
-# How a problem is named in reminders and notifications (ADR 0017).
+description = "Problems by pattern and difficulty, with how sure you are and when to redo them"
 title = "{title}"
-# `records.complete` sets this field to today's date.
+# Completing a problem means "solved it today": it stamps last_solved.
 stamp_on_complete = "last_solved"
+# Solving it again is another solve: re-stamped and counted again.
+repeat_complete = "restamp"
+related = ["interview-questions"]
 
 [[field]]
 name = "title"
@@ -15,18 +25,68 @@ type = "string"
 required = true
 
 [[field]]
+name = "number"          # the problem number, e.g. 1 for Two Sum
+type = "int"
+
+[[field]]
 name = "difficulty"
 type = "enum"
 values = ["easy", "medium", "hard"]
 
 [[field]]
-name = "url"
+name = "url"             # the problem's page; the same problem can't be added twice
+type = "string"
+role = "url"
+unique = true
+
+[[field]]
+name = "topic"           # --topic "arrays, hash map"; --filter "topic has arrays"
+type = "list"
+of = "string"
+
+[[field]]
+name = "pattern"         # practise by pattern: --filter pattern=sliding-window
+type = "enum"
+values = ["two-pointers", "sliding-window", "binary-search", "bfs", "dfs", "backtracking", "dynamic-programming", "greedy", "heap", "graph", "tree", "trie", "union-find", "stack", "linked-list", "intervals", "math", "bit-manipulation", "other"]
+
+[[field]]
+name = "list"            # which list it's from, e.g. "Blind 75", "NeetCode 150", "Grind 75"
 type = "string"
 
 [[field]]
-name = "last_solved"
+name = "company"         # who's known to ask it
+type = "string"
+
+[[field]]
+name = "confidence"      # how sure you are you'd solve it now
+type = "enum"
+values = ["shaky", "okay", "solid"]
+
+[[field]]
+name = "attempts"
+type = "int"
+
+[[field]]
+name = "time_min"        # how long the last solve took
+type = "int"
+
+[[field]]
+name = "solved_without_help"
+type = "bool"
+
+[[field]]
+name = "next_review"     # when to solve it again; the calendar can remind you
+type = "date"
+role = "deadline"
+
+[[field]]
+name = "last_solved"     # stamped by records complete
 type = "date"
 
+[[field]]
+name = "notes"           # the key trick, the edge cases
+type = "string"
+
 [[view]]
-kind = "heatmap"
+kind = "heatmap"         # the days you solved something
 source = "last_solved"

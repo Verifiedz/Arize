@@ -2,10 +2,10 @@
 # Created from Shimmer's interviews template. It's your file now: edit it freely.
 #
 # How it works:
-#   shimmer records add <collection> --application google-swe-ng --kind technical --round 1 --scheduled-on 2026-10-29
+#   shimmer records add <collection> --application google-swe-ng --kind technical --round 1 --scheduled-at "2026-10-29 14:00"
 #   shimmer records complete <collection>/<id> --outcome passed      the round happened
 #   shimmer records list <collection> --application google-swe-ng --sort round
-#   shimmer records list <collection> --filter "scheduled_on>=2026-10-05" --sort scheduled_on
+#   shimmer records list <collection> --filter "scheduled_at>=today" --sort scheduled_at   what's coming up
 #   shimmer records list <collection> --filter "thank_you_sent!=true"     who you still owe a note
 #
 # Questions worth practising go in an interview-questions collection too, with asked_in set to
@@ -19,7 +19,7 @@ title = "{application}: {kind}"
 # Completing a round means it happened: it stamps today's date in done_on.
 stamp_on_complete = "done_on"
 repeat_complete = "refuse"
-related = ["job-applications", "interview-questions"]
+related = ["job-applications", "interview-questions", "stories", "offers"]
 
 [[field]]
 name = "application"     # the id of the job in your job-applications collection
@@ -37,8 +37,8 @@ name = "round"
 type = "int"
 
 [[field]]
-name = "scheduled_on"
-type = "date"
+name = "scheduled_at"    # "2026-10-29 14:00" in your timezone, or just the day
+type = "datetime"
 role = "deadline"
 
 [[field]]
