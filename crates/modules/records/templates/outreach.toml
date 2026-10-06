@@ -1,0 +1,113 @@
+# Outreach: one record per person you reach out to, for referrals, advice and leads.
+# Created from Shimmer's outreach template. It's your file now: edit it freely.
+#
+# Private information: names, emails and profiles of other people are plain text in your Shimmer
+# folder, which is meant to be copyable and committable to git; if you sync it to a git repo,
+# keep it private.
+#
+# How it works:
+#   shimmer records add <collection> --name "Priya Shah" --company Shopify --relation engineer \
+#       --goal referral --channel career-fair --event fall-career-fair-2026
+#   shimmer records complete <collection>/<id> --follow-up-on 2026-10-29
+#                                       reached out (again): stamps last_contacted_on; every follow-up counts
+#   shimmer records list <collection> --filter "follow_up_on<=2026-10-29" --sort follow_up_on   who to nudge
+#   shimmer records list <collection> --event fall-career-fair-2026                         everyone you met there
+
+[collection]
+id = "outreach"
+label = "Outreach"
+description = "People you reach out to for referrals and advice: who, why, when, and what happened"
+title = "{name}"
+# Completing someone means "I reached out (again)": it stamps last_contacted_on. Not yet = todo.
+stamp_on_complete = "last_contacted_on"
+# Every follow-up is another contact, and counts on the heatmap.
+repeat_complete = "restamp"
+related = ["networking-events", "job-applications"]
+
+[[field]]
+name = "name"
+type = "string"
+required = true
+
+[[field]]
+name = "company"
+type = "string"
+
+[[field]]
+name = "role"            # their title, e.g. "Senior SWE", "University Recruiter"
+type = "string"
+
+[[field]]
+name = "relation"
+type = "enum"
+values = ["recruiter", "engineer", "hiring-manager", "alumni", "friend", "professor", "mentor", "other"]
+
+[[field]]
+name = "goal"            # why you're reaching out
+type = "enum"
+values = ["referral", "coffee-chat", "advice", "job-lead", "mentorship", "other"]
+
+[[field]]
+name = "channel"
+type = "enum"
+values = ["linkedin", "email", "in-person", "career-fair", "discord", "phone", "other"]
+
+[[field]]
+name = "profile_url"     # their LinkedIn or similar; the same person can't be added twice
+type = "string"
+role = "url"
+unique = true
+
+[[field]]
+name = "email"
+type = "string"
+
+[[field]]
+name = "how_met"         # e.g. "Sara's teammate", "cold message"
+type = "string"
+
+[[field]]
+name = "event"           # the id of the networking event where you met
+type = "string"
+
+[[field]]
+name = "for_job"         # the id of the job application it's about, if any
+type = "string"
+
+[[field]]
+name = "stage"           # what happened after you reached out; empty = not contacted yet
+type = "enum"
+values = ["no-reply", "replied", "chatted", "referred", "declined", "ghosted"]
+
+[[field]]
+name = "first_contacted_on"
+type = "date"
+
+[[field]]
+name = "last_contacted_on" # stamped by records complete
+type = "date"
+
+[[field]]
+name = "follow_up_on"    # when to nudge them; the calendar can remind you
+type = "date"
+role = "deadline"
+
+[[field]]
+name = "replied_on"
+type = "date"
+
+[[field]]
+name = "referral_for"    # which job they referred you to, if they did
+type = "string"
+
+[[field]]
+name = "message"         # what you sent, or which message template
+type = "string"
+
+[[field]]
+name = "notes"
+type = "string"
+
+[[view]]
+kind = "heatmap"         # your outreach streak
+source = "last_contacted_on"

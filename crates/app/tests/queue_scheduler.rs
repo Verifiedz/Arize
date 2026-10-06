@@ -46,7 +46,7 @@ fn task_id(activate_output: &str) -> String {
 
 #[test]
 fn bare_words_show_help() {
-    let home = Home::new();
+    let home = Home::with_leetcode();
     assert!(ok(&home, &["queue"]).starts_with("usage: shimmer queue <command>"));
     assert!(ok(&home, &["scheduler", "--help"]).contains("--catch-up says what happens"));
     let help = ok(&home, &["--help"]);
@@ -55,7 +55,7 @@ fn bare_words_show_help() {
 
 #[test]
 fn an_idle_queue_says_so_and_names_its_lanes() {
-    let home = Home::new();
+    let home = Home::with_leetcode();
     let out = ok(&home, &["queue", "list"]);
     assert!(out.starts_with("nothing queued or running\nlanes: "), "{out}");
     assert!(out.contains("workspaces (1 at a time)") && out.contains("default (4 at a time)"), "{out}");
@@ -63,7 +63,7 @@ fn an_idle_queue_says_so_and_names_its_lanes() {
 
 #[test]
 fn real_launches_wait_in_the_queue_and_can_be_moved_and_cancelled() {
-    let home = Home::new();
+    let home = Home::with_leetcode();
     ok(&home, &["ping"]);
     for id in ["a", "b", "c"] {
         slow_workspace(&home, id);
@@ -108,7 +108,7 @@ fn real_launches_wait_in_the_queue_and_can_be_moved_and_cancelled() {
 
 #[test]
 fn a_trigger_fires_and_can_be_paused_resumed_and_removed() {
-    let home = Home::new();
+    let home = Home::with_leetcode();
     let out = ok(
         &home,
         &["scheduler", "add", "records.list", r#"{"collection":"leetcode"}"#, "--every", "1s", "--catch-up", "skip"],
@@ -142,7 +142,7 @@ fn a_trigger_fires_and_can_be_paused_resumed_and_removed() {
 
 #[test]
 fn scheduler_mistakes_are_caught_before_or_by_the_daemon() {
-    let home = Home::new();
+    let home = Home::with_leetcode();
     let o = home.shimmer(&["scheduler", "add", "records.list", "--every", "1d"]);
     assert_eq!(o.status.code(), Some(2), "missing --catch-up is a usage error");
     assert!(stderr(&o).contains("needs --catch-up: skip (drop missed runs)"), "{}", stderr(&o));
@@ -158,7 +158,7 @@ fn scheduler_mistakes_are_caught_before_or_by_the_daemon() {
 
 #[test]
 fn a_pack_can_alias_the_new_commands() {
-    let home = Home::new();
+    let home = Home::with_leetcode();
     let dir = home.dir.path().join("home/packs/mine");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(

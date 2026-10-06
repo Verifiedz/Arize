@@ -1,8 +1,12 @@
-# Built in. Written to $SHIMMER_HOME/data/records/collections/ on first start; edit it freely there.
+# Test fixture: the LeetCode collection Shimmer used to create on first start (before ADR 0023).
+# Tests write it in themselves; nothing in the product reads this file.
 
 [collection]
 id = "leetcode"
 label = "LeetCode"
+description = "Problems by difficulty, with a heatmap of the days you solved them"
+# How a problem is named in reminders and notifications (ADR 0017).
+title = "{title}"
 # `records.complete` sets this field to today's date.
 stamp_on_complete = "last_solved"
 
