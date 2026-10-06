@@ -3,12 +3,14 @@
 //! Core services live here: module registry, event bus, queue, IPC server, indexer.
 //! Modules are async tasks inside this process, reached only through `Ctx`.
 //!
-//! Not built yet: the HTTP gateway; `ctx.http` fails closed.
+//! The real HTTP gateway (`http_backend`, ADR 0027) exists but is not wired into `Ctx` yet;
+//! `ctx.http` still fails closed until the `"network"` capability gate lands.
 
 mod backend;
 mod bus;
 mod config;
 mod core;
+mod http_backend;
 mod indexer;
 mod ipc;
 // Linux/macOS only for now (ADR 0010 §7); the module itself documents the scoping.
