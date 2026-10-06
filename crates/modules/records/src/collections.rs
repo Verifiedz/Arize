@@ -14,7 +14,7 @@ use crate::schema::Collection;
 pub fn problems(c: &Collection, item: &Item) -> Vec<String> {
     let mut out = Vec::new();
     for f in c.fields.iter().filter(|f| f.required) {
-        if item.fields.get(&f.name).is_none_or(Value::is_null) {
+        if item.fields.get(&f.name).is_none_or(crate::schema::is_unset) {
             out.push(format!("required field '{}' is missing", f.name));
         }
     }
@@ -64,6 +64,44 @@ pub fn rename_field(file_id: &str, text: &str, from: &str, to: &str) -> Result<S
     Ok(doc.to_string())
 }
 
+/// The collection file with every ref field pointing into `from` pointing into `to` instead
+/// (`collection = "…"`, ADR 0024 §3), comments kept, and how many fields changed.
+pub fn retarget_refs(file_id: &str, text: &str, from: &str, to: &str) -> Result<(String, usize)> {
+    let mut doc = parse(file_id, text)?;
+    let mut changed = 0;
+    if let Some(fields) = doc.get_mut("field").and_then(toml_edit::Item::as_array_of_tables_mut) {
+        for t in fields.iter_mut() {
+            if let Some(slot) = t.get_mut("collection") {
+                if slot.as_str() == Some(from) {
+                    set_str(slot, to);
+                    changed += 1;
+                }
+            }
+        }
+    }
+    Ok((doc.to_string(), changed))
+}
+
+/// Point `item`'s references to record `from` in `target` at `to` instead (ADR 0024 §3). How
+/// many values changed.
+pub fn repoint(c: &Collection, item: &mut Item, target: &str, from: &str, to: &str) -> usize {
+    let mut changed = 0;
+    for f in c.ref_fields_to(target) {
+        let slots: Vec<&mut Value> = match item.fields.get_mut(&f.name) {
+            Some(Value::Array(items)) => items.iter_mut().collect(),
+            Some(value) => vec![value],
+            None => continue,
+        };
+        for slot in slots {
+            if slot.as_str() == Some(from) {
+                *slot = Value::String(to.to_owned());
+                changed += 1;
+            }
+        }
+    }
+    changed
+}
+
 /// The collection file with `[collection] id` set to `new_id`, comments kept (ADR 0021 §4).
 pub fn set_id(file_id: &str, text: &str, new_id: &str) -> Result<String> {
     let mut doc = parse(file_id, text)?;
@@ -73,6 +111,18 @@ pub fn set_id(file_id: &str, text: &str, new_id: &str) -> Result<String> {
         .and_then(|h| h.get_mut("id"))
         .ok_or_else(|| Error::invalid_params(format!("collection file '{file_id}.toml' has no [collection] id")))?;
     set_str(slot, new_id);
+    Ok(doc.to_string())
+}
+
+/// The collection file with `[collection] label` set, comments kept (ADR 0022 §2).
+pub fn set_label(file_id: &str, text: &str, label: &str) -> Result<String> {
+    let mut doc = parse(file_id, text)?;
+    let slot = doc
+        .get_mut("collection")
+        .and_then(toml_edit::Item::as_table_like_mut)
+        .and_then(|h| h.get_mut("label"))
+        .ok_or_else(|| Error::invalid_params(format!("collection file '{file_id}.toml' has no [collection] label")))?;
+    set_str(slot, label);
     Ok(doc.to_string())
 }
 
