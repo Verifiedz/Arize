@@ -33,14 +33,17 @@ pub async fn run(
         };
         let (index, store) = (index.clone(), store.clone());
         let work = match event {
-            Ok(e) => tokio::task::spawn_blocking(move || lock(&index).apply(&e)),
+            // `_recovering`: if the file itself has become corrupt since `open` last checked
+            // it, a plain `apply`/`catch_up` would fail against it forever (#10) — these
+            // recover in place and replay the log instead.
+            Ok(e) => tokio::task::spawn_blocking(move || lock(&index).apply_recovering(&e, &store)),
             // We missed events; the log has them all.
-            Err(RecvError::Lagged(_)) => tokio::task::spawn_blocking(move || lock(&index).catch_up(&store)),
+            Err(RecvError::Lagged(_)) => tokio::task::spawn_blocking(move || lock(&index).catch_up_recovering(&store)),
             Err(RecvError::Closed) => return,
         };
         match work.await {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => tracing::error!(error = %e, "index update failed; will heal on next catch-up"),
+            Ok(Err(e)) => tracing::error!(error = %e, "index update failed"),
             Err(e) => tracing::error!(error = %e, "index task panicked"),
         }
     }
