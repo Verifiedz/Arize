@@ -14,7 +14,7 @@ fn call(home: &Home, op: &str, params: Value) -> Value {
 
 #[test]
 fn a_completed_item_survives_a_daemon_restart() {
-    let home = Home::new();
+    let home = Home::with_leetcode();
 
     // The daemon registers records, which seeds the LeetCode collection.
     let m = call(&home, "core.manifest", json!({}));
@@ -44,7 +44,7 @@ fn a_completed_item_survives_a_daemon_restart() {
 
 #[test]
 fn the_records_commands_track_a_problem_across_a_restart() {
-    let home = Home::new();
+    let home = Home::with_leetcode();
     let ok = |args: &[&str]| {
         let o = home.shimmer(args);
         assert!(o.status.success(), "shimmer {args:?} failed: {}", stderr(&o));
@@ -90,7 +90,7 @@ fn the_records_commands_track_a_problem_across_a_restart() {
 /// because the CLI fetches `records.collections` first and that op failed as a whole.
 #[test]
 fn a_broken_collection_file_breaks_only_itself() {
-    let home = Home::new();
+    let home = Home::with_leetcode();
     let ok = |args: &[&str]| {
         let o = home.shimmer(args);
         assert!(o.status.success(), "shimmer {args:?} failed: {}", stderr(&o));
