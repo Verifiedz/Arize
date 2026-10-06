@@ -1,6 +1,6 @@
 # 0008. Records: where collections live, the file layout, and the ops
 
-Status: proposed (M1) · Raised by Dev B · Needs sign-off: Dev A (changes a path in CLAUDE.md §7) ·
+Status: accepted (M1, #2) · Raised by Dev B · Signed off: Dev A (changes a path in CLAUDE.md §7) ·
 Dev C notified (item shape on the wire)
 
 > **Renamed since:** `swe`, `swe-*` and `SWE_*` in this ADR are now `shimmer`, `shimmer-*` and
@@ -60,16 +60,18 @@ schema does not know are passed through.
   `limit` defaults to 50 (max 500), `total` counts every match before paging.
 * Completing a `done` item again re-stamps it and emits another `records.item.completed`: solving a
   problem twice is two solves, which is what a heatmap wants.
-* "Today" is the UTC date from `ctx.clock`, the same UTC-only limitation as the scheduler (ADR 0004).
+* "Today" is the local calendar date from `ctx.clock` and `ctx.local_tz` (ADR 0009). It
+  was the UTC date when this ADR was written.
 
 **Events**, each committed in the same store transaction as its file write (§7.1):
 `records.item.created` / `.updated` / `.completed` carry `{collection, id, item}` with the full wire
 item, so the index can be rebuilt from the log alone (M4); `records.item.removed` carries
 `{collection, id}`; `records.collection.created` carries `{collection}`.
 
-**Seeding.** On `init`, if no collection exists, the module writes the built-in LeetCode collection,
-so a fresh install has something to track. Deleting every collection brings it back on the next start;
-deleting only LeetCode does not.
+**Seeding.** *Superseded by ADR 0023: nothing is seeded any more. A fresh install has no
+collections, and LeetCode is a template like the others.* What this ADR originally decided, kept
+for the record: on `init`, if no collection existed, the module wrote the built-in LeetCode
+collection, so a fresh install had something to track.
 
 **Concurrency.** Inline requests run concurrently, so the module serialises its own read-check-write
 sequences with a lock. Two `records.add` calls for the same id cannot both succeed.
