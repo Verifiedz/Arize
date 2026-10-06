@@ -71,8 +71,8 @@ name = "received_on"
 type = "date"
 
 [[field]]
-name = "decision_deadline" # when you must answer; the calendar can remind you
-type = "date"
+name = "decision_deadline" # when you must answer ("2026-11-01 17:00", or just the day); the calendar can remind you
+type = "datetime"
 role = "deadline"
 
 [[field]]

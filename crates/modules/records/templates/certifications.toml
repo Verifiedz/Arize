@@ -3,7 +3,7 @@
 #
 # How it works:
 #   shimmer records add <collection> --name "AWS Solutions Architect – Associate" --provider AWS \
-#       --exam-code SAA-C03 --level associate --area cloud --stage studying --exam-date 2026-12-10
+#       --exam-code SAA-C03 --level associate --area cloud --stage studying --exam-at "2026-12-10 09:00"
 #   shimmer records complete <collection>/<id> --stage passed --score 812 --expires-on 2029-12-10
 #                                   earned: stamps earned_on; completing again later is a renewal
 #   shimmer records list <collection> --filter "expires_on<=2027-06-01" --sort expires_on     renewing soon
@@ -47,8 +47,8 @@ type = "enum"
 values = ["planning", "studying", "exam-scheduled", "failed", "passed", "expired"]
 
 [[field]]
-name = "exam_date"       # the calendar can remind you before the exam
-type = "date"
+name = "exam_at"         # "2026-12-10 09:00" in your timezone, or just the day; the calendar can remind you
+type = "datetime"
 role = "deadline"
 
 [[field]]

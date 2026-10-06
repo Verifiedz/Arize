@@ -7,7 +7,8 @@
 # How it works:
 #   shimmer records add <collection> --name "Billing migration crunch" --primary-theme ownership \
 #       --themes "deadline, teamwork" --context "Acme internship" --impact "shipped 2 days before launch"
-#   shimmer records list <collection> --filter "primary_theme=conflict"     a conflict story for tomorrow
+#   shimmer records list <collection> --or "primary_theme=conflict" --or "themes has conflict"
+#                                                                            a conflict story for tomorrow
 #   shimmer records list <collection> --filter "told_to~Amazon"            what you've already told Amazon
 #   shimmer records complete <collection>/<id> --confidence solid           practised it today; every practice counts
 
@@ -33,8 +34,10 @@ type = "enum"
 values = ["leadership", "ownership", "conflict", "failure", "teamwork", "ambiguity", "deadline", "initiative", "mentoring", "disagreement", "communication", "prioritization", "technical-challenge", "feedback", "customer-focus", "learning", "other"]
 
 [[field]]
-name = "themes"          # everything else it shows, e.g. "teamwork, prioritization"
-type = "string"
+name = "themes"          # everything else it shows: --themes "teamwork, prioritization"
+type = "list"
+of = "enum"
+values = ["leadership", "ownership", "conflict", "failure", "teamwork", "ambiguity", "deadline", "initiative", "mentoring", "disagreement", "communication", "prioritization", "technical-challenge", "feedback", "customer-focus", "learning", "other"]
 
 [[field]]
 name = "context"         # where it happened: "Acme internship", "capstone project", or an employment id

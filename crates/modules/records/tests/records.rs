@@ -1375,7 +1375,7 @@ async fn a_certification_is_earned_then_renewed() {
     let (r, env) = setup().await;
     call(&r, &env, "records.create_collection", json!({"id": "certs", "template": "certifications"})).await.unwrap();
     call(&r, &env, "records.add", json!({"collection": "certs", "fields": {
-        "name": "AWS Solutions Architect - Associate", "provider": "AWS", "stage": "studying", "exam_date": "2026-12-10"}}))
+        "name": "AWS Solutions Architect - Associate", "provider": "AWS", "stage": "studying", "exam_at": "2026-12-10 09:00"}}))
         .await
         .unwrap();
     let id = "aws-solutions-architect-associate";
@@ -1385,7 +1385,8 @@ async fn a_certification_is_earned_then_renewed() {
     assert_eq!(earned["status"], "done");
     assert_eq!(
         env.backend.events().pop().unwrap().payload["deadlines"],
-        json!({"exam_date": "2026-12-10", "expires_on": "2029-12-10"})
+        json!({"exam_at": "2026-12-10T09:00:00Z", "expires_on": "2029-12-10"}),
+        "a local time is stored as UTC (the test timezone is UTC)"
     );
     // Renewing three years on is another completion, with a new expiry.
     env.clock.advance(Duration::from_secs(3 * 365 * 86_400));
@@ -1406,15 +1407,17 @@ async fn an_event_is_attended_then_followed_up() {
         &env,
         "records.add",
         json!({"collection": "events", "fields": {
-        "name": "Fall Career Fair 2026", "kind": "career-fair", "event_date": "2026-10-22",
-        "registration_deadline": "2026-10-15", "rsvp": "registered"}}),
+        "name": "Fall Career Fair 2026", "kind": "career-fair", "starts_at": "2026-10-22 18:00",
+        "companies": ["Shopify", "RBC"], "registration_deadline": "2026-10-15", "rsvp": "registered"}}),
     )
     .await
     .unwrap();
     assert_eq!(
         env.backend.events().pop().unwrap().payload["deadlines"],
-        json!({"event_date": "2026-10-22", "registration_deadline": "2026-10-15"})
+        json!({"starts_at": "2026-10-22T18:00:00Z", "registration_deadline": "2026-10-15"})
     );
+    let shopify = json!({"collection": "events", "filter": {"companies": {"has": "shopify"}}});
+    assert_eq!(call(&r, &env, "records.list", shopify).await.unwrap()["total"], 1);
     let attended = call(
         &r,
         &env,
@@ -1506,4 +1509,306 @@ async fn documents_warn_before_they_expire() {
     .await
     .unwrap();
     assert_eq!((soon["total"].clone(), soon["items"][0]["id"].clone()), (json!(1), json!("study-permit")));
+}
+
+fn add_rounds_collection(env: &TestEnv) {
+    env.ctx
+        .store
+        .write(
+            "collections/rounds.toml",
+            r#"
+            [collection]
+            id = "rounds"
+            label = "Rounds"
+            stamp_on_complete = "done_at"
+
+            [[field]]
+            name = "at"
+            type = "datetime"
+            role = "deadline"
+
+            [[field]]
+            name = "done_at"
+            type = "datetime"
+            "#,
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn datetimes_are_read_in_the_local_timezone_and_stored_as_utc() {
+    // ADR 0024 §1.
+    let (r, mut env) = setup().await;
+    add_rounds_collection(&env);
+    env.ctx.local_tz = shimmer_core::LocalTimezone::parse("America/Los_Angeles").unwrap();
+    let add = |id: &str, at: &str| json!({"collection": "rounds", "id": id, "fields": {"at": at}});
+
+    let item = call(&r, &env, "records.add", add("oa", "2026-10-20 23:59")).await.unwrap();
+    assert_eq!(item["at"], "2026-10-21T06:59:00Z", "PDT is UTC-7");
+    assert!(file(&env, "items/rounds/oa.toml").unwrap().contains("at = \"2026-10-21T06:59:00Z\""));
+    let ev = env.backend.events().pop().unwrap();
+    assert_eq!(ev.payload["deadlines"], json!({"at": "2026-10-21T06:59:00Z"}));
+
+    call(&r, &env, "records.add", add("screen", "2026-10-20")).await.unwrap();
+    call(&r, &env, "records.add", add("onsite", "2026-10-20T09:00:00-04:00")).await.unwrap();
+    let e = call(&r, &env, "records.add", add("bad", "tomorrow at 5")).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::InvalidParams);
+    let e = call(&r, &env, "records.add", add("gap", "2026-03-08 02:30")).await.unwrap_err();
+    assert!(e.message.contains("doesn't exist"), "{}", e.message);
+
+    // A plain date is the start of its local day; the sort uses instants, not text.
+    let list = call(&r, &env, "records.list", json!({"collection": "rounds", "sort": ["at"]})).await.unwrap();
+    let ids: Vec<_> = list["items"].as_array().unwrap().iter().map(|i| i["id"].clone()).collect();
+    assert_eq!(ids, [json!("screen"), json!("onsite"), json!("oa")]);
+    let filter = json!({"collection": "rounds", "filter": {"at": {"gt": "2026-10-20 12:00"}}});
+    let list = call(&r, &env, "records.list", filter).await.unwrap();
+    assert_eq!(list["items"].as_array().unwrap().len(), 1, "only the OA is after local noon");
+
+    let item = call(&r, &env, "records.complete", json!({"collection": "rounds", "id": "oa"})).await.unwrap();
+    assert_eq!(item["done_at"], json!(env.clock.now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)));
+}
+
+fn add_projects_collection(env: &TestEnv) {
+    env.ctx
+        .store
+        .write(
+            "collections/projects.toml",
+            r#"
+            [collection]
+            id = "projects"
+            label = "Projects"
+            title = "{name}: {stack}"
+
+            [[field]]
+            name = "name"
+            type = "string"
+            required = true
+
+            [[field]]
+            name = "stack"
+            type = "list"
+            of = "string"
+            "#,
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn list_fields_are_arrays_changed_whole_or_by_item() {
+    // ADR 0024 §2.
+    let (r, env) = setup().await;
+    add_projects_collection(&env);
+    let add = json!({"collection": "projects", "id": "shimmer", "fields": {"name": "Shimmer", "stack": ["Rust", " rust ", "TOML"]}});
+    let item = call(&r, &env, "records.add", add).await.unwrap();
+    assert_eq!(item["stack"], json!(["Rust", "TOML"]), "tidied: trimmed, repeats dropped");
+    assert!(file(&env, "items/projects/shimmer.toml").unwrap().contains("stack = [\"Rust\", \"TOML\"]"));
+    assert_eq!(env.backend.events().pop().unwrap().payload["title"], "Shimmer: Rust, TOML");
+
+    let target = |fields: Value| json!({"collection": "projects", "id": "shimmer", "fields": fields});
+    let item = call(&r, &env, "records.update", target(json!({"stack": {"add": ["SQLite"], "remove": ["toml"]}})))
+        .await
+        .unwrap();
+    assert_eq!(item["stack"], json!(["Rust", "SQLite"]));
+    assert_eq!(env.backend.events().pop().unwrap().payload["changed"], json!(["stack"]));
+
+    let item = call(&r, &env, "records.update", target(json!({"stack": []}))).await.unwrap();
+    assert_eq!(item["stack"], Value::Null, "an empty list is unset");
+    assert!(!file(&env, "items/projects/shimmer.toml").unwrap().contains("stack"));
+
+    let e = call(&r, &env, "records.update", target(json!({"stack": "Rust"}))).await.unwrap_err();
+    assert!(e.message.contains("must be a list"), "{}", e.message);
+    let e = call(&r, &env, "records.update", target(json!({"stack": {"put": ["x"]}}))).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::InvalidParams);
+
+    call(&r, &env, "records.update", target(json!({"stack": ["Go"]}))).await.unwrap();
+    let list = json!({"collection": "projects", "filter": {"stack": {"has": "go"}}});
+    let out = call(&r, &env, "records.list", list).await.unwrap();
+    assert_eq!(out["total"], 1);
+    assert_eq!(out["titles"], json!({"shimmer": "Shimmer: Go"}), "list says what to call each record");
+}
+
+fn add_linked_collections(env: &TestEnv) {
+    env.ctx
+        .store
+        .write(
+            "collections/jobs.toml",
+            "[collection]\nid = \"jobs\"\nlabel = \"Jobs\"\n[[field]]\nname = \"company\"\ntype = \"string\"\n",
+        )
+        .unwrap();
+    env.ctx
+        .store
+        .write(
+            "collections/rounds.toml",
+            r#"
+            [collection]
+            id = "rounds"
+            label = "Rounds"
+            title = "{application}: {kind}"
+
+            [[field]]
+            name = "application"
+            type = "ref"
+            collection = "jobs"   # the job this round is for
+
+            [[field]]
+            name = "kind"
+            type = "string"
+
+            [[field]]
+            name = "also_for"
+            type = "list"
+            of = "ref"
+            collection = "jobs"
+            "#,
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn references_are_checked_followed_on_rename_and_guard_removal() {
+    // ADR 0024 §3.
+    let (r, env) = setup().await;
+    add_linked_collections(&env);
+    let add = |c: &str, id: &str, fields: Value| json!({"collection": c, "id": id, "fields": fields});
+    call(&r, &env, "records.add", add("jobs", "acme", json!({"company": "Acme"}))).await.unwrap();
+    call(&r, &env, "records.add", add("jobs", "globex", json!({"company": "Globex"}))).await.unwrap();
+
+    let e = call(&r, &env, "records.add", add("rounds", "r0", json!({"application": "nope"}))).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::InvalidParams);
+    assert!(e.message.contains("no record 'nope' in 'jobs'"), "{}", e.message);
+    let e =
+        call(&r, &env, "records.add", add("rounds", "r0", json!({"also_for": ["acme", "nope"]}))).await.unwrap_err();
+    assert!(e.message.contains("'nope'"), "{}", e.message);
+
+    let round = add("rounds", "r1", json!({"application": "acme", "kind": "oa", "also_for": ["globex", "acme"]}));
+    call(&r, &env, "records.add", round).await.unwrap();
+    let list = json!({"collection": "rounds", "filter": {"application": "acme", "also_for": {"has": "globex"}}});
+    assert_eq!(call(&r, &env, "records.list", list).await.unwrap()["total"], 1);
+
+    // Removing a job a round points at is refused, unless forced.
+    let e = call(&r, &env, "records.remove", json!({"collection": "jobs", "id": "globex"})).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::Conflict);
+    assert!(e.message.contains("rounds/r1"), "{}", e.message);
+    assert_eq!(e.detail.unwrap()["referred_by"], json!(["rounds/r1"]));
+
+    // Renaming a job rewrites every reference in the same transaction.
+    let rename = json!({"collection": "jobs", "id": "acme", "new_id": "acme-corp"});
+    call(&r, &env, "records.rename", rename).await.unwrap();
+    assert_eq!(env.backend.events().pop().unwrap().payload["references"], 2);
+    let round = call(&r, &env, "records.get", json!({"collection": "rounds", "id": "r1"})).await.unwrap();
+    assert_eq!(round["application"], "acme-corp");
+    assert_eq!(round["also_for"], json!(["globex", "acme-corp"]));
+
+    // Renaming the collection rewrites `collection = …`, comments kept.
+    call(&r, &env, "records.rename_collection", json!({"id": "jobs", "new_id": "applications"})).await.unwrap();
+    let text = file(&env, "collections/rounds.toml").unwrap();
+    assert!(text.contains("collection = \"applications\"   # the job this round is for"), "{text}");
+    let check = call(&r, &env, "records.check", json!({"collection": "rounds"})).await.unwrap();
+    assert_eq!(check["problems"], json!([]));
+
+    // Forced, the reference is left dangling and `check` reports it.
+    let force = json!({"collection": "applications", "id": "globex", "force": true});
+    call(&r, &env, "records.remove", force).await.unwrap();
+    let check = call(&r, &env, "records.check", json!({"collection": "rounds"})).await.unwrap();
+    let problems = check["problems"][0]["problems"].to_string();
+    assert!(problems.contains("no record 'globex' in 'applications'"), "{problems}");
+}
+
+#[tokio::test]
+async fn import_checks_every_row_and_writes_all_or_nothing() {
+    // ADR 0024 §4.
+    let (r, env) = setup().await;
+    add_postings_collection(&env);
+    add_posting(&r, &env, "old", json!({"company": "Old", "url": "https://old"})).await.unwrap();
+    let rows = json!([
+        {"company": "Acme", "position": "SWE"},
+        {"id": "globex", "company": "Globex", "status": "done", "applied_on": "2026-10-01"},
+        {"company": "Again", "url": "https://old"},
+        {"id": "old", "company": "Old"},
+        {"company": "Acme", "position": "SWE", "stage": ""},
+        {"position": "no company"}
+    ]);
+    let import = |extra: Value| {
+        let mut p = json!({"collection": "postings", "rows": rows.clone()});
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        p
+    };
+    let before = env.backend.events().len();
+
+    // One invalid row: nothing is written, and the report says what would happen.
+    let out = call(&r, &env, "records.import", import(json!({}))).await.unwrap();
+    assert_eq!(out["added"], json!(["acme-swe", "globex", "acme-swe-2"]));
+    assert_eq!(out["skipped"].as_array().unwrap().len(), 2, "{out}");
+    assert_eq!(out["skipped"][0]["row"], 3);
+    assert_eq!(out["invalid"], json!([{"row": 6, "error": "field 'company' is required"}]));
+    assert_eq!(out["written"], false);
+    assert_eq!(env.backend.events().len(), before);
+
+    let out = call(&r, &env, "records.import", import(json!({"skip_invalid": true, "dry_run": true}))).await.unwrap();
+    assert_eq!(out["written"], false, "a dry run never writes");
+
+    let out = call(&r, &env, "records.import", import(json!({"skip_invalid": true}))).await.unwrap();
+    assert_eq!(out["written"], true);
+    assert_eq!(topics(&env)[before..], ["records.item.created"; 3]);
+    let globex = call(&r, &env, "records.get", json!({"collection": "postings", "id": "globex"})).await.unwrap();
+    assert_eq!((globex["status"].clone(), globex["applied_on"].clone()), (json!("done"), json!("2026-10-01")));
+
+    // Importing the same rows again adds nothing new by id.
+    let again = json!({"collection": "postings", "rows": [{"id": "globex", "company": "Globex"}]});
+    assert_eq!(call(&r, &env, "records.import", again).await.unwrap()["added"], json!([]));
+    let too_many = json!({"collection": "postings", "rows": vec![json!({"company": "x"}); 5001]});
+    assert_eq!(call(&r, &env, "records.import", too_many).await.unwrap_err().code, ErrorCode::InvalidParams);
+}
+
+#[tokio::test]
+async fn purge_deletes_trashed_records_only_after_confirmation() {
+    // ADR 0024 §5.
+    let (r, env) = setup().await;
+    for id in ["a", "b", "c"] {
+        call(&r, &env, "records.add", json!({"collection": "leetcode", "id": id, "fields": {"title": id}}))
+            .await
+            .unwrap();
+        call(&r, &env, "records.remove", json!({"collection": "leetcode", "id": id})).await.unwrap();
+    }
+    let one = json!({"collection": "leetcode", "id": "a"});
+    let e = call(&r, &env, "records.purge", one.clone()).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::ConfirmationRequired);
+    assert_eq!(e.detail, Some(json!({"records": 1})));
+    assert!(file(&env, "trash/leetcode/a.toml").is_some(), "nothing deleted yet");
+
+    let mut confirmed = one.clone();
+    confirmed["confirm"] = json!({"records": 1});
+    assert_eq!(call(&r, &env, "records.purge", confirmed).await.unwrap(), json!({"purged": 1}));
+    assert!(file(&env, "trash/leetcode/a.toml").is_none());
+    let ev = env.backend.events().pop().unwrap();
+    assert_eq!(
+        (ev.topic.as_str(), ev.payload),
+        ("records.trash.purged", json!({"collection": "leetcode", "records": 1, "id": "a"}))
+    );
+    assert_eq!(call(&r, &env, "records.purge", one).await.unwrap_err().code, ErrorCode::NotFound);
+
+    // The whole trash: a stale count is asked again, never guessed.
+    let all = json!({"collection": "leetcode", "confirm": {"records": 3}});
+    assert_eq!(call(&r, &env, "records.purge", all).await.unwrap_err().code, ErrorCode::ConfirmationRequired);
+    let all = json!({"collection": "leetcode", "confirm": {"records": 2}});
+    assert_eq!(call(&r, &env, "records.purge", all).await.unwrap(), json!({"purged": 2}));
+    let trash = call(&r, &env, "records.trash", json!({"collection": "leetcode"})).await.unwrap();
+    assert_eq!(trash["items"], json!([]));
+    assert_eq!(call(&r, &env, "records.purge", json!({"collection": "leetcode"})).await.unwrap(), json!({"purged": 0}));
+}
+
+#[tokio::test]
+async fn a_file_that_cant_be_read_is_reported_and_hides_nothing() {
+    // Dev A's review of #88: a hand-edit that leaves invalid UTF-8 must be one record's problem
+    // in records.check (and one skipped file in records.list), not a failure of the whole op.
+    let (r, env) = setup().await;
+    add_two_sum(&r, &env).await;
+    env.ctx.store.write("items/leetcode/garbled.toml", vec![0xff, 0xfe, b'x']).unwrap();
+    let check = call(&r, &env, "records.check", json!({"collection": "leetcode"})).await.unwrap();
+    assert_eq!(check["checked"], 2);
+    assert_eq!(check["problems"][0]["id"], "garbled");
+    assert!(check["problems"][0]["problems"][0].as_str().unwrap().contains("can't be read"), "{check}");
+    let list = call(&r, &env, "records.list", json!({"collection": "leetcode"})).await.unwrap();
+    assert_eq!(list["total"], 1);
+    assert!(list["skipped"][0].as_str().unwrap().contains("garbled.toml"), "{list}");
 }

@@ -10,6 +10,7 @@ use serde_json::{json, Map, Value};
 use shimmer_core::{Error, ErrorCode, Result};
 
 use crate::client::Client;
+use crate::csv;
 use crate::render::{self, cell, table};
 use crate::workspaces::Prompt;
 
@@ -25,20 +26,33 @@ commands:
                                        without an ID, one is made from its title (two-sum)
   list COLLECTION [--FIELD VALUE]…     list records; each --FIELD filters on an exact value
        [--status todo|done] [--limit N] [--offset N]
-       [--filter \"FIELD OP VALUE\"]…        OP: = != < <= > >= ~ (contains); a|b|c after = is one-of
+       [--filter \"FIELD OP VALUE\"]…        OP: = != < <= > >= ~ (contains); a|b|c after = is one-of;
+                                           \"FIELD has VALUE\" for list fields
+       [--or \"FIELD OP VALUE\"]…            any one of these holds, e.g. --or stage=offer --or priority=dream
        [--has FIELD] [--missing FIELD]     has a value / has none
+                                           dates may be today, today+7, today-30
        [--search TEXT]                     text in the id or any text field
        [--sort FIELD]… [--sort -FIELD]     order, e.g. --sort oa_deadline --sort -applied_on
   get COLLECTION/ID                    show one record
   update COLLECTION/ID [--FIELD VALUE]… [--unset FIELD]…
+       [--add FIELD VALUE]… [--remove FIELD VALUE]…  change items of a list field
   complete COLLECTION/ID [--FIELD VALUE]… [--unset FIELD]…
                                        mark done and stamp the collection's date field;
                                        a value for the date field back-dates it
   reopen COLLECTION/ID [--clear-stamp] mark a done record todo again
   rename COLLECTION/ID NEW_ID          give a record a new id
-  remove COLLECTION/ID                 remove a record (it goes to the trash)
+  remove COLLECTION/ID [--force]       remove a record (it goes to the trash); --force even
+                                       if other records refer to it
   restore COLLECTION/ID                bring a removed record back
   trash COLLECTION                     list removed records you can restore
+  purge COLLECTION[/ID] [--yes]        permanently delete removed records (asks first)
+
+moving data:
+  import COLLECTION FILE               add records from a .csv (a header row of field names;
+       [--dry-run] [--skip-invalid]    list items split by ';') or .json (an array of objects);
+       [--yes]                         shows what it would do, then asks
+  export COLLECTION [--format csv|json] [list options]
+                                       write records to stdout; imports back unchanged
 
 changing a collection:
   check COLLECTION                     list records that don't fit the collection
@@ -85,21 +99,25 @@ pub enum RecordsCmd {
         id: String,
         set: Flags,
         unset: Vec<String>,
+        items: Vec<ItemEdit>,
     },
     Complete {
         collection: String,
         id: String,
         set: Flags,
         unset: Vec<String>,
+        items: Vec<ItemEdit>,
     },
     Reopen {
         collection: String,
         id: String,
         clear_stamp: bool,
     },
+    /// `force`: remove it even if other records refer to it (ADR 0024 §3).
     Remove {
         collection: String,
         id: String,
+        force: bool,
     },
     Restore {
         collection: String,
@@ -134,6 +152,41 @@ pub enum RecordsCmd {
     RestoreCollection {
         id: String,
     },
+    /// `id`: one trashed record; `None`: the whole trash (ADR 0024 §5).
+    Purge {
+        collection: String,
+        id: Option<String>,
+        yes: bool,
+    },
+    /// ADR 0024 §4: the CLI reads `file`; the daemon checks and writes.
+    Import {
+        collection: String,
+        file: String,
+        dry_run: bool,
+        skip_invalid: bool,
+        yes: bool,
+    },
+    Export {
+        collection: String,
+        format: Format,
+        filter: Flags,
+        refine: Refine,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Format {
+    Csv,
+    Json,
+}
+
+/// `--add FIELD VALUE` / `--remove FIELD VALUE`: change items of a list field without resending
+/// the rest (ADR 0024 §2). VALUE may hold several items, comma-separated.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ItemEdit {
+    pub add: bool,
+    pub field: String,
+    pub value: String,
 }
 
 /// What `records list` asks beyond exact `--FIELD VALUE` matches (ADR 0019).
@@ -146,6 +199,8 @@ pub struct Refine {
     pub search: Option<String>,
     /// `--sort FIELD` / `--sort -FIELD`, in order.
     pub sort: Vec<String>,
+    /// `--or "FIELD OP VALUE"`: a record matches if any of these holds (ADR 0024 §5).
+    pub or: Vec<String>,
 }
 
 // ---------------------------------------------------------------- parsing
@@ -160,9 +215,39 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
     if clear_stamp {
         rest.retain(|w| w != "--clear-stamp");
     }
-    let yes = sub == "remove-collection" && rest.iter().any(|w| w == "--yes");
+    // `--add` and `--remove` take two words, a field and a value, so they come out before `split`.
+    let mut items = Vec::new();
+    if sub == "update" || sub == "complete" {
+        let mut kept = Vec::new();
+        let mut words = rest.into_iter();
+        while let Some(word) = words.next() {
+            let add = match word.as_str() {
+                "--add" => true,
+                "--remove" => false,
+                _ => {
+                    kept.push(word);
+                    continue;
+                }
+            };
+            match (words.next(), words.next()) {
+                (Some(field), Some(value)) => items.push(ItemEdit { add, field, value }),
+                _ => return Err(format!("{word} needs a field and a value, e.g. {word} tech_stack rust")),
+            }
+        }
+        rest = kept;
+    }
+    let force = sub == "remove" && rest.iter().any(|w| w == "--force");
+    if force {
+        rest.retain(|w| w != "--force");
+    }
+    let yes = matches!(sub.as_str(), "remove-collection" | "import" | "purge") && rest.iter().any(|w| w == "--yes");
     if yes {
         rest.retain(|w| w != "--yes");
+    }
+    let dry_run = sub == "import" && rest.iter().any(|w| w == "--dry-run");
+    let skip_invalid = sub == "import" && rest.iter().any(|w| w == "--skip-invalid");
+    if sub == "import" {
+        rest.retain(|w| w != "--dry-run" && w != "--skip-invalid");
     }
     let (positional, flags) = split(rest)?;
     let no_flags = || match flags.first() {
@@ -196,12 +281,42 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
             let (collection, id) = target(&sub, target_words).map_err(|_| usage.to_owned())?;
             Ok(RecordsCmd::Rename { collection, id, new_id })
         }
-        "list" => {
-            let [collection]: [String; 1] =
-                positional.try_into().map_err(|_| "usage: shimmer records list COLLECTION [--FIELD VALUE]…")?;
+        "purge" => {
+            no_flags()?;
+            let (collection, id) = match positional.as_slice() {
+                [one] if !one.contains('/') => (one.clone(), None),
+                _ => target(&sub, positional)
+                    .map(|(c, id)| (c, Some(id)))
+                    .map_err(|_| "usage: shimmer records purge COLLECTION[/ID] [--yes]".to_owned())?,
+            };
+            Ok(RecordsCmd::Purge { collection, id, yes })
+        }
+        "import" => {
+            no_flags()?;
+            let usage = "usage: shimmer records import COLLECTION FILE [--dry-run] [--skip-invalid] [--yes]";
+            let [collection, file]: [String; 2] = positional.try_into().map_err(|_| usage)?;
+            Ok(RecordsCmd::Import { collection, file, dry_run, skip_invalid, yes })
+        }
+        "list" | "export" => {
+            let [collection]: [String; 1] = positional
+                .try_into()
+                .map_err(|_| format!("usage: shimmer records {sub} COLLECTION [--FIELD VALUE]…"))?;
             let (mut filter, mut limit, mut offset, mut refine) = (Vec::new(), None, None, Refine::default());
+            let mut format = Format::Csv;
             for (name, value) in flags {
                 match name.as_str() {
+                    "format" if sub == "export" => {
+                        format = match value.as_str() {
+                            "csv" => Format::Csv,
+                            "json" => Format::Json,
+                            other => return Err(format!("--format is csv or json, not '{other}'")),
+                        }
+                    }
+                    "limit" | "offset" if sub == "export" => {
+                        return Err(
+                            "'records export' writes every matching record; it takes no --limit or --offset".into()
+                        )
+                    }
                     "limit" => limit = Some(number("--limit", &value)?),
                     "offset" => offset = Some(number("--offset", &value)?),
                     "filter" => refine.conditions.push(value),
@@ -209,8 +324,12 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
                     "missing" => refine.missing.push(value),
                     "search" => refine.search = Some(value),
                     "sort" => refine.sort.push(value),
+                    "or" => refine.or.push(value),
                     _ => filter.push((name, value)),
                 }
+            }
+            if sub == "export" {
+                return Ok(RecordsCmd::Export { collection, format, filter, refine });
             }
             Ok(RecordsCmd::List { collection, filter, limit, offset, refine })
         }
@@ -219,12 +338,12 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
             let (unset, set) = flags.into_iter().partition::<Vec<_>, _>(|(name, _)| name == "unset");
             let unset: Vec<String> = unset.into_iter().map(|(_, field)| field).collect();
             if sub == "complete" {
-                return Ok(RecordsCmd::Complete { collection, id, set, unset });
+                return Ok(RecordsCmd::Complete { collection, id, set, unset, items });
             }
-            if set.is_empty() && unset.is_empty() {
-                return Err("nothing to update: give --FIELD VALUE or --unset FIELD".into());
+            if set.is_empty() && unset.is_empty() && items.is_empty() {
+                return Err("nothing to update: give --FIELD VALUE, --unset FIELD or --add/--remove FIELD VALUE".into());
             }
-            Ok(RecordsCmd::Update { collection, id, set, unset })
+            Ok(RecordsCmd::Update { collection, id, set, unset, items })
         }
         "templates" => {
             no_flags()?;
@@ -283,7 +402,7 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
                 "get" => RecordsCmd::Get { collection, id },
                 "reopen" => RecordsCmd::Reopen { collection, id, clear_stamp },
                 "restore" => RecordsCmd::Restore { collection, id },
-                _ => RecordsCmd::Remove { collection, id },
+                _ => RecordsCmd::Remove { collection, id, force },
             })
         }
         other => Err(format!("unknown records command '{other}'; see 'shimmer records --help'")),
@@ -349,7 +468,10 @@ impl RecordsCmd {
             | Self::Restore { collection, .. }
             | Self::Trash { collection }
             | Self::Check { collection }
-            | Self::RenameField { collection, .. } => Some(collection),
+            | Self::RenameField { collection, .. }
+            | Self::Import { collection, .. }
+            | Self::Purge { collection, .. }
+            | Self::Export { collection, .. } => Some(collection),
             Self::RenameCollection { .. } | Self::RemoveCollection { .. } | Self::RestoreCollection { .. } => None,
         }
     }
@@ -362,16 +484,45 @@ pub fn request(cmd: &RecordsCmd, schema: &Value) -> Result<(&'static str, Value)
     let fields = |pairs: &[(String, String)]| -> Result<Map<String, Value>> {
         pairs.iter().map(|(name, raw)| typed(schema, name, raw)).collect()
     };
-    // `--FIELD VALUE` sets, `--unset FIELD` sends `null`.
-    let changes = |set: &[(String, String)], unset: &[String]| -> Result<Map<String, Value>> {
+    // `--FIELD VALUE` sets, `--unset FIELD` sends `null`, `--add`/`--remove` a list patch.
+    let changes = |set: &[(String, String)], unset: &[String], items: &[ItemEdit]| -> Result<Map<String, Value>> {
         let mut changes = fields(set)?;
         for name in unset {
             changes.insert(field_name(schema, name), Value::Null);
+        }
+        for edit in items {
+            let name = field_name(schema, &edit.field);
+            let patch = changes.entry(name.clone()).or_insert_with(|| json!({}));
+            let Some(patch) = patch.as_object_mut() else {
+                return Err(Error::invalid_params(format!("'{name}' is both set and changed by item; pick one")));
+            };
+            let key = if edit.add { "add" } else { "remove" };
+            let list = patch.entry(key).or_insert_with(|| json!([])).as_array_mut().expect("always a list");
+            list.extend(split_list(&edit.value).into_iter().map(Value::String));
         }
         Ok(changes)
     };
     Ok(match cmd {
         RecordsCmd::Help => return Err(Error::internal("help is not a request")),
+        RecordsCmd::Import { .. } => return Err(Error::internal("import reads its file in run")),
+        RecordsCmd::Purge { collection, id, .. } => {
+            let mut params = json!({"collection": collection});
+            if let Some(id) = id {
+                params["id"] = json!(id);
+            }
+            ("records.purge", params)
+        }
+        // One page of `records.list`; `run` pages through them all.
+        RecordsCmd::Export { collection, filter, refine, .. } => {
+            let list = RecordsCmd::List {
+                collection: collection.clone(),
+                filter: filter.clone(),
+                limit: Some(EXPORT_PAGE),
+                offset: None,
+                refine: refine.clone(),
+            };
+            return request(&list, schema);
+        }
         RecordsCmd::Collections => ("records.collections", json!({})),
         RecordsCmd::Add { collection, id, set } => {
             let mut params = json!({"collection": collection, "fields": fields(set)?});
@@ -384,8 +535,15 @@ pub fn request(cmd: &RecordsCmd, schema: &Value) -> Result<(&'static str, Value)
             ("records.rename", json!({"collection": collection, "id": id, "new_id": new_id}))
         }
         RecordsCmd::List { collection, filter, limit, offset, refine } => {
-            let mut params =
-                json!({"collection": collection, "filter": query_filter(schema, &fields(filter)?, refine)?});
+            // On a list field, `--stack rust` means "has rust": the daemon reads a plain value so.
+            let exact = filter
+                .iter()
+                .map(|(flag, raw)| match is_list(schema, &field_name(schema, flag)) {
+                    true => Ok((field_name(schema, flag), json!(raw))),
+                    false => typed(schema, flag, raw),
+                })
+                .collect::<Result<Map<String, Value>>>()?;
+            let mut params = json!({"collection": collection, "filter": query_filter(schema, &exact, refine)?});
             if let Some(text) = &refine.search {
                 params["search"] = json!(text);
             }
@@ -409,12 +567,12 @@ pub fn request(cmd: &RecordsCmd, schema: &Value) -> Result<(&'static str, Value)
             ("records.list", params)
         }
         RecordsCmd::Get { collection, id } => ("records.get", json!({"collection": collection, "id": id})),
-        RecordsCmd::Update { collection, id, set, unset } => {
-            ("records.update", json!({"collection": collection, "id": id, "fields": changes(set, unset)?}))
+        RecordsCmd::Update { collection, id, set, unset, items } => {
+            ("records.update", json!({"collection": collection, "id": id, "fields": changes(set, unset, items)?}))
         }
-        RecordsCmd::Complete { collection, id, set, unset } => {
+        RecordsCmd::Complete { collection, id, set, unset, items } => {
             let mut params = json!({"collection": collection, "id": id});
-            let changes = changes(set, unset)?;
+            let changes = changes(set, unset, items)?;
             if !changes.is_empty() {
                 params["fields"] = Value::Object(changes);
             }
@@ -427,7 +585,13 @@ pub fn request(cmd: &RecordsCmd, schema: &Value) -> Result<(&'static str, Value)
             }
             ("records.reopen", params)
         }
-        RecordsCmd::Remove { collection, id } => ("records.remove", json!({"collection": collection, "id": id})),
+        RecordsCmd::Remove { collection, id, force } => {
+            let mut params = json!({"collection": collection, "id": id});
+            if *force {
+                params["force"] = json!(true);
+            }
+            ("records.remove", params)
+        }
         RecordsCmd::Restore { collection, id } => ("records.restore", json!({"collection": collection, "id": id})),
         RecordsCmd::Trash { collection } => ("records.trash", json!({"collection": collection})),
         RecordsCmd::Check { collection } => ("records.check", json!({"collection": collection})),
@@ -473,6 +637,14 @@ fn query_filter(schema: &Value, exact: &Map<String, Value>, refine: &Refine) -> 
     for name in &refine.missing {
         add(field_name(schema, name), "set", json!(false));
     }
+    if !refine.or.is_empty() {
+        let alternatives = refine
+            .or
+            .iter()
+            .map(|raw| condition(schema, raw).map(|(name, op, value)| json!({name: {op: value}})))
+            .collect::<Result<Vec<_>>>()?;
+        out.insert("or".into(), json!(alternatives));
+    }
     Ok(out)
 }
 
@@ -483,9 +655,17 @@ fn condition(schema: &Value, raw: &str) -> Result<(String, &'static str, Value)>
         [("<=", "lte"), (">=", "gte"), ("!=", "ne"), ("<", "lt"), (">", "gt"), ("=", "eq"), ("~", "contains")];
     let bad = || {
         Error::invalid_params(format!(
-            "--filter '{raw}': write FIELD OP VALUE with OP one of = != < <= > >= ~, e.g. --filter \"oa_deadline<=2026-10-10\""
+            "--filter '{raw}': write FIELD OP VALUE with OP one of = != < <= > >= ~ has, e.g. --filter \"oa_deadline<=2026-10-10\""
         ))
     };
+    // `tech_stack has rust` (ADR 0024 §2).
+    if let Some((flag, value)) = raw.split_once(" has ") {
+        let (flag, value) = (flag.trim(), value.trim());
+        if flag.is_empty() || value.is_empty() {
+            return Err(bad());
+        }
+        return Ok((field_name(schema, flag), "has", json!(value)));
+    }
     let at = raw.find(['<', '>', '!', '=', '~']).ok_or_else(bad)?;
     let (flag, rest) = (raw[..at].trim(), &raw[at..]);
     let (symbol, op) = OPS.iter().find(|(symbol, _)| rest.starts_with(symbol)).ok_or_else(bad)?;
@@ -493,12 +673,24 @@ fn condition(schema: &Value, raw: &str) -> Result<(String, &'static str, Value)>
     if flag.is_empty() || value.is_empty() {
         return Err(bad());
     }
+    // A list holds several items, so `a|b` would be ambiguous: say how to ask for either one
+    // (Dev A's review of #93).
+    if is_list(schema, &field_name(schema, flag)) && value.contains('|') {
+        let either: Vec<String> = value.split('|').map(|v| format!("--or \"{flag} has {}\"", v.trim())).collect();
+        return Err(Error::invalid_params(format!(
+            "--filter '{raw}': {flag} is a list; for any of these items write {}",
+            either.join(" ")
+        )));
+    }
     if *op == "eq" && value.contains('|') {
         let items =
             value.split('|').map(|v| typed(schema, flag, v.trim()).map(|(_, v)| v)).collect::<Result<Vec<_>>>()?;
         return Ok((field_name(schema, flag), "in", json!(items)));
     }
-    // `contains` always takes text, whatever the field's type.
+    // `contains` always takes text, whatever the field's type; so does a list's `=` (`has`).
+    if is_list(schema, &field_name(schema, flag)) && *op == "eq" {
+        return Ok((field_name(schema, flag), "has", json!(value)));
+    }
     let (name, value) = match *op {
         "contains" => (field_name(schema, flag), json!(value)),
         _ => typed(schema, flag, value)?,
@@ -536,12 +728,26 @@ fn typed(schema: &Value, flag: &str, raw: &str) -> Result<(String, Value)> {
             "false" | "no" | "n" | "0" => false,
             _ => return Err(bad("true or false")),
         }),
+        // `--tech-stack "go, rust"` (ADR 0024 §2).
+        "list" => Value::Array(split_list(raw).into_iter().map(Value::String).collect()),
         _ => Value::String(raw.to_owned()),
     };
     Ok((name, value))
 }
 
+/// Comma-separated items, trimmed, blanks dropped.
+fn split_list(raw: &str) -> Vec<String> {
+    raw.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect()
+}
+
+fn is_list(schema: &Value, name: &str) -> bool {
+    field(schema, name).is_some_and(|f| f["type"] == "list")
+}
+
 // ---------------------------------------------------------------- running
+
+/// `records export` pages through `records.list` this many at a time (its maximum).
+const EXPORT_PAGE: usize = 500;
 
 /// Fetch the collection's schema, send the op, render the reply.
 pub async fn run(client: &mut Client, cmd: &RecordsCmd, json: bool, prompt: &mut dyn Prompt) -> Result<String> {
@@ -549,14 +755,48 @@ pub async fn run(client: &mut Client, cmd: &RecordsCmd, json: bool, prompt: &mut
         Some(id) => schema(client, id).await?,
         None => Value::Null,
     };
+    match cmd {
+        RecordsCmd::Import { collection, file, dry_run, skip_invalid, yes } => {
+            let text =
+                std::fs::read_to_string(file).map_err(|e| Error::invalid_params(format!("can't read {file}: {e}")))?;
+            let rows = import_rows(file, &text, &schema)?;
+            return import(client, prompt, collection, rows, *dry_run, *skip_invalid, *yes, json).await;
+        }
+        RecordsCmd::Export { format, .. } => {
+            let (op, mut params) = request(cmd, &schema)?;
+            let mut items = Vec::new();
+            loop {
+                params["offset"] = json!(items.len());
+                let page = client.call(op, params.clone()).await?;
+                let got = page["items"].as_array().cloned().unwrap_or_default();
+                let total = page["total"].as_u64().unwrap_or(0) as usize;
+                let done = got.is_empty();
+                items.extend(got);
+                if done || items.len() >= total {
+                    break;
+                }
+            }
+            return Ok(export(&items, &schema, *format));
+        }
+        _ => {}
+    }
     let (op, mut params) = request(cmd, &schema)?;
     let data = match client.call(op, params.clone()).await {
         // ADR 0021 §5: the daemon says how many records go; ask, then send that count back.
         Err(e) if e.code == ErrorCode::ConfirmationRequired => {
-            let RecordsCmd::RemoveCollection { id, yes } = cmd else { return Err(e) };
             let detail = e.detail.clone().unwrap_or_default();
-            if !confirm_removal(prompt, *yes, id, &detail)? {
-                return Ok(format!("kept {id}"));
+            match cmd {
+                RecordsCmd::RemoveCollection { id, yes } => {
+                    if !confirm_removal(prompt, *yes, id, &detail)? {
+                        return Ok(format!("kept {id}"));
+                    }
+                }
+                RecordsCmd::Purge { collection, yes, .. } => {
+                    if !confirm_purge(prompt, *yes, collection, &e.message)? {
+                        return Ok("nothing purged".into());
+                    }
+                }
+                _ => return Err(e),
             }
             params["confirm"] = detail;
             client.call(op, params).await?
@@ -564,6 +804,175 @@ pub async fn run(client: &mut Client, cmd: &RecordsCmd, json: bool, prompt: &mut
         other => other?,
     };
     Ok(if json { render::json(&data) } else { show(cmd, &data, &schema) })
+}
+
+/// The rows of an import file, as `records.import` takes them: `.json` is an array of objects,
+/// sent as written; anything else is CSV, typed from the collection like `--FIELD VALUE`.
+fn import_rows(file: &str, text: &str, schema: &Value) -> Result<Vec<Value>> {
+    let bad = |msg: String| Error::invalid_params(format!("{file}: {msg}"));
+    if file.ends_with(".json") {
+        let rows: Value = serde_json::from_str(text).map_err(|e| bad(e.to_string()))?;
+        return match rows {
+            Value::Array(rows) if rows.iter().all(Value::is_object) => Ok(rows),
+            _ => Err(bad("expected an array of objects, one per record".into())),
+        };
+    }
+    let mut lines = csv::parse(text).map_err(bad)?.into_iter();
+    let header = lines.next().ok_or_else(|| bad("empty: expected a header row of field names".into()))?;
+    let names: Vec<String> = header.iter().map(|h| field_name(schema, h.trim())).collect();
+    let mut rows = Vec::new();
+    for (n, line) in lines.enumerate() {
+        if line.len() != names.len() {
+            return Err(bad(format!("row {} has {} cells, the header has {}", n + 1, line.len(), names.len())));
+        }
+        let mut row = Map::new();
+        for (name, raw) in names.iter().zip(line) {
+            if raw.is_empty() {
+                continue;
+            }
+            let value = match name.as_str() {
+                "id" | "status" => json!(raw),
+                // List items are split by `;`, so a comma can sit inside one.
+                _ if is_list(schema, name) => {
+                    json!(raw.split(';').map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>())
+                }
+                _ => typed(schema, name, &raw).map_err(|e| bad(format!("row {}: {}", n + 1, e.message)))?.1,
+            };
+            row.insert(name.clone(), value);
+        }
+        rows.push(Value::Object(row));
+    }
+    Ok(rows)
+}
+
+/// Check everything first (a dry run), say what would happen, then ask before writing.
+#[allow(clippy::too_many_arguments)]
+async fn import(
+    client: &mut Client,
+    prompt: &mut dyn Prompt,
+    collection: &str,
+    rows: Vec<Value>,
+    dry_run: bool,
+    skip_invalid: bool,
+    yes: bool,
+    json: bool,
+) -> Result<String> {
+    let params = json!({"collection": collection, "rows": rows, "skip_invalid": skip_invalid});
+    let mut check = params.clone();
+    check["dry_run"] = json!(true);
+    let plan = client.call("records.import", check).await?;
+    let summary = import_summary(collection, &plan, false);
+    let added = plan["added"].as_array().map_or(0, Vec::len);
+    let blocked = !plan["invalid"].as_array().is_none_or(Vec::is_empty) && !skip_invalid;
+    if dry_run || added == 0 || blocked {
+        return Ok(if json { render::json(&plan) } else { summary });
+    }
+    if !yes {
+        if !prompt.interactive() {
+            return Err(Error::invalid_params(format!(
+                "refusing to import {added} record(s) into '{collection}' without confirmation; pass --yes"
+            )));
+        }
+        eprintln!("{summary}");
+        if !prompt.confirm("Import them?") {
+            return Ok("nothing imported".into());
+        }
+    }
+    let done = client.call("records.import", params).await?;
+    Ok(if json { render::json(&done) } else { import_summary(collection, &done, true) })
+}
+
+fn import_summary(collection: &str, data: &Value, written: bool) -> String {
+    let added = data["added"].as_array().map_or(0, Vec::len);
+    let mut out = match (written && data["written"] == true, added) {
+        (true, n) => format!("✓ imported {n} record(s) into {collection}"),
+        (false, 0) => format!("nothing to import into {collection}"),
+        (false, n) => format!("would import {n} record(s) into {collection}"),
+    };
+    for s in data["skipped"].as_array().into_iter().flatten() {
+        let _ = write!(
+            out,
+            "
+  skip row {}: {}",
+            cell(&s["row"]),
+            s["reason"].as_str().unwrap_or_default()
+        );
+    }
+    let invalid = data["invalid"].as_array().cloned().unwrap_or_default();
+    for i in &invalid {
+        let _ = write!(
+            out,
+            "
+  invalid row {}: {}",
+            cell(&i["row"]),
+            i["error"].as_str().unwrap_or_default()
+        );
+    }
+    if !invalid.is_empty() && data["written"] != true {
+        let _ = write!(
+            out,
+            "
+nothing imported while rows are invalid: fix them, or pass --skip-invalid"
+        );
+    }
+    out
+}
+
+/// Records as CSV (id, status, then fields in schema order; lists joined with `;`) or as a JSON
+/// array, so `records import` reads them back unchanged.
+fn export(items: &[Value], schema: &Value, format: Format) -> String {
+    if format == Format::Json {
+        let clean: Vec<Value> = items
+            .iter()
+            .map(|i| {
+                let mut i = i.clone();
+                if let Some(o) = i.as_object_mut() {
+                    o.retain(|_, v| !v.is_null());
+                }
+                i
+            })
+            .collect();
+        return render::json(&json!(clean));
+    }
+    let mut header = vec!["id".to_owned()];
+    if has_status(schema) {
+        header.push("status".to_owned());
+    }
+    header
+        .extend(schema["fields"].as_array().into_iter().flatten().filter_map(|f| f["name"].as_str().map(String::from)));
+    let mut out = csv::row(&header);
+    for item in items {
+        let cells: Vec<String> = header
+            .iter()
+            .map(|k| match &item[k.as_str()] {
+                Value::Null => String::new(),
+                Value::String(s) => s.clone(),
+                Value::Array(list) => list
+                    .iter()
+                    .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned))
+                    .collect::<Vec<_>>()
+                    .join(";"),
+                other => other.to_string(),
+            })
+            .collect();
+        out.push_str(&csv::row(&cells));
+    }
+    out.trim_end_matches('\n').to_owned()
+}
+
+/// Whether to go ahead with purging, given the daemon's message saying what goes. There is no
+/// undo, so without a person there it needs --yes.
+fn confirm_purge(prompt: &mut dyn Prompt, yes: bool, collection: &str, message: &str) -> Result<bool> {
+    if yes {
+        return Ok(true);
+    }
+    if !prompt.interactive() {
+        return Err(Error::invalid_params(format!(
+            "refusing to purge '{collection}'s trash without confirmation; pass --yes to do it anyway"
+        )));
+    }
+    eprintln!("{}. This can't be undone.", message.split(';').next().unwrap_or(message));
+    Ok(prompt.confirm("Purge?"))
 }
 
 /// Whether to go ahead with removing a collection, given the daemon's
@@ -605,7 +1014,7 @@ pub fn show(cmd: &RecordsCmd, data: &Value, schema: &Value) -> String {
             format!("✓ {collection}/{id} renamed to {collection}/{new_id}")
         }
         RecordsCmd::Update { collection, id, .. } => format!("updated {collection}/{id}"),
-        RecordsCmd::Remove { collection, id } => {
+        RecordsCmd::Remove { collection, id, .. } => {
             format!("removed {collection}/{id} (undo: shimmer records restore {collection}/{id})")
         }
         RecordsCmd::Restore { collection, id } => format!("✓ {collection}/{id} restored"),
@@ -644,6 +1053,12 @@ pub fn show(cmd: &RecordsCmd, data: &Value, schema: &Value) -> String {
         }
         RecordsCmd::Get { collection, id } => item(collection, id, data, schema),
         RecordsCmd::List { .. } => list(data, schema),
+        RecordsCmd::Import { collection, .. } => import_summary(collection, data, true),
+        RecordsCmd::Purge { collection, .. } => match data["purged"].as_u64() {
+            Some(0) => format!("nothing in {collection}'s trash"),
+            n => format!("✓ purged {} record(s) from {collection}'s trash", n.unwrap_or(0)),
+        },
+        RecordsCmd::Export { .. } => render::json(data),
     }
 }
 
@@ -740,6 +1155,17 @@ fn describe_field(f: &Value) -> String {
         Some("enum") => {
             notes.push(f["values"].as_array().into_iter().flatten().map(cell).collect::<Vec<_>>().join("|"))
         }
+        Some("ref") => notes.push(format!("ref to {}", cell(&f["collection"]))),
+        Some("list") if f["of"] == "ref" => notes.push(format!("list of refs to {}", cell(&f["collection"]))),
+        Some("list") => {
+            let of = f["of"].as_str().unwrap_or("string");
+            match f["values"].as_array() {
+                Some(values) => {
+                    notes.push(format!("list of {}", values.iter().map(cell).collect::<Vec<_>>().join("|")))
+                }
+                None => notes.push(format!("list of {of}")),
+            }
+        }
         Some("string") | None => {}
         Some(other) => notes.push(other.to_owned()),
     }
@@ -768,7 +1194,7 @@ fn item(collection: &str, id: &str, data: &Value, schema: &Value) -> String {
     let keys = columns(data, schema);
     let width = keys.iter().map(|k| k.chars().count()).max().unwrap_or(0);
     for key in keys {
-        let _ = write!(out, "\n  {key:width$}  {}", cell(&data[key.as_str()]));
+        let _ = write!(out, "\n  {key:width$}  {}", shown(schema, &key, &data[key.as_str()]));
     }
     out
 }
@@ -786,7 +1212,13 @@ fn list(data: &Value, schema: &Value) -> String {
             .filter(|k| items.iter().any(|i| !i[k.as_str()].is_null() && i[k.as_str()] != ""))
             .collect();
         let status = has_status(schema);
+        // The daemon's titles (ADR 0024 §5), when the collection has a title other than a field.
+        let titles = &data["titles"];
+        let titled = schema["title"].is_string() && !keys_are_title(schema) && titles.is_object();
         let mut header = vec!["ID".to_owned()];
+        if titled {
+            header.push("TITLE".to_owned());
+        }
         if status {
             header.push("STATUS".to_owned());
         }
@@ -795,11 +1227,15 @@ fn list(data: &Value, schema: &Value) -> String {
             .iter()
             .map(|i| {
                 // The id in full: a cut id can't be typed back.
-                let mut row = vec![i["id"].as_str().unwrap_or_default().to_owned()];
+                let id = i["id"].as_str().unwrap_or_default();
+                let mut row = vec![id.to_owned()];
+                if titled {
+                    row.push(cell(&titles[id]));
+                }
                 if status {
                     row.push(cell(&i["status"]));
                 }
-                row.extend(keys.iter().map(|k| cell(&i[k.as_str()])));
+                row.extend(keys.iter().map(|k| shown(schema, k, &i[k.as_str()])));
                 row
             })
             .collect();
@@ -816,6 +1252,27 @@ fn list(data: &Value, schema: &Value) -> String {
         let _ = write!(out, "\nskipped: {}", cell(skipped));
     }
     out
+}
+
+/// A title that is just one field (`"{title}"`, `"{question}"`) already shows as its column.
+fn keys_are_title(schema: &Value) -> bool {
+    let title = schema["title"].as_str().unwrap_or_default();
+    title.starts_with('{') && title.ends_with('}') && title[1..title.len() - 1].chars().all(|c| c != '{' && c != '[')
+}
+
+/// A value as a person reads it: a `datetime` in this machine's local time (ADR 0024 §1), the rest
+/// as `cell` shows them. `--json` keeps the stored value.
+fn shown(schema: &Value, key: &str, v: &Value) -> String {
+    let datetime = field(schema, key).is_some_and(|f| f["type"] == "datetime");
+    match v.as_str().map(chrono::DateTime::parse_from_rfc3339) {
+        Some(Ok(at)) if datetime => at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string(),
+        // A list as its items (ADR 0024 §2); `[]` is unset.
+        _ => match v.as_array() {
+            Some(items) if items.is_empty() => cell(&Value::Null),
+            Some(items) => cell(&Value::String(items.iter().map(cell).collect::<Vec<_>>().join(", "))),
+            None => cell(v),
+        },
+    }
 }
 
 /// Field columns in schema order, then any extra keys the item carries.
@@ -864,8 +1321,13 @@ mod tests {
 
     #[test]
     fn targets_both_spellings() {
-        let want =
-            RecordsCmd::Complete { collection: "leetcode".into(), id: "two-sum".into(), set: vec![], unset: vec![] };
+        let want = RecordsCmd::Complete {
+            collection: "leetcode".into(),
+            id: "two-sum".into(),
+            set: vec![],
+            unset: vec![],
+            items: vec![],
+        };
         assert_eq!(parse_words(&["complete", "leetcode/two-sum"]).unwrap(), want);
         assert_eq!(parse_words(&["complete", "leetcode", "two-sum"]).unwrap(), want);
         for bad in [&["complete"][..], &["complete", "leetcode"], &["complete", "/x"], &["complete", "a", "b", "c"]] {
@@ -889,7 +1351,8 @@ mod tests {
                 collection: "leetcode".into(),
                 id: "two-sum".into(),
                 set: pairs(&[("url", "https://x")]),
-                unset: vec!["difficulty".into()]
+                unset: vec!["difficulty".into()],
+                items: vec![]
             }
         );
         assert!(parse_words(&["update", "leetcode/two-sum"]).unwrap_err().contains("nothing to update"));
@@ -927,7 +1390,8 @@ mod tests {
                 collection: "leetcode".into(),
                 id: "x".into(),
                 set: pairs(&[("last-solved", "2026-10-03")]),
-                unset: vec!["url".into()]
+                unset: vec!["url".into()],
+                items: vec![]
             }
         );
         let (op, params) = request(&complete, &leetcode()).unwrap();
@@ -1253,11 +1717,184 @@ lru-cache  todo    LRU Cache  medium      -            2         true
     }
 
     #[test]
+    fn list_fields_take_commas_add_remove_and_has() {
+        let schema = json!({"fields": [{"name": "tech_stack", "type": "list", "of": "string"}]});
+        let add = parse_words(&["add", "jobs", "--tech-stack", "go, rust,"]).unwrap();
+        assert_eq!(request(&add, &schema).unwrap().1["fields"], json!({"tech_stack": ["go", "rust"]}));
+
+        let update =
+            parse_words(&["update", "jobs/x", "--add", "tech-stack", "sql, c", "--remove", "tech_stack", "go"])
+                .unwrap();
+        assert_eq!(
+            request(&update, &schema).unwrap().1["fields"],
+            json!({"tech_stack": {"add": ["sql", "c"], "remove": ["go"]}})
+        );
+        assert!(parse_words(&["update", "jobs/x", "--add", "tech_stack"]).unwrap_err().contains("a field and a value"));
+        let both = parse_words(&["update", "jobs/x", "--tech-stack", "go", "--add", "tech_stack", "c"]).unwrap();
+        assert!(request(&both, &schema).unwrap_err().message.contains("pick one"));
+
+        for words in
+            [&["list", "jobs", "--filter", "tech_stack has Rust"][..], &["list", "jobs", "--filter", "tech-stack=Rust"]]
+        {
+            let (_, params) = request(&parse_words(words).unwrap(), &schema).unwrap();
+            assert_eq!(params["filter"], json!({"tech_stack": {"has": "Rust"}}), "{words:?}");
+        }
+        let e =
+            request(&parse_words(&["list", "jobs", "--filter", "tech_stack=go|rust"]).unwrap(), &schema).unwrap_err();
+        assert!(e.message.contains("--or \"tech_stack has go\" --or \"tech_stack has rust\""), "{}", e.message);
+        let (_, params) = request(&parse_words(&["list", "jobs", "--tech-stack", "go"]).unwrap(), &schema).unwrap();
+        assert_eq!(params["filter"], json!({"tech_stack": "go"}));
+        assert_eq!(describe_field(&schema["fields"][0]), "tech_stack (list of string)");
+        assert_eq!(shown(&schema, "tech_stack", &json!(["go", "rust"])), "go, rust");
+        assert_eq!(shown(&schema, "tech_stack", &json!([])), "-");
+    }
+
+    #[test]
+    fn refs_describe_their_target_and_remove_takes_force() {
+        let one = json!({"name": "application", "type": "ref", "collection": "jobs"});
+        let many = json!({"name": "also_for", "type": "list", "of": "ref", "collection": "jobs"});
+        assert_eq!(describe_field(&one), "application (ref to jobs)");
+        assert_eq!(describe_field(&many), "also_for (list of refs to jobs)");
+
+        let remove = parse_words(&["remove", "jobs/acme", "--force"]).unwrap();
+        assert_eq!(remove, RecordsCmd::Remove { collection: "jobs".into(), id: "acme".into(), force: true });
+        assert_eq!(
+            request(&remove, &Value::Null).unwrap().1,
+            json!({"collection": "jobs", "id": "acme", "force": true})
+        );
+        let plain = parse_words(&["remove", "jobs/acme"]).unwrap();
+        assert_eq!(request(&plain, &Value::Null).unwrap().1, json!({"collection": "jobs", "id": "acme"}));
+    }
+
+    #[test]
+    fn import_and_export_parse_and_round_trip() {
+        assert_eq!(
+            parse_words(&["import", "jobs", "jobs.csv", "--dry-run", "--yes"]).unwrap(),
+            RecordsCmd::Import {
+                collection: "jobs".into(),
+                file: "jobs.csv".into(),
+                dry_run: true,
+                skip_invalid: false,
+                yes: true
+            }
+        );
+        assert!(parse_words(&["import", "jobs"]).unwrap_err().contains("usage"));
+        let cmd = parse_words(&["export", "jobs", "--format", "json", "--stage", "oa"]).unwrap();
+        assert!(matches!(cmd, RecordsCmd::Export { format: Format::Json, .. }));
+        assert!(parse_words(&["export", "jobs", "--limit", "5"]).unwrap_err().contains("every matching record"));
+        assert!(parse_words(&["export", "jobs", "--format", "xml"]).is_err());
+
+        let schema = json!({"fields": [
+            {"name": "company", "type": "string"},
+            {"name": "salary", "type": "int"},
+            {"name": "tech_stack", "type": "list", "of": "string"}]});
+        let csv = "id,status,company,salary,tech-stack\nacme,done,\"Acme, Inc\",120,go;rust\n,,Globex,,\n";
+        let rows = import_rows("jobs.csv", csv, &schema).unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                json!({"id": "acme", "status": "done", "company": "Acme, Inc", "salary": 120, "tech_stack": ["go", "rust"]}),
+                json!({"company": "Globex"})
+            ],
+            "empty cells are unset; lists split on ';'"
+        );
+        let e = import_rows("jobs.csv", "company,salary\nAcme,lots\n", &schema).unwrap_err();
+        assert!(e.message.contains("row 1") && e.message.contains("whole number"), "{}", e.message);
+        assert!(import_rows("jobs.csv", "company\nA,B\n", &schema).unwrap_err().message.contains("2 cells"));
+        assert_eq!(import_rows("j.json", r#"[{"company": "A"}]"#, &schema).unwrap(), vec![json!({"company": "A"})]);
+        assert!(import_rows("j.json", r#"{"company": "A"}"#, &schema).is_err());
+
+        // What export writes, import reads back to the same rows.
+        let items = vec![
+            json!({"id": "acme", "status": "done", "company": "Acme, Inc", "salary": 120, "tech_stack": ["go", "rust"]}),
+            json!({"id": "globex", "status": "todo", "company": "Globex", "salary": null, "tech_stack": null}),
+        ];
+        let out = export(&items, &schema, Format::Csv);
+        assert_eq!(
+            out,
+            "id,status,company,salary,tech_stack\nacme,done,\"Acme, Inc\",120,go;rust\nglobex,todo,Globex,,"
+        );
+        let back = import_rows("x.csv", &out, &schema).unwrap();
+        assert_eq!(back[0], items[0]);
+        assert_eq!(back[1], json!({"id": "globex", "status": "todo", "company": "Globex"}));
+        assert!(!export(&items, &schema, Format::Json).contains("null"));
+    }
+
+    #[test]
+    fn or_conditions_become_alternatives() {
+        let words = ["list", "leetcode", "--or", "difficulty=hard", "--or", "attempts>=3", "--status", "todo"];
+        let (_, params) = request(&parse_words(&words).unwrap(), &leetcode()).unwrap();
+        assert_eq!(
+            params["filter"],
+            json!({"status": "todo", "or": [{"difficulty": {"eq": "hard"}}, {"attempts": {"gte": 3}}]})
+        );
+        let (_, params) =
+            request(&parse_words(&["list", "leetcode", "--filter", "last_solved>=today-7"]).unwrap(), &leetcode())
+                .unwrap();
+        assert_eq!(params["filter"], json!({"last_solved": {"gte": "today-7"}}), "the daemon reads 'today'");
+    }
+
+    #[test]
+    fn list_shows_the_daemons_titles() {
+        let schema = json!({"title": "{company}: {position}", "fields": [
+            {"name": "company", "type": "string"}, {"name": "position", "type": "string"}]});
+        let data = json!({"items": [{"id": "acme", "status": "todo", "company": "Acme", "position": "SWE"}],
+                          "total": 1, "titles": {"acme": "Acme: SWE"}});
+        let cmd = parse_words(&["list", "jobs"]).unwrap();
+        let out = show(&cmd, &data, &schema);
+        assert!(out.starts_with("ID    TITLE      STATUS"), "{out}");
+        assert!(out.contains("acme  Acme: SWE  todo"), "{out}");
+        // A one-field title is already a column.
+        let out = show(&cmd, &data, &json!({"title": "{company}", "fields": schema["fields"]}));
+        assert!(!out.contains("TITLE"), "{out}");
+    }
+
+    #[test]
+    fn purge_takes_one_record_or_the_whole_trash() {
+        let one = parse_words(&["purge", "jobs/acme"]).unwrap();
+        assert_eq!(one, RecordsCmd::Purge { collection: "jobs".into(), id: Some("acme".into()), yes: false });
+        assert_eq!(
+            request(&one, &Value::Null).unwrap(),
+            ("records.purge", json!({"collection": "jobs", "id": "acme"}))
+        );
+        let all = parse_words(&["purge", "jobs", "--yes"]).unwrap();
+        assert_eq!(all, RecordsCmd::Purge { collection: "jobs".into(), id: None, yes: true });
+        assert_eq!(show(&all, &json!({"purged": 2}), &Value::Null), "✓ purged 2 record(s) from jobs's trash");
+
+        struct Script;
+        impl Prompt for Script {
+            fn interactive(&self) -> bool {
+                false
+            }
+            fn confirm(&mut self, _: &str) -> bool {
+                unreachable!("never asked without a terminal")
+            }
+        }
+        assert!(confirm_purge(&mut Script, false, "jobs", "x").unwrap_err().message.contains("--yes"));
+        assert!(confirm_purge(&mut Script, true, "jobs", "x").unwrap());
+    }
+
+    #[test]
+    fn datetimes_show_in_local_time() {
+        let schema = json!({"fields": [{"name": "at", "type": "datetime"}, {"name": "note", "type": "string"}]});
+        let at = chrono::DateTime::parse_from_rfc3339("2026-10-21T06:59:00Z").unwrap();
+        let local = at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string();
+        assert_eq!(shown(&schema, "at", &json!("2026-10-21T06:59:00Z")), local);
+        assert_eq!(shown(&schema, "at", &json!("2026-10-20")), "2026-10-20", "a plain date stays");
+        assert_eq!(shown(&schema, "note", &json!("2026-10-21T06:59:00Z")), "2026-10-21T06:59:00Z", "only datetimes");
+    }
+
+    #[test]
     fn single_item_output() {
         let item = json!({"id": "two-sum", "status": "done", "title": "Two Sum", "difficulty": "easy",
             "url": null, "last_solved": "2026-09-25", "attempts": null, "starred": null});
-        let complete =
-            RecordsCmd::Complete { collection: "leetcode".into(), id: "two-sum".into(), set: vec![], unset: vec![] };
+        let complete = RecordsCmd::Complete {
+            collection: "leetcode".into(),
+            id: "two-sum".into(),
+            set: vec![],
+            unset: vec![],
+            items: vec![],
+        };
         assert_eq!(show(&complete, &item, &leetcode()), "✓ leetcode/two-sum done (last_solved 2026-09-25)");
 
         let get = RecordsCmd::Get { collection: "leetcode".into(), id: "two-sum".into() };

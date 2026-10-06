@@ -73,6 +73,12 @@ pub struct Field {
     /// No two records share a set value (ADR 0017 §4).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unique: bool,
+    /// What a `list` field holds: `string`, `enum` or `ref` (ADR 0024 §2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub of: Option<FieldType>,
+    /// The collection a `ref` (or list of `ref`) points into (ADR 0024 §3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection: Option<String>,
 }
 
 /// What a field means, so other features can use it without knowing the collection
@@ -80,7 +86,7 @@ pub struct Field {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
-    /// Something is due on this date. `date` fields only.
+    /// Something is due on this date. `date` and `datetime` fields only.
     Deadline,
     /// The record's link. `string` fields only; at most one per collection.
     Url,
@@ -94,6 +100,12 @@ pub enum FieldType {
     Bool,
     Date,
     Enum,
+    /// A moment (stored as UTC RFC 3339) or a plain date (ADR 0024 §1).
+    Datetime,
+    /// Several values of the type `of` names (ADR 0024 §2).
+    List,
+    /// The id of a record in the collection `collection` names (ADR 0024 §3).
+    Ref,
 }
 
 /// The file as written. `deny_unknown_fields` turns a typo like `value = [...]` into an error
@@ -150,18 +162,50 @@ impl Collection {
             if !seen.insert(f.name.as_str()) {
                 return Err(bad(format!("field '{}' is defined twice", f.name)));
             }
-            match (f.kind, f.values.is_empty()) {
+            match (f.kind, f.of) {
+                (FieldType::List, Some(FieldType::String | FieldType::Enum | FieldType::Ref)) => {}
+                (FieldType::List, Some(_)) => {
+                    return Err(bad(format!("list field '{}': `of` must be \"string\", \"enum\" or \"ref\"", f.name)));
+                }
+                (FieldType::List, None) => {
+                    return Err(bad(format!("list field '{}' needs `of`: what it holds", f.name)));
+                }
+                (_, Some(_)) => return Err(bad(format!("field '{}': only list fields take `of`", f.name))),
+                (_, None) => {}
+            }
+            match (f.item_kind(), &f.collection) {
+                (FieldType::Ref, None) => {
+                    return Err(bad(format!(
+                        "ref field '{}' needs `collection`: the collection it points into",
+                        f.name
+                    )));
+                }
+                (FieldType::Ref, Some(target)) if !is_valid_name(target) => {
+                    return Err(bad(format!("field '{}': collection '{target}' is not a valid collection id", f.name)));
+                }
+                (FieldType::Ref, Some(_)) | (_, None) => {}
+                (_, Some(_)) => return Err(bad(format!("field '{}': only ref fields take `collection`", f.name))),
+            }
+            if f.kind == FieldType::List && (f.unique || f.role.is_some()) {
+                return Err(bad(format!("list field '{}' can't be unique or have a role", f.name)));
+            }
+            match (f.item_kind(), f.values.is_empty()) {
                 (FieldType::Enum, true) => return Err(bad(format!("enum field '{}' needs values", f.name))),
                 (FieldType::Enum, false) if f.values.iter().collect::<BTreeSet<_>>().len() != f.values.len() => {
                     return Err(bad(format!("enum field '{}' repeats a value", f.name)));
                 }
                 (FieldType::Enum, false) => {}
-                (_, false) => return Err(bad(format!("field '{}': only enum fields take values", f.name))),
+                (_, false) => {
+                    return Err(bad(format!("field '{}': only enum fields (and lists of enum) take values", f.name)));
+                }
                 (_, true) => {}
             }
             match (f.role, f.kind) {
-                (Some(Role::Deadline), k) if k != FieldType::Date => {
-                    return Err(bad(format!("field '{}': role \"deadline\" is only for date fields", f.name)));
+                (Some(Role::Deadline), k) if !k.is_dated() => {
+                    return Err(bad(format!(
+                        "field '{}': role \"deadline\" is only for date and datetime fields",
+                        f.name
+                    )));
                 }
                 (Some(Role::Url), k) if k != FieldType::String => {
                     return Err(bad(format!("field '{}': role \"url\" is only for string fields", f.name)));
@@ -181,9 +225,15 @@ impl Collection {
         if let Some(title) = &file.collection.title {
             let names: BTreeSet<&str> = file.field.iter().map(|f| f.name.as_str()).collect();
             for part in title_parts(title).map_err(|m| bad(format!("title: {m}")))? {
-                if let Part::Field(name) = part {
-                    if !names.contains(name) {
-                        return Err(bad(format!("title: '{{{name}}}' is not a field")));
+                let inner = match part {
+                    Part::Optional(inner) => inner,
+                    other => vec![other],
+                };
+                for part in inner {
+                    if let Part::Field(name) = part {
+                        if !names.contains(name) {
+                            return Err(bad(format!("title: '{{{name}}}' is not a field")));
+                        }
                     }
                 }
             }
@@ -216,13 +266,20 @@ impl Collection {
         }
         if let Some(stamp) = &c.stamp_on_complete {
             match c.field(stamp) {
-                Some(f) if f.kind == FieldType::Date && f.role == Some(Role::Deadline) => {
+                Some(f) if f.kind.is_dated() && f.role == Some(Role::Deadline) => {
                     return Err(bad(format!(
                         "stamp_on_complete '{stamp}' is a deadline; a stamp records something that happened"
                     )));
                 }
-                Some(f) if f.kind == FieldType::Date => {}
-                _ => return Err(bad(format!("stamp_on_complete '{stamp}' must name a date field"))),
+                // A todo record has no stamp yet, and reopening can clear it: it can't be required
+                // (Dev A's review of #83).
+                Some(f) if f.required => {
+                    return Err(bad(format!(
+                        "stamp_on_complete '{stamp}' can't be required: a record has no stamp until it's completed"
+                    )));
+                }
+                Some(f) if f.kind.is_dated() => {}
+                _ => return Err(bad(format!("stamp_on_complete '{stamp}' must name a date or datetime field"))),
             }
         }
         Ok(c)
@@ -247,6 +304,15 @@ impl Collection {
             None | Some(Value::Null) => None,
             Some(Value::String(s)) if s.is_empty() => None,
             Some(Value::String(s)) => Some(s.clone()),
+            // A list reads as its items (ADR 0024 §2).
+            Some(Value::Array(items)) if items.is_empty() => None,
+            Some(Value::Array(items)) => Some(
+                items
+                    .iter()
+                    .map(|i| i.as_str().map_or_else(|| i.to_string(), str::to_owned))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
             Some(other) => Some(other.to_string()),
         };
         let mut any_set = false;
@@ -258,6 +324,22 @@ impl Collection {
                     if let Some(v) = value(name) {
                         any_set = true;
                         out.push_str(&v);
+                    }
+                }
+                // Only when every field inside is set (ADR 0024 §5).
+                Part::Optional(inner) => {
+                    let all_set = inner.iter().all(|p| !matches!(p, Part::Field(name) if value(name).is_none()));
+                    if all_set {
+                        for p in inner {
+                            match p {
+                                Part::Field(name) => {
+                                    any_set = true;
+                                    out.push_str(&value(name).unwrap_or_default());
+                                }
+                                Part::Text(t) => out.push_str(t),
+                                Part::Optional(_) => {}
+                            }
+                        }
                     }
                 }
             }
@@ -285,6 +367,28 @@ impl Collection {
             .collect()
     }
 
+    /// Every record id `values` points at through a ref field (or list of refs), as
+    /// `(field, target collection, id)` (ADR 0024 §3).
+    pub fn refs_in<'v>(&self, values: impl IntoIterator<Item = (&'v String, &'v Value)>) -> Vec<(&str, &str, &'v str)> {
+        let mut out = Vec::new();
+        for (name, value) in values {
+            let Some(f) = self.field(name).filter(|f| f.item_kind() == FieldType::Ref) else { continue };
+            let Some(target) = f.collection.as_deref() else { continue };
+            let ids: Vec<&str> = match value {
+                Value::String(s) => vec![s.as_str()],
+                Value::Array(items) => items.iter().filter_map(Value::as_str).collect(),
+                _ => Vec::new(),
+            };
+            out.extend(ids.into_iter().map(|id| (f.name.as_str(), target, id)));
+        }
+        out
+    }
+
+    /// The fields that point into `target`.
+    pub fn ref_fields_to<'a>(&'a self, target: &'a str) -> impl Iterator<Item = &'a Field> + 'a {
+        self.fields.iter().filter(move |f| f.item_kind() == FieldType::Ref && f.collection.as_deref() == Some(target))
+    }
+
     /// Check values being written. `null` is not a value; callers that allow it as "unset"
     /// remove those keys first.
     pub fn check_values(&self, values: &Map<String, Value>) -> Result<()> {
@@ -310,21 +414,54 @@ impl Collection {
 
     /// Every required field present in a complete set of values.
     pub fn check_required(&self, values: &Map<String, Value>) -> Result<()> {
-        match self.fields.iter().find(|f| f.required && values.get(&f.name).is_none_or(Value::is_null)) {
+        match self.fields.iter().find(|f| f.required && values.get(&f.name).is_none_or(is_unset)) {
             Some(f) => Err(Error::invalid_params(format!("field '{}' is required", f.name))),
             None => Ok(()),
         }
     }
 }
 
+/// No value: missing, `null`, or an empty list (ADR 0024 §2). `required` means not unset.
+pub fn is_unset(v: &Value) -> bool {
+    v.is_null() || v.as_array().is_some_and(Vec::is_empty)
+}
+
+impl FieldType {
+    /// `date` or `datetime`: what deadlines and stamps may be.
+    pub fn is_dated(self) -> bool {
+        matches!(self, Self::Date | Self::Datetime)
+    }
+}
+
 impl Field {
+    /// The type of one value: `of` for a list, the field's own type otherwise.
+    pub fn item_kind(&self) -> FieldType {
+        match self.kind {
+            FieldType::List => self.of.unwrap_or(FieldType::String),
+            k => k,
+        }
+    }
+
+    /// Check a value as stored (after [`crate::values::normalize`]).
     pub fn check(&self, value: &Value) -> Result<()> {
+        if self.kind == FieldType::List {
+            let Some(items) = value.as_array() else {
+                return Err(Error::invalid_params(format!("field '{}' must be a list, got {value}", self.name)));
+            };
+            let one = Field { kind: self.item_kind(), of: None, ..self.clone() };
+            return items.iter().try_for_each(|i| one.check(i));
+        }
         let ok = match self.kind {
             FieldType::String => value.is_string(),
             FieldType::Int => value.is_i64(),
             FieldType::Bool => value.is_boolean(),
             FieldType::Date => value.as_str().is_some_and(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()),
             FieldType::Enum => value.as_str().is_some_and(|s| self.values.iter().any(|v| v == s)),
+            FieldType::Datetime => value.as_str().is_some_and(|s| {
+                NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok() || chrono::DateTime::parse_from_rfc3339(s).is_ok()
+            }),
+            FieldType::Ref => value.as_str().is_some_and(|s| crate::item::check_id(s).is_ok()),
+            FieldType::List => unreachable!("checked above"),
         };
         if ok {
             return Ok(());
@@ -335,6 +472,9 @@ impl Field {
             FieldType::Bool => "true or false".to_owned(),
             FieldType::Date => "a date like \"2026-09-25\"".to_owned(),
             FieldType::Enum => format!("one of {}", self.values.join(", ")),
+            FieldType::Datetime => "a date and time like \"2026-10-20 23:59\", or a date".to_owned(),
+            FieldType::Ref => format!("the id of a record in '{}'", self.collection.as_deref().unwrap_or("?")),
+            FieldType::List => unreachable!("checked above"),
         };
         Err(Error::invalid_params(format!("field '{}' must be {want}, got {value}", self.name)))
     }
@@ -345,13 +485,41 @@ impl Field {
 enum Part<'a> {
     Text(&'a str),
     Field(&'a str),
+    /// `[ by {author}]`: left out unless every field inside is set (ADR 0024 §5).
+    Optional(Vec<Part<'a>>),
 }
 
-/// Split a `title` template into text and `{field}` parts. A `{` or `}` that isn't part of a
-/// `{name}` is an error: there is no escaping and no other syntax (ADR 0017 §2).
+/// Split a `title` template into text, `{field}` and `[optional]` parts. A bracket or brace that
+/// isn't part of that syntax is an error: there is no escaping (ADR 0017 §2, ADR 0024 §5).
 fn title_parts(template: &str) -> std::result::Result<Vec<Part<'_>>, String> {
     let mut parts = Vec::new();
     let mut rest = template;
+    while let Some(open) = rest.find(['[', ']']) {
+        if rest[open..].starts_with(']') {
+            return Err(format!("unmatched ']' in \"{template}\""));
+        }
+        parts.extend(plain_parts(&rest[..open], template)?);
+        let after = &rest[open + 1..];
+        let close = after.find(']').ok_or_else(|| format!("unmatched '[' in \"{template}\""))?;
+        let inner = &after[..close];
+        if inner.contains('[') {
+            return Err(format!("optional parts can't be nested in \"{template}\""));
+        }
+        let inner = plain_parts(inner, template)?;
+        if !inner.iter().any(|p| matches!(p, Part::Field(_))) {
+            return Err(format!("an optional part needs a {{field}} inside in \"{template}\""));
+        }
+        parts.push(Part::Optional(inner));
+        rest = &after[close + 1..];
+    }
+    parts.extend(plain_parts(rest, template)?);
+    Ok(parts)
+}
+
+/// Text and `{field}` parts of a piece of a template with no brackets.
+fn plain_parts<'a>(piece: &'a str, template: &str) -> std::result::Result<Vec<Part<'a>>, String> {
+    let mut parts = Vec::new();
+    let mut rest = piece;
     while let Some(open) = rest.find(['{', '}']) {
         if rest[open..].starts_with('}') {
             return Err(format!("unmatched '}}' in \"{template}\""));
@@ -391,6 +559,46 @@ mod tests {
     }
 
     #[test]
+    fn list_fields_check_each_item_and_titles_join_them() {
+        let c = with_fields(
+            "title = \"{name}: {tags}\"\n[[field]]\nname = \"name\"\ntype = \"string\"\n[[field]]\nname = \"tags\"\ntype = \"list\"\nof = \"enum\"\nvalues = [\"a\", \"b\"]\nrequired = true",
+        )
+        .unwrap();
+        let tags = c.field("tags").unwrap();
+        assert!(tags.check(&json!(["a", "b"])).is_ok());
+        assert!(tags.check(&json!(["a", "c"])).unwrap_err().message.contains("one of a, b"));
+        assert!(tags.check(&json!("a")).unwrap_err().message.contains("must be a list"));
+        assert!(c.check_required(&json!({"tags": []}).as_object().unwrap().clone()).is_err(), "empty is unset");
+        let fields = BTreeMap::from([("name".to_owned(), json!("x")), ("tags".to_owned(), json!(["a", "b"]))]);
+        assert_eq!(c.title_of("id", &fields), "x: a, b");
+    }
+
+    #[test]
+    fn optional_title_parts_need_every_field_inside() {
+        let c = with_fields(
+            "title = \"{book}[ by {author}][ ({year}, {publisher})]\"\n[[field]]\nname = \"book\"\ntype = \"string\"\n[[field]]\nname = \"author\"\ntype = \"string\"\n[[field]]\nname = \"year\"\ntype = \"int\"\n[[field]]\nname = \"publisher\"\ntype = \"string\"",
+        )
+        .unwrap();
+        let title = |v: Value| c.title_of("id", &v.as_object().unwrap().clone().into_iter().collect());
+        assert_eq!(title(json!({"book": "Dune"})), "Dune", "no dangling 'by'");
+        assert_eq!(title(json!({"book": "Dune", "author": "Herbert", "year": 1965})), "Dune by Herbert");
+        assert_eq!(
+            title(json!({"book": "Dune", "author": "Herbert", "year": 1965, "publisher": "Chilton"})),
+            "Dune by Herbert (1965, Chilton)"
+        );
+        assert_eq!(title(json!({"author": "Herbert"})), "by Herbert", "an optional part counts as set");
+        assert_eq!(title(json!({})), "id");
+        for (bad, want) in [
+            ("title = \"a]\"", "unmatched ']'"),
+            ("title = \"[a\"", "unmatched '['"),
+            ("title = \"[x [y]]\"", "can't be nested"),
+            ("title = \"[ by ]\"", "needs a {field}"),
+        ] {
+            assert!(with_fields(bad).unwrap_err().message.contains(want), "{bad}");
+        }
+    }
+
+    #[test]
     fn the_built_in_collection_parses() {
         let c = leetcode();
         assert_eq!(c.label, "LeetCode");
@@ -423,7 +631,7 @@ mod tests {
             "[collection]\nid = \"c\"\nlabel = \"C\"\nstamp_on_complete = \"a\"\n[[field]]\nname = \"a\"\ntype = \"string\"",
         )
         .unwrap_err();
-        assert!(e.message.contains("must name a date field"));
+        assert!(e.message.contains("must name a date or datetime field"));
         // ADR 0016 §3: only the two values; anything else names the file.
         let e =
             Collection::parse("c", "[collection]\nid = \"c\"\nlabel = \"C\"\nrepeat_complete = \"twice\"").unwrap_err();
@@ -536,7 +744,7 @@ mod tests {
     #[test]
     fn bad_integration_keys_name_the_file() {
         let cases = [
-            ("[[field]]\nname = \"a\"\ntype = \"string\"\nrole = \"deadline\"", "only for date fields"),
+            ("[[field]]\nname = \"a\"\ntype = \"string\"\nrole = \"deadline\"", "only for date and datetime fields"),
             ("[[field]]\nname = \"a\"\ntype = \"date\"\nrole = \"url\"", "only for string fields"),
             ("[[field]]\nname = \"a\"\ntype = \"date\"\nrole = \"birthday\"", "unknown variant"),
             (
@@ -550,6 +758,19 @@ mod tests {
             ("title = \"a}\"", "unmatched '}'"),
             ("title = \"{A B}\"", "is not a field name"),
             ("[extra]\nlead_days = 3", "must be a table"),
+            ("[[field]]\nname = \"a\"\ntype = \"list\"", "needs `of`"),
+            (
+                "stamp_on_complete = \"d\"\n[[field]]\nname = \"d\"\ntype = \"date\"\nrequired = true",
+                "can't be required",
+            ),
+            ("[[field]]\nname = \"a\"\ntype = \"ref\"", "needs `collection`"),
+            ("[[field]]\nname = \"a\"\ntype = \"ref\"\ncollection = \"Jobs!\"", "not a valid collection id"),
+            ("[[field]]\nname = \"a\"\ntype = \"string\"\ncollection = \"jobs\"", "only ref fields take"),
+            ("[[field]]\nname = \"a\"\ntype = \"list\"\nof = \"ref\"", "needs `collection`"),
+            ("[[field]]\nname = \"a\"\ntype = \"list\"\nof = \"int\"", "`of` must be"),
+            ("[[field]]\nname = \"a\"\ntype = \"string\"\nof = \"string\"", "only list fields take `of`"),
+            ("[[field]]\nname = \"a\"\ntype = \"list\"\nof = \"enum\"", "needs values"),
+            ("[[field]]\nname = \"a\"\ntype = \"list\"\nof = \"string\"\nunique = true", "can't be unique"),
             (
                 "stamp_on_complete = \"d\"\n[[field]]\nname = \"d\"\ntype = \"date\"\nrole = \"deadline\"",
                 "is a deadline",
