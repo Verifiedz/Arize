@@ -71,6 +71,13 @@ default = "auto"
 help = "auto: from the framework (Next.js :3000, Vite :5173, Astro :4321…). Leave empty for none."
 
 [[question]]
+name = "LIVE_URL"
+prompt = "Your live (deployed) site"
+kind = "url"
+default = "auto"
+help = "e.g. https://yourname.com or https://my-site.vercel.app. auto: the homepage field in package.json. Leave empty for none."
+
+[[question]]
 name = "REPO_PAGE"
 prompt = "Repository page to open"
 kind = "choice"
@@ -82,7 +89,7 @@ help = "Found from the project's git remote."
 name = "LINKS"
 prompt = "Other links to open"
 kind = "urls"
-help = "Your live site, hosting dashboard (Vercel, Netlify…), analytics. Separate them with spaces."
+help = "Anything else: your hosting dashboard (Vercel, Netlify…), analytics, docs. Separate them with spaces."
 
 [[question]]
 name = "IDE_TERMINAL_COMMAND"

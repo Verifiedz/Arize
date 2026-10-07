@@ -180,6 +180,7 @@ host: your setup is a set of answers.
 | `SERVICES_COMMAND` | command | empty | services, e.g. `docker compose up -d` |
 | `DEV_COMMAND` | command | `auto` | dev server |
 | `LOCAL_URL` | url or `auto` | `auto` | wait, browser |
+| `LIVE_URL` | url or `auto` | `auto` | browser: the deployed site |
 | `REPO_PAGE` | choice `home`, `pulls`, `issues`, `actions`, `none` | `home` | browser |
 | `LINKS` | urls | empty | browser: live site, Vercel/Netlify/… dashboard, analytics |
 | `IDE_TERMINAL_COMMAND` | command | empty | editor: a terminal *inside* VS Code / Cursor running it |
@@ -209,6 +210,9 @@ What `auto` means, decided when the step runs:
 - **`LOCAL_URL`**: from the framework in `package.json`: Next.js, Nuxt, Create React App →
   `http://localhost:3000`; Vite, SvelteKit → `:5173`; Astro → `:4321`; Gatsby → `:8000`.
   Unknown: no local tab, and `wait` does nothing.
+- **`LIVE_URL`**: the `homepage` field of `package.json` (an `http(s)` URL), the standard place a
+  project records where it's deployed. None: no live-site tab. (The host's own dashboard, e.g.
+  Vercel, can't be asked without the person's login, which a workspace never holds.)
 - **Repo page**: from `git remote get-url origin`, with `git@github.com:you/site.git` turned
   into `https://github.com/you/site`. `pulls`/`issues`/`actions` are GitHub's paths; on other
   hosts only `home` is opened. No remote: nothing.

@@ -527,6 +527,19 @@ shimmer_local_url() {
     done
 }
 
+# LIVE_URL, with `auto` read from the `homepage` field of the project's package.json, the
+# standard place a project says where it's deployed. Nothing when there's no such field.
+shimmer_live_url() {
+    dir=$1
+    answer=$2
+    [ "$answer" = "auto" ] || {
+        echo "$answer"
+        return
+    }
+    [ -f "$dir/package.json" ] || return 0
+    sed -n 's/.*"homepage"[[:space:]]*:[[:space:]]*"\(https\{0,1\}:\/\/[^"]*\)".*/\1/p' "$dir/package.json" | head -n 1
+}
+
 # Run a command line in DIR with the Node version the project asks for (.nvmrc or
 # .node-version), when fnm or nvm is installed. Otherwise as it is.
 shimmer_run_in_project() {
