@@ -281,6 +281,24 @@ clean. Steps `check`, `projects`, `caches`, `system`, all supervised, then `summ
 first (at most 15 lines), anything skipped or failed, the total, and the free space before and
 after, which `activate --wait` prints. A failure is reported, never the end of the run.
 
+**`github-inbox`**: what GitHub is waiting on you for, through the `gh` CLI. Shimmer never holds
+a GitHub token: `gh` does (`gh auth login`; `GH_HOST` for GitHub Enterprise). One GraphQL query
+(three aliased searches) and `gh`'s own `--jq` produce the lists, so `jq` isn't needed. Its
+helper is `lib/shimmer-github.sh`.
+
+- **Waiting for your review**: open PRs requesting your review, with author and how long since
+  opened; `!` marks those waiting `STALE_DAYS` (2) or more.
+- **Your open PRs**: CI (the last commit's check rollup) and review decision, as "ready to merge"
+  (checks pass or none, approved), "checks failing, changes requested", "draft", and so on.
+- **Assigned to you**: open issues. Then the unread notification count (up to 50).
+- `SCOPE` limits all of it to orgs or `owner/repo`s; archived repos are left out.
+
+Steps `check` (gh installed and logged in), `fetch` (a failed query makes the workspace dirty
+with gh's message, never an inbox that just looks empty), `open` (detached: with `OPEN`, the
+review PRs, everything (at most 10), or GitHub's own inbox pages), and `summary`, which
+`activate --wait` prints. `NOTIFY = when-reviews` sends a desktop notification when reviews are
+waiting, for a scheduled run.
+
 **`health`**: one read-only report on the computer: nothing is changed and nothing needs sudo.
 Its helper is `lib/shimmer-health.sh`, one function per check, each printing `ok`, `warn` or
 `info` lines (or nothing when it doesn't apply here, e.g. no battery):

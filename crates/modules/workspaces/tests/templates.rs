@@ -33,9 +33,19 @@ async fn templates_lists_the_built_ins_with_their_questions() {
     let ids: Vec<&str> = data["templates"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap()).collect();
     assert_eq!(
         ids,
-        ["free-disk", "health", "monorepo", "scratch", "smoke-test", "update-everything", "vm", "web-project"]
+        [
+            "free-disk",
+            "github-inbox",
+            "health",
+            "monorepo",
+            "scratch",
+            "smoke-test",
+            "update-everything",
+            "vm",
+            "web-project"
+        ]
     );
-    let web = &data["templates"][7];
+    let web = &data["templates"][8];
     assert_eq!(
         web["questions"][0],
         json!({"name": "PROJECT_DIR", "prompt": "Project folder", "kind": "folder", "required": true})
@@ -128,7 +138,7 @@ async fn create_never_overwrites_and_checks_everything_first() {
     assert_eq!(e.code, ErrorCode::NotFound);
     assert!(
         e.message.contains(
-            "there are: free-disk, health, monorepo, scratch, smoke-test, update-everything, vm, web-project"
+            "there are: free-disk, github-inbox, health, monorepo, scratch, smoke-test, update-everything, vm, web-project"
         ),
         "{}",
         e.message

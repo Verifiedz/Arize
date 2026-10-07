@@ -1,0 +1,39 @@
+[template]
+label = "GitHub inbox"
+description = "What GitHub is waiting on you for: PRs to review (and for how long), your open PRs' checks and reviews, issues assigned to you, unread notifications. Through the gh CLI"
+
+[[question]]
+name = "SCOPE"
+prompt = "Only these orgs or repos (optional)"
+kind = "text"
+help = "Separated by spaces, e.g. Verifiedz/Shimmer my-company. Leave empty for everything on your account."
+
+[[question]]
+name = "STALE_DAYS"
+prompt = "Flag a review request after it has waited this many days"
+kind = "text"
+default = "2"
+
+[[question]]
+name = "OPEN"
+prompt = "Open in the browser"
+kind = "choice"
+choices = ["nothing", "reviews", "everything", "inbox-pages"]
+default = "nothing"
+help = "reviews: each PR waiting for your review. everything: every PR and issue listed (at most 10). inbox-pages: GitHub's own review-requested and notifications pages."
+
+[[question]]
+name = "NOTIFY"
+prompt = "Desktop notification when reviews are waiting"
+kind = "choice"
+choices = ["never", "when-reviews"]
+default = "never"
+help = "when-reviews: for running it on a schedule."
+
+[[question]]
+name = "OPEN_ON"
+prompt = "Where the browser opens"
+kind = "choice"
+choices = ["auto", "this-machine", "connected-computer"]
+default = "auto"
+help = "this-machine: this computer's own screen, even if Shimmer was started from a Cursor/VS Code terminal connected from elsewhere. connected-computer: the computer you're connected from. auto: wherever Shimmer was started."
