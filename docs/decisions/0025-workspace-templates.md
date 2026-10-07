@@ -256,6 +256,28 @@ same on every machine and needs nothing installed.
 So one template walks through `ready → launching → active`, `dirty` (with `FAIL_AT = check`),
 cleanup back to `ready`, and a failed cleanup that stays `dirty`.
 
+**`monorepo`**: several apps from one repo at once, with their logs side by side. Separate from
+`web-project` so the single-app case stays simple. Its own helper, `lib/shimmer-monorepo.sh`,
+recognises the tool and builds the commands:
+
+| Found at the root | Tool | Dev servers, with `DEV_COMMAND = auto` |
+|---|---|---|
+| `turbo.json` | Turborepo | one process: `turbo run dev --filter=a --filter=b` (the tool's own labelled output) |
+| `nx.json` | Nx | one process: `nx run-many -t serve -p a,b` |
+| `pnpm-workspace.yaml` | pnpm | per app: `pnpm --filter a run dev` |
+| `package.json` `"workspaces"` | npm / yarn / bun (by lockfile) | per app: `npm run dev -w a`, `yarn workspace a run dev`, `bun run --filter a dev` |
+| `Cargo.toml` `[workspace]` | Cargo | per app: `cargo run -p a` |
+| `go.work` | Go | per app: `go run ./a` |
+
+A `DEV_COMMAND` of your own runs once per app when it contains `{app}`, else once; `DEV_TARGET`
+names the task (`auto`: `serve` for Nx, `dev` otherwise). Every app's process writes
+`dev-<app>.log` in the temp folder and runs in the `dev` step's process group, which stays alive
+while they do (a second activate starts nothing new; `stop` stops them together). The `wait`
+step waits for every `LOCAL_URLS` entry and fails as soon as any app's process exits, with that
+app's log. A `logs` step opens one terminal following every app's log (`LOGS_TERMINAL`). Install
+is one root install when the lockfile changed (Cargo and Go skip it). The rest (editor, `OPEN_ON`,
+in-editor terminal, live site, links, browser window, `CLOSE_ON_STOP`) is `web-project`'s.
+
 **`vm`**: start a virtual machine, wait until it answers over SSH, then open an editor and a
 terminal inside it. Shimmer runs on the computer that hosts the VM.
 

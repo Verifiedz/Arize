@@ -582,12 +582,13 @@ shimmer_answers() {
     curl -s -o /dev/null --max-time 2 "$1"
 }
 
-# The process id of this workspace's dev server, if it's still running.
+# The process group of this workspace's dev server(s), if anything in it is still running. The
+# whole group, not just the step that started it: the step may have exited while its servers run.
 shimmer_dev_server_pid() {
     file="$SHIMMER_STATE_DIR/dev-server.pid"
     [ -f "$file" ] || return 0
     pid=$(cat "$file")
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo "$pid"
+    [ -n "$pid" ] && kill -s 0 -- "-$pid" 2>/dev/null && echo "$pid"
 }
 
 # Stop a process and everything it started: a detached step is its own process group.

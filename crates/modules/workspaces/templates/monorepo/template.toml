@@ -1,0 +1,151 @@
+[template]
+label = "Monorepo"
+description = "Several apps from one repo at once: Turborepo, Nx, pnpm/npm/yarn/bun workspaces, Cargo or Go workspaces, with their logs side by side"
+
+[[question]]
+name = "PROJECT_DIR"
+prompt = "Monorepo folder (its root)"
+kind = "folder"
+required = true
+
+[[question]]
+name = "APPS"
+prompt = "Apps to run"
+kind = "text"
+required = true
+help = "Names or folders, separated by spaces, e.g. web api docs (Go: folders like cmd/api)."
+
+[[question]]
+name = "DEV_COMMAND"
+prompt = "How to run them"
+kind = "command"
+default = "auto"
+help = "auto: from the tool (turbo run dev, nx run-many, pnpm --filter, npm -w, cargo run -p, go run). Or your own: with {app} it runs once per app (e.g. make dev APP={app}), without it once."
+
+[[question]]
+name = "DEV_TARGET"
+prompt = "Name of the dev task"
+kind = "text"
+default = "auto"
+help = "The script or target that starts an app. auto: serve for Nx, dev otherwise."
+
+[[question]]
+name = "LOCAL_URLS"
+prompt = "Local URLs to wait for and open"
+kind = "urls"
+help = "One per app that serves something, e.g. http://localhost:3000 http://localhost:4000/health. Leave empty to not wait."
+
+[[question]]
+name = "CODE_EDITOR"
+prompt = "Editor"
+kind = "choice"
+choices = ["vscode", "cursor", "zed", "webstorm", "intellij", "sublime", "neovim", "none"]
+default = "vscode"
+
+[[question]]
+name = "OPEN_ON"
+prompt = "Where windows open"
+kind = "choice"
+choices = ["auto", "this-machine", "connected-computer"]
+default = "auto"
+help = "this-machine: this computer's own screen, even if Shimmer was started from a Cursor/VS Code terminal connected from elsewhere. connected-computer: the computer you're connected from. auto: wherever Shimmer was started."
+
+[[question]]
+name = "IDE_TERMINAL_COMMAND"
+prompt = "Command to run in a terminal inside the editor"
+kind = "command"
+help = "VS Code and Cursor only, e.g. claude. Leave empty for none. Shimmer writes .vscode/tasks.json (kept out of git); the editor may ask once to allow automatic tasks."
+
+[[question]]
+name = "GIT_ON_OPEN"
+prompt = "Pull the latest code when it opens"
+kind = "choice"
+choices = ["pull", "none"]
+default = "pull"
+help = "pull: only when you have no uncommitted changes; never stops the launch if you're offline."
+
+[[question]]
+name = "INSTALL_COMMAND"
+prompt = "Install command"
+kind = "command"
+default = "auto"
+help = "auto: one install at the root (npm/pnpm/yarn/bun), only when the lockfile changed. Leave empty to never install."
+
+[[question]]
+name = "SERVICES_COMMAND"
+prompt = "Command to start services first"
+kind = "command"
+help = "e.g. docker compose up -d. Leave empty for none."
+
+[[question]]
+name = "SERVICES_STOP_COMMAND"
+prompt = "Command to stop those services"
+kind = "command"
+help = "Run by workspaces stop, e.g. docker compose down. Leave empty for none."
+
+[[question]]
+name = "LIVE_URL"
+prompt = "Your live (deployed) site"
+kind = "url"
+default = "auto"
+help = "auto: the homepage field in the root package.json. Leave empty for none."
+
+[[question]]
+name = "REPO_PAGE"
+prompt = "Repository page to open"
+kind = "choice"
+choices = ["home", "pulls", "issues", "actions", "none"]
+default = "home"
+help = "Found from the repo's git remote."
+
+[[question]]
+name = "LINKS"
+prompt = "Other links to open"
+kind = "urls"
+help = "Anything else: hosting dashboards, Storybook, docs. Separate them with spaces."
+
+[[question]]
+name = "BROWSER_WINDOW"
+prompt = "Open the links in your normal browser, or a window of their own"
+kind = "choice"
+choices = ["shared", "separate"]
+default = "shared"
+help = "separate: a browser window with its own profile (log in to sites once inside it; it remembers), which workspaces stop closes. shared: tabs in your normal browser, which stop can't close."
+
+[[question]]
+name = "BROWSER_APP"
+prompt = "Browser for that separate window"
+kind = "choice"
+choices = ["auto", "firefox", "chrome", "chromium", "brave", "edge"]
+default = "auto"
+help = "Only used when BROWSER_WINDOW is separate. auto: the first one installed."
+
+[[question]]
+name = "LOGS_TERMINAL"
+prompt = "Open a terminal following every app's logs"
+kind = "choice"
+choices = ["yes", "no"]
+default = "yes"
+help = "One window with all the dev servers' output, each under its app's name."
+
+[[question]]
+name = "TERMINAL_APP"
+prompt = "External terminal (for the logs, and the command below)"
+kind = "choice"
+choices = ["auto", "kitty", "foot", "alacritty", "wezterm", "ghostty", "gnome-terminal", "konsole", "terminal", "iterm", "none"]
+default = "auto"
+help = "auto: Terminal on macOS, the first one found on Linux. kitty, foot, alacritty, wezterm, ghostty, konsole and xterm windows can be closed by workspaces stop."
+
+[[question]]
+name = "TERMINAL_COMMAND"
+prompt = "Command to run in another external terminal"
+kind = "command"
+help = "e.g. claude. Leave empty for no extra terminal."
+
+[[question]]
+name = "CLOSE_ON_STOP"
+prompt = "Close what it opened when you run workspaces stop"
+kind = "choice"
+choices = ["yes", "no"]
+default = "yes"
+help = "Closed: the dev servers, services, kitty/foot/alacritty/wezterm/ghostty/konsole/xterm terminals, and the browser window if BROWSER_WINDOW is separate. Never closed: the editor, GNOME Terminal and macOS Terminal/iTerm windows, and tabs in your normal browser. stop lists exactly what it closed and what it left."

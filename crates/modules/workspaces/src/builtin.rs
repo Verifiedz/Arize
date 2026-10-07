@@ -14,9 +14,30 @@ macro_rules! file {
 
 const HELPER: (&str, &str) = file!("lib/shimmer-open.sh", "lib/shimmer-open.sh");
 const VM_HELPER: (&str, &str) = file!("lib/shimmer-vm.sh", "lib/shimmer-vm.sh");
+const MONOREPO_HELPER: (&str, &str) = file!("lib/shimmer-monorepo.sh", "lib/shimmer-monorepo.sh");
 
 /// `(id, files)`, sorted by id.
 const BUILTINS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "monorepo",
+        &[
+            file!("template.toml", "monorepo/template.toml"),
+            file!("workspace.toml", "monorepo/workspace.toml"),
+            file!("steps/01-check.sh", "monorepo/steps/01-check.sh"),
+            file!("steps/02-git.sh", "monorepo/steps/02-git.sh"),
+            file!("steps/03-install.sh", "monorepo/steps/03-install.sh"),
+            file!("steps/04-services.sh", "monorepo/steps/04-services.sh"),
+            file!("steps/05-editor.sh", "monorepo/steps/05-editor.sh"),
+            file!("steps/06-dev.sh", "monorepo/steps/06-dev.sh"),
+            file!("steps/07-wait.sh", "monorepo/steps/07-wait.sh"),
+            file!("steps/08-browser.sh", "monorepo/steps/08-browser.sh"),
+            file!("steps/09-logs.sh", "monorepo/steps/09-logs.sh"),
+            file!("steps/10-terminal.sh", "monorepo/steps/10-terminal.sh"),
+            file!("cleanup.sh", "monorepo/cleanup.sh"),
+            HELPER,
+            MONOREPO_HELPER,
+        ],
+    ),
     (
         "smoke-test",
         &[
