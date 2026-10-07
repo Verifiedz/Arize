@@ -1,0 +1,20 @@
+[package]
+name = "shimmer-fetchers"
+description = "The fetchers module (CLAUDE.md §8, ADR 0028): Source trait, scheduling, dedup. Depends on core only."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+shimmer-core = { path = "../../core" }
+async-trait = "0.1"
+serde_json = "1"
+
+[dev-dependencies]
+shimmer-core = { path = "../../core", features = ["testing"] }
+tokio = { version = "1", features = ["macros", "rt"] }
