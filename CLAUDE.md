@@ -30,7 +30,7 @@ Everything a user sees is a specialisation of one of these.
 | `scheduler` | *When* work happens: recurring, one-shot, calendar-driven triggers | Triggers registered by any module |
 | `workspaces` | Launching configured sessions from user scripts | Per-setup scripts (Hyprland, macOS, Windows) |
 | `records` | Typed collections: schema, storage, filtering, completion metrics | Job apps, LeetCode, OSS repos, outreach, docs, career fairs, saved links |
-| `fetchers` | Reaching outward: rate limits, caching, dedup, backoff | Job boards, tech news, docs sites, transcript APIs |
+| `fetchers` | Reaching outward: scheduling, dedup, backoff (rate limits and caching live in `ctx.http`, ADR 0027) | Job boards, tech news, docs sites, transcript APIs |
 | `notify` | Delivering messages: batching, retry, quiet hours, fallback sinks | Email, phone push, desktop, webhook |
 | `calendar` | Shared dated entries other mechanisms read and write | Deadlines, career fairs, scheduled sessions |
 
