@@ -65,6 +65,28 @@ belongs to this machine, so copying your Shimmer folder elsewhere doesn't bring 
 | scheduler pause | `chotto-matte` | `code-freeze` | `hold-position` | `spause` |
 | scheduler resume | `hajime` | `thaw` | `full-ahead` | `sresume` |
 | scheduler remove | `mou-ii` | `deprecate` | `scrub-mission` | `sdel` |
+| records templates | `sugoi` | `boilerplate` | `starcharts` | `rtpl` |
+| records new | `yosh` | `greenfield` | `commission` | `rnew` |
+| records trash | `gomen` | `graveyard` | `debris-field` | `rtrash` |
+| records purge | `itai` | `rm-rf` | `self-destruct` | `rpurge` |
+| records import | `irasshaimase` | `migrate` | `tractor-beam` | `rimport` |
+| records export | `ganbatte` | `dump` | `transmit` | `rexport` |
+| records check | `uso` | `lint` | `sensor-sweep` | `rcheck` |
+| records rename-field | `henshin` | `refactor` | `recalibrate` | `rmvfield` |
+| records rename-collection | `kakkoii` | `pivot` | `rename-fleet` | `rmvcol` |
+| records remove-collection | `oyasumi` | `archive` | `mothball` | `rrmcol` |
+| records restore-collection | `okaerinasai` | `unarchive` | `recommission` | `rundocol` |
+| workspaces stop | `otsukare` | `eod` | `dock` | `wstop` |
+| workspaces remove | `mata-ne` | `decommission` | `stand-down` | `wrm` |
+| workspaces restore | `hisashiburi` | `cherry-pick` | `homecoming` | `wundo` |
+| workspaces rename | `dare-da` | `rename-env` | `callsign` | `wmv` |
+| workspaces copy | `bunshin` | `fork` | `sister-ship` | `wcp` |
+| workspaces reconfigure | `chotto` | `hotfix` | `refit` | `wset` |
+| workspaces edit | `mendokusai` | `monkey-patch` | `engineering` | `wedit` |
+| workspaces templates | `kawaii` | `starter-kits` | `shipyard` | `wtpl` |
+| workspaces peek | `hontou` | `code-review` | `long-range-scan` | `wpeek` |
+| workspaces new | `yoroshiku` | `scaffold` | `maiden-voyage` | `wnew` |
+| scheduler show | `itsu` | `eta` | `countdown` | `sget` |
 
 ## Writing your own
 
