@@ -15,6 +15,7 @@ macro_rules! file {
 const HELPER: (&str, &str) = file!("lib/shimmer-open.sh", "lib/shimmer-open.sh");
 const VM_HELPER: (&str, &str) = file!("lib/shimmer-vm.sh", "lib/shimmer-vm.sh");
 const MONOREPO_HELPER: (&str, &str) = file!("lib/shimmer-monorepo.sh", "lib/shimmer-monorepo.sh");
+const UPDATE_HELPER: (&str, &str) = file!("lib/shimmer-update.sh", "lib/shimmer-update.sh");
 
 /// `(id, files)`, sorted by id.
 const BUILTINS: &[(&str, &[(&str, &str)])] = &[
@@ -48,6 +49,20 @@ const BUILTINS: &[(&str, &[(&str, &str)])] = &[
             file!("steps/03-background.sh", "smoke-test/steps/03-background.sh"),
             file!("cleanup.sh", "smoke-test/cleanup.sh"),
             HELPER,
+        ],
+    ),
+    (
+        "update-everything",
+        &[
+            file!("template.toml", "update-everything/template.toml"),
+            file!("workspace.toml", "update-everything/workspace.toml"),
+            file!("steps/01-check.sh", "update-everything/steps/01-check.sh"),
+            file!("steps/02-system.sh", "update-everything/steps/02-system.sh"),
+            file!("steps/03-tools.sh", "update-everything/steps/03-tools.sh"),
+            file!("steps/04-summary.sh", "update-everything/steps/04-summary.sh"),
+            file!("cleanup.sh", "update-everything/cleanup.sh"),
+            HELPER,
+            UPDATE_HELPER,
         ],
     ),
     (

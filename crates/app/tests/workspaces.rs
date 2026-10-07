@@ -163,7 +163,8 @@ fn the_cli_queues_and_follows_a_launch() {
     let (code, out, err) = shimmer(&home, &["workspaces", "activate", "deep-work", "--wait"]);
     assert_eq!(code, 0, "{err}");
     assert!(err.contains("step 1/1 setup"), "{err}");
-    assert_eq!(out.trim_end(), "✓ deep-work is active");
+    // The last step is supervised, so its output follows (ADR 0025, update-everything's summary).
+    assert_eq!(out.trim_end(), "✓ deep-work is active\n  hi");
     assert_eq!(call(&home, "workspaces.status", json!({"id": "deep-work"}))["state"], "active");
 }
 

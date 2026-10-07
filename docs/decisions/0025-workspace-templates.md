@@ -278,6 +278,47 @@ app's log. A `logs` step opens one terminal following every app's log (`LOGS_TER
 is one root install when the lockfile changed (Cargo and Go skip it). The rest (editor, `OPEN_ON`,
 in-editor terminal, live site, links, browser window, `CLOSE_ON_STOP`) is `web-project`'s.
 
+**`update-everything`**: one command that updates every developer tool you have installed and
+your system's packages, then says what updated and what failed. A one-off job rather than a
+session: run it again any time (an `active` workspace may be activated again), or on a schedule.
+Its helper is `lib/shimmer-update.sh`.
+
+The list of things that could be updated has no end, so the template doesn't try to know them
+all:
+
+- **It detects, it doesn't ask.** A built-in list (rustup, `cargo install-update`, brew, mas, npm,
+  pnpm, bun, deno, pipx, uv, flatpak `--user`, gh extensions, ghcup, tldr, claude) runs each
+  updater only when it's installed. npm is skipped, with the reason, when its global folder
+  belongs to root.
+- **topgrade, when there is one** (`USE_TOPGRADE = auto`): it knows 100+ updaters, so it
+  replaces the list, with its `system` step disabled (see below).
+- **`SKIP`** names updaters never to run; **`EXTRA_COMMANDS`** adds your own, one per line, each
+  run as its own updater named by its first word.
+- **One failure never stops the rest.** Every updater runs with input from `/dev/null` (nothing
+  waits for an answer nobody will type) and its result is recorded; the run stays successful,
+  and the `summary` step lists `updated` / `skipped` / `failed` with the log path. Failing the
+  run would make the workspace `dirty` and block the next scheduled run over one bad updater.
+
+**System packages need sudo, and a password is never an answer** (the rule below).
+`SYSTEM_UPDATES`:
+
+| Answer | What happens |
+|---|---|
+| `terminal` (default) | A terminal opens running the update (`paru`/`yay`, `pacman`, `apt-get`, `dnf`, `zypper`, `apk`, or `softwareupdate` on macOS, plus `snap` and system `flatpak` when present); you type your password into `sudo` there. The `system` step waits for the window's exit code (written to the temp folder), notices a window closed early, and fails only if no window opens within 30 s. |
+| `passwordless` | `sudo -n` and the tool's own "yes" flag, for a sudo rule of yours that needs no password, e.g. for a scheduled run. A "password is required" refusal is reported as such, with how to fix it. |
+| `skip` | Tools only. |
+
+| # | Step | Mode | Does |
+|---|---|---|---|
+| 1 | `check` | supervised, 30 s | Lists what this run will update; checks the terminal (and where it opens, `OPEN_ON`) for `terminal`, and topgrade for `USE_TOPGRADE = yes`. Clears the last run's results. |
+| 2 | `system` | supervised, 3600 s | The system update, as above. |
+| 3 | `tools` | supervised, 3600 s | Every installed tool (or topgrade), then `EXTRA_COMMANDS`. |
+| 4 | `summary` | supervised, 30 s | What updated, was skipped and failed. |
+| | `cleanup.sh` | supervised, 30 s | Closes the system update's terminal if it is still open. Updates are not undone. |
+
+Because its last step is supervised, `workspaces.activate`'s result carries that step's log
+(docs/protocol.md), and `shimmer workspaces activate <id> --wait` prints the summary.
+
 **`vm`**: start a virtual machine, wait until it answers over SSH, then open an editor and a
 terminal inside it. Shimmer runs on the computer that hosts the VM.
 

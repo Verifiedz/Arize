@@ -356,7 +356,7 @@ emails.
 |---|---|---|---|
 | `workspaces.list` | inline | `{}` | `{"workspaces":[{"id","label","state"}]}`, sorted by id. `dirty_reason` when dirty; `error` when invalid. |
 | `workspaces.status` | inline | `{"id"}` | `{"id","label","description"?,"state","steps":[{"index","name","mode","timeout_s"?,"description"?}],"cleanup_timeout_s"?,"has_cleanup_script","last_session"}`. When dirty also `dirty_reason`, `log` and `dirty:{reason,failed_step,failed_at,log}`; when launching, `running_step`; when invalid, `error`. |
-| `workspaces.activate` | queued (`workspaces`) | `{"id"}` | Task handle. The task ends `{"id","state":"active","session_id"}`, or fails (see below). |
+| `workspaces.activate` | queued (`workspaces`) | `{"id"}` | Task handle. The task ends `{"id","state":"active","session_id","log"}`, or fails (see below). `log` is the last step's log (relative to `$SHIMMER_HOME`) when that step is supervised, else `""`: a template that ends with a summary step shows it this way (ADR 0025). |
 | `workspaces.cleanup` | queued (`workspaces`) | `{"id"}` | Task handle. Runs `cleanup.{sh,ps1}` supervised; on success `dirty → ready`. The task ends `{"id","state":"ready","log"}`: the script's log, for a client to show what it did. |
 | `workspaces.force_relaunch` | queued (`workspaces`) | `{"id"}` | Task handle. Launches a `dirty` workspace anyway; emits `workspaces.session.forced` before any step runs. |
 | `workspaces.reset` | inline | `{"id"}` | `{"id","state":"ready"}`. Clears `dirty` without running cleanup. Last resort; also clears an unreadable `state.toml`. |

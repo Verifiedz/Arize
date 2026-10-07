@@ -423,18 +423,33 @@ async fn queued(client: &mut Client, kind: Queued, id: &str, wait: bool, json: b
     }
 }
 
+/// The most log lines [`with_log`] prints.
+const SHOWN_LOG_LINES: usize = 20;
+
 /// After stop or cleanup: what the cleanup script said it did, e.g. "closed: the kitty terminal",
-/// "left open, close it yourself: the cursor window …" (ADR 0026). Read from its log in the
-/// Shimmer folder; nothing extra when there's no log or it can't be read.
+/// "left open, close it yourself: the cursor window …" (ADR 0026). After activate: the last
+/// step's log when that step is supervised, e.g. update-everything's summary (ADR 0025). Read
+/// from its log in the Shimmer folder; nothing extra when there's no log or it can't be read.
 fn with_log(done: String, result: &Value) -> String {
     let Some(log) = result["log"].as_str().filter(|l| !l.is_empty()) else { return done };
     let Ok(text) = std::fs::read_to_string(shimmer_proto::paths::shimmer_home().join(log)) else { return done };
-    let lines: Vec<String> = text.lines().filter(|l| !l.trim().is_empty()).map(|l| format!("  {l}")).collect();
+    let lines = shown_log(&text, log);
     if lines.is_empty() {
         done
     } else {
         format!("{done}\n{}", lines.join("\n"))
     }
+}
+
+/// A log's non-empty lines, indented. Only the last [`SHOWN_LOG_LINES`]: the end is what matters
+/// (a summary, what was closed), and a long setup log isn't reprinted.
+fn shown_log(text: &str, log: &str) -> Vec<String> {
+    let mut lines: Vec<String> = text.lines().filter(|l| !l.trim().is_empty()).map(|l| format!("  {l}")).collect();
+    if lines.len() > SHOWN_LOG_LINES {
+        lines.drain(..lines.len() - SHOWN_LOG_LINES);
+        lines.insert(0, format!("  … (the whole log: {log})"));
+    }
+    lines
 }
 
 fn queued_message(kind: Queued, id: &str, task: &str) -> String {
@@ -1213,5 +1228,16 @@ mod tests {
                            "log": "logs/x.log"});
         assert_eq!(summary(&dirty), "deep-work is dirty: step 1/3 setup: exit code 1\n  log: logs/x.log");
         assert_eq!(summary(&json!({"id": "focus", "state": "ready"})), "focus is ready");
+    }
+
+    #[test]
+    fn a_long_log_shows_only_its_end() {
+        let text: String = (1..=25).map(|i| format!("line {i}\n\n")).collect();
+        let shown = shown_log(&text, "logs/x.log");
+        assert_eq!(shown.len(), 21);
+        assert_eq!(shown[0], "  … (the whole log: logs/x.log)");
+        assert_eq!(shown[1], "  line 6");
+        assert_eq!(shown[20], "  line 25");
+        assert_eq!(shown_log("a\n\nb\n", "l"), ["  a", "  b"]);
     }
 }

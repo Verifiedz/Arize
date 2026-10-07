@@ -105,7 +105,8 @@ async fn activate_runs_every_step_in_order_and_goes_active() {
     let w = Workspaces::default();
 
     let data = call(&w, &env, "workspaces.activate").await.unwrap();
-    assert_eq!(data, json!({"id": "deep-work", "state": "active", "session_id": "01SESSION"}));
+    // The last step is detached, so there is no log to show (ADR 0025 §6, update-everything).
+    assert_eq!(data, json!({"id": "deep-work", "state": "active", "session_id": "01SESSION", "log": ""}));
 
     let steps = received(&env.launcher);
     let asked: Vec<_> = steps.iter().map(|s| (s.step.clone(), s.mode)).collect();
@@ -133,6 +134,27 @@ async fn activate_runs_every_step_in_order_and_goes_active() {
     assert_eq!(status["state"], "active");
     assert_eq!(status["last_session"]["outcome"], "launched");
     assert_eq!(status["last_session"]["forced"], false);
+}
+
+#[tokio::test]
+async fn a_launch_that_ends_with_a_supervised_step_returns_that_steps_log() {
+    // A summary step at the end (update-everything): `activate --wait` prints its log.
+    let env = TestEnv::new("workspaces");
+    let manifest = DEEP_WORK.replace(
+        "name = \"terminal\"\nmode = \"detached\"",
+        "name = \"terminal\"\nmode = \"supervised\"\ntimeout_s = 5",
+    );
+    put(&env, "deep-work/workspace.toml", &manifest);
+    for script in ["steps/01-setup.sh", "steps/02-editor.sh", "steps/03-terminal.sh", "cleanup.sh"] {
+        put(&env, &format!("deep-work/{script}"), "true\n");
+    }
+    script(
+        &env.launcher,
+        [ok_supervised(), ok_detached(), Ok(outcome(Some(0), false, "logs/deep-work-01SESSION-terminal.log"))],
+    );
+
+    let data = call(&Workspaces::default(), &env, "workspaces.activate").await.unwrap();
+    assert_eq!(data["log"], "logs/deep-work-01SESSION-terminal.log");
 }
 
 #[tokio::test]

@@ -31,8 +31,8 @@ async fn templates_lists_the_built_ins_with_their_questions() {
     let env = TestEnv::new("workspaces");
     let data = call(&Workspaces::default(), &env, "workspaces.templates", json!({})).await.unwrap();
     let ids: Vec<&str> = data["templates"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["monorepo", "smoke-test", "vm", "web-project"]);
-    let web = &data["templates"][3];
+    assert_eq!(ids, ["monorepo", "smoke-test", "update-everything", "vm", "web-project"]);
+    let web = &data["templates"][4];
     assert_eq!(
         web["questions"][0],
         json!({"name": "PROJECT_DIR", "prompt": "Project folder", "kind": "folder", "required": true})
@@ -123,7 +123,7 @@ async fn create_never_overwrites_and_checks_everything_first() {
     assert!(e.message.contains("not a valid workspace id"), "{}", e.message);
     let e = call(&w, &env, "workspaces.create", create("site", "nope", json!({}))).await.unwrap_err();
     assert_eq!(e.code, ErrorCode::NotFound);
-    assert!(e.message.contains("there are: monorepo, smoke-test, vm, web-project"), "{}", e.message);
+    assert!(e.message.contains("there are: monorepo, smoke-test, update-everything, vm, web-project"), "{}", e.message);
     assert!(env.backend.events().is_empty(), "nothing written");
 
     env.ctx.store.write("site/notes.txt", "mine").unwrap();

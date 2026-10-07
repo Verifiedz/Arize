@@ -155,6 +155,10 @@ impl Workspaces {
         let steps: Vec<(Step, SpawnMode)> = workspace.launch_steps().collect();
         let count = steps.len() as u32;
         let mut session_id: Option<String> = None;
+        // The last step's log when it is supervised: a template that ends with a summary step
+        // (update-everything) gets it printed by `activate --wait`. One ending with a detached
+        // window has none.
+        let mut last_log = String::new();
 
         for (i, (step, mode)) in steps.into_iter().enumerate() {
             let index = i as u32 + 1;
@@ -200,6 +204,10 @@ impl Workspaces {
             if let Some(reason) = failure(mode, &out) {
                 return Err(fail(reason, &out.log_path, Outcome::Dirty, &session_id)?);
             }
+            last_log = match mode {
+                SpawnMode::Supervised { .. } => out.log_path.clone(),
+                SpawnMode::Detached => String::new(),
+            };
         }
 
         let _g = self.write.lock();
@@ -216,7 +224,7 @@ impl Workspaces {
             )
         })?;
         ctx.progress(1.0, "launched");
-        Ok(json!({"id": id, "state": "active", "session_id": session}))
+        Ok(json!({"id": id, "state": "active", "session_id": session, "log": last_log}))
     }
 
     /// Save which step is about to run, so a daemon that dies now restarts knowing it.
