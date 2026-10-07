@@ -1,0 +1,87 @@
+[template]
+label = "Offline prep"
+description = "Get your projects ready to work with no internet (a flight, bad Wi-Fi, a trip): pull repos, download every dependency and docker image, check each project really works offline, save docs, pages and your GitHub issues, pull a local AI model. Stop when you're back online to see what to push"
+
+[[question]]
+name = "PROJECTS"
+prompt = "Project folders to get ready"
+kind = "text"
+required = true
+help = "Separated by spaces, e.g. ~/code/my-site ~/Developer/Shimmer (~ means your home folder). A path with spaces: put one per line in workspace.toml."
+
+[[question]]
+name = "CLONE_REPOS"
+prompt = "Repos to clone if they aren't here yet (optional)"
+kind = "text"
+help = "owner/repo (GitHub) or full git URLs, separated by spaces. Cloned into CLONE_DIR and got ready like the rest."
+
+[[question]]
+name = "CLONE_DIR"
+prompt = "Where to clone them"
+kind = "text"
+default = "~/code"
+
+[[question]]
+name = "OFFLINE_DIR"
+prompt = "Folder for saved pages, your GitHub snapshot and Python packages"
+kind = "text"
+default = "~/offline"
+help = "Its index.html is a start page linking everything saved, including each Rust project's docs."
+
+[[question]]
+name = "WARM_BUILD"
+prompt = "Also compile each project once (so the first build offline is quick)"
+kind = "choice"
+choices = ["no", "yes"]
+default = "no"
+help = "Rust, Go, Java/Kotlin, .NET, Swift, Haskell, Zig. Takes a while and uses battery: best plugged in."
+
+[[question]]
+name = "SAVE_PAGES"
+prompt = "Web pages to save for reading offline (optional)"
+kind = "urls"
+help = "Docs, articles, tickets: separated by spaces. Each becomes one HTML file (monolith, else wget, else curl)."
+
+[[question]]
+name = "AI_MODEL"
+prompt = "Local AI model to download with ollama (optional)"
+kind = "text"
+help = "e.g. qwen2.5-coder:7b or llama3.2:3b, for a coding assistant with no internet. Several GB. Leave empty to skip."
+
+[[question]]
+name = "GITHUB_SNAPSHOT"
+prompt = "Save your GitHub issues and PRs to read offline"
+kind = "choice"
+choices = ["projects", "everything", "no"]
+default = "projects"
+help = "Through gh. projects: only these projects' repos. everything: all of yours. Issues assigned to you, your open PRs and PRs waiting for your review, with comments and diffs."
+
+[[question]]
+name = "DATA_SAVER"
+prompt = "Skip the big downloads (docker images, AI model)"
+kind = "choice"
+choices = ["no", "yes"]
+default = "no"
+help = "yes: on a phone hotspot or a capped connection."
+
+[[question]]
+name = "SKIP"
+prompt = "Parts to leave out (optional)"
+kind = "text"
+help = "Names separated by spaces: machine repos deps docker build verify docs pages github ai."
+
+[[question]]
+name = "PULL_ON_RETURN"
+prompt = "When you're back online (workspaces stop): pull your repos"
+kind = "choice"
+choices = ["no", "yes"]
+default = "no"
+help = "yes: fast-forward each clean repo's current branch. stop always lists what's unpushed and behind either way."
+
+[[question]]
+name = "PUSH_ON_RETURN"
+prompt = "When you're back online (workspaces stop): push what you committed offline"
+kind = "choice"
+choices = ["no", "yes"]
+default = "no"
+help = "yes: push each repo's current branch when it has commits its upstream doesn't. Never forced."

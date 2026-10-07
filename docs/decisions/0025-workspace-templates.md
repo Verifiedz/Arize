@@ -342,6 +342,42 @@ app's log. A `logs` step opens one terminal following every app's log (`LOGS_TER
 is one root install when the lockfile changed (Cargo and Go skip it). The rest (editor, `OPEN_ON`,
 in-editor terminal, live site, links, browser window, `CLOSE_ON_STOP`) is `web-project`'s.
 
+**`offline-prep`**: get projects ready to work with no network (a flight, bad Wi-Fi, a trip,
+a capped hotspot, a network where GitHub or npm is blocked). `activate` is "going offline",
+`stop` is "back online". Its helper is `lib/shimmer-offline.sh`, one function per ecosystem.
+
+Projects are a list (`PROJECTS`, one per line in `workspace.toml` for paths with spaces) plus
+`CLONE_REPOS` cloned into `CLONE_DIR` when missing; a list rather than every folder under a root,
+so nothing is downloaded for projects you won't touch. Parts, each a supervised step and each
+can be left out with `SKIP`:
+
+| Part | Does |
+|---|---|
+| `machine` | Battery (warns under 80% unplugged), disk space (under 5 GB), logins that have expired while there's still network to refresh them (`gh`, `aws`, `gcloud`, `az`). |
+| `repos` | Clone, fetch, fast-forward only when clean (never a merge), submodules, Git LFS; warns on uncommitted or unpushed work. |
+| `deps` | Each project's own tools, from the files at its top: cargo, npm/pnpm/yarn/bun (by lockfile), uv/poetry/pip (pip also downloads a wheelhouse to `OFFLINE_DIR/wheels`), go, maven/gradle (the project's wrapper first), bundler, composer, dotnet, mix, dart/flutter pub, swift, cabal/stack, zig, deno. Rust projects also get `rust-src` and `rust-analyzer`. A missing tool is a warning, not a failure. |
+| `docker` | Each compose file's images (`pull --ignore-buildable`, then `build`) and each Dockerfile's `FROM` images (not its own stages). Not with `DATA_SAVER`. |
+| `build` | With `WARM_BUILD = yes`: compiles once, offline, with tests (compiled languages only; a web build often reaches the network). |
+| `verify` | **Does it really work offline?** Each tool in its own offline mode (`cargo fetch --offline`, `uv sync --offline`, `GOPROXY=off go list`, `pip --dry-run --no-index`, `mvn -o`, `gradle --offline`, `bundle --local`, `pub get --offline`, `deno --cached-only`), or what's on disk (every `package.json` dependency in `node_modules`: `npm ls` fails on harmless peer warnings), and compose images present. A failure says why, in the tool's own last line. Also lists hosts in `.env` files that aren't this machine: those services need the network whatever is downloaded. |
+| `docs` | `cargo doc` per Rust project (docs of the exact versions used), `rust-docs`, `tldr --update`. |
+| `pages` | `SAVE_PAGES` as single files: `monolith`, else `wget` with page requisites, else `curl`. |
+| `github` | With `GITHUB_SNAPSHOT` (`projects`: their GitHub remotes; `everything`): issues assigned to you, your open PRs and PRs waiting for your review, each `gh … view --comments` as Markdown and PRs' diffs. |
+| `ai` | `ollama pull AI_MODEL`, starting `ollama serve` for the download if needed. Not with `DATA_SAVER`. |
+
+`summary` prints every warning, each project's verdict ("works offline" / "NOT ready offline
+(why)"), the other parts counted, and services needing the network, then writes
+`OFFLINE_DIR/index.html`: a start page linking each project's Rust docs, the saved pages, the
+GitHub snapshot, what else works offline (`rustup doc`, `pydoc -b`, `go doc`, the AI model), and
+the full report.
+
+**Back online** (`cleanup.sh`, run by `stop`): fetch each repo and say what's behind, unpushed or
+uncommitted. `PULL_ON_RETURN = yes` fast-forwards repos that are clean and have nothing of their
+own; `PUSH_ON_RETURN = yes` pushes the current branch when it is ahead and not behind. Both are
+off by default, never forced, never a merge. Nothing downloaded is removed.
+
+Not done: browser-based offline docs (DevDocs, Zeal, Dash) need a click in their own app, and
+download sizes aren't estimated (`DATA_SAVER` skips the big parts instead).
+
 **`scratch`**: a fresh throwaway folder for trying something out. Each activate makes
 `SCRATCH_DIR/<date>-<language>` (`-2`, `-3`… on the same day; `NEW_FOLDER = once-a-day` reopens
 that day's instead) with a starter file for `LANGUAGE`, opens the folder in the editor with that

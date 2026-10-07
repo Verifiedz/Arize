@@ -22,6 +22,7 @@ fn answers(template: &str) -> Value {
         "web-project" => json!({"PROJECT_DIR": "/home/me/code/site"}),
         "vm" => json!({"VM_SOFTWARE": "virtualbox", "VM_NAME": "Debian"}),
         "monorepo" => json!({"PROJECT_DIR": "/home/me/code/acme", "APPS": "web api"}),
+        "offline-prep" => json!({"PROJECTS": "~/code/site ~/code/api"}),
         _ => json!({}),
     }
 }
@@ -38,6 +39,7 @@ async fn templates_lists_the_built_ins_with_their_questions() {
             "github-inbox",
             "health",
             "monorepo",
+            "offline-prep",
             "scratch",
             "smoke-test",
             "update-everything",
@@ -45,7 +47,7 @@ async fn templates_lists_the_built_ins_with_their_questions() {
             "web-project"
         ]
     );
-    let web = &data["templates"][8];
+    let web = &data["templates"][9];
     assert_eq!(
         web["questions"][0],
         json!({"name": "PROJECT_DIR", "prompt": "Project folder", "kind": "folder", "required": true})
@@ -138,7 +140,7 @@ async fn create_never_overwrites_and_checks_everything_first() {
     assert_eq!(e.code, ErrorCode::NotFound);
     assert!(
         e.message.contains(
-            "there are: free-disk, github-inbox, health, monorepo, scratch, smoke-test, update-everything, vm, web-project"
+            "there are: free-disk, github-inbox, health, monorepo, offline-prep, scratch, smoke-test, update-everything, vm, web-project"
         ),
         "{}",
         e.message

@@ -424,7 +424,7 @@ async fn queued(client: &mut Client, kind: Queued, id: &str, wait: bool, json: b
 }
 
 /// The most log lines [`with_log`] prints.
-const SHOWN_LOG_LINES: usize = 20;
+const SHOWN_LOG_LINES: usize = 40;
 
 /// After stop or cleanup: what the cleanup script said it did, e.g. "closed: the kitty terminal",
 /// "left open, close it yourself: the cursor window …" (ADR 0026). After activate: the last
@@ -1238,12 +1238,12 @@ mod tests {
 
     #[test]
     fn a_long_log_shows_only_its_end() {
-        let text: String = (1..=25).map(|i| format!("line {i}\n\n")).collect();
+        let text: String = (1..=45).map(|i| format!("line {i}\n\n")).collect();
         let shown = shown_log(&text, "logs/x.log");
-        assert_eq!(shown.len(), 21);
+        assert_eq!(shown.len(), 41);
         assert_eq!(shown[0], "  … (the whole log: logs/x.log)");
         assert_eq!(shown[1], "  line 6");
-        assert_eq!(shown[20], "  line 25");
+        assert_eq!(shown[40], "  line 45");
         assert_eq!(shown_log("a\n\nb\n", "l"), ["  a", "  b"]);
     }
 }

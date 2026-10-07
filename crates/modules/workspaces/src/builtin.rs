@@ -18,6 +18,7 @@ const FREE_HELPER: (&str, &str) = file!("lib/shimmer-free.sh", "lib/shimmer-free
 const GITHUB_HELPER: (&str, &str) = file!("lib/shimmer-github.sh", "lib/shimmer-github.sh");
 const HEALTH_HELPER: (&str, &str) = file!("lib/shimmer-health.sh", "lib/shimmer-health.sh");
 const MONOREPO_HELPER: (&str, &str) = file!("lib/shimmer-monorepo.sh", "lib/shimmer-monorepo.sh");
+const OFFLINE_HELPER: (&str, &str) = file!("lib/shimmer-offline.sh", "lib/shimmer-offline.sh");
 const SCRATCH_HELPER: (&str, &str) = file!("lib/shimmer-scratch.sh", "lib/shimmer-scratch.sh");
 const UPDATE_HELPER: (&str, &str) = file!("lib/shimmer-update.sh", "lib/shimmer-update.sh");
 
@@ -83,6 +84,28 @@ const BUILTINS: &[(&str, &[(&str, &str)])] = &[
             file!("cleanup.sh", "monorepo/cleanup.sh"),
             HELPER,
             MONOREPO_HELPER,
+        ],
+    ),
+    (
+        "offline-prep",
+        &[
+            file!("template.toml", "offline-prep/template.toml"),
+            file!("workspace.toml", "offline-prep/workspace.toml"),
+            file!("steps/01-check.sh", "offline-prep/steps/01-check.sh"),
+            file!("steps/02-machine.sh", "offline-prep/steps/02-machine.sh"),
+            file!("steps/03-repos.sh", "offline-prep/steps/03-repos.sh"),
+            file!("steps/04-deps.sh", "offline-prep/steps/04-deps.sh"),
+            file!("steps/05-docker.sh", "offline-prep/steps/05-docker.sh"),
+            file!("steps/06-build.sh", "offline-prep/steps/06-build.sh"),
+            file!("steps/07-verify.sh", "offline-prep/steps/07-verify.sh"),
+            file!("steps/08-docs.sh", "offline-prep/steps/08-docs.sh"),
+            file!("steps/09-pages.sh", "offline-prep/steps/09-pages.sh"),
+            file!("steps/10-github.sh", "offline-prep/steps/10-github.sh"),
+            file!("steps/11-ai.sh", "offline-prep/steps/11-ai.sh"),
+            file!("steps/12-summary.sh", "offline-prep/steps/12-summary.sh"),
+            file!("cleanup.sh", "offline-prep/cleanup.sh"),
+            HELPER,
+            OFFLINE_HELPER,
         ],
     ),
     (

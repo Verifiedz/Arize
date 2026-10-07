@@ -1,0 +1,109 @@
+# Offline prep: get your projects ready to work with no internet. Created from Shimmer's
+# offline-prep template. It's your folder now: edit it freely.
+#
+#   shimmer workspaces activate <id> --wait     before you go: prepare, then a report per project
+#   shimmer workspaces stop <id> --wait         back online: what's unpushed or behind (and
+#                                               pull / push, with PULL_ON_RETURN / PUSH_ON_RETURN)
+#
+# Run it on good Wi-Fi, plugged in, an hour or so before you leave: the first run downloads the
+# most. The report's "works offline" lines come from each tool's own offline mode, so you find
+# a missing package at the gate, not on the plane.
+#
+# Projects with spaces in their path: one per line, e.g.
+#   PROJECTS = '''
+#   ~/code/my site
+#   ~/Developer/Shimmer
+#   '''
+#
+# Parts, in order (leave any out with SKIP):
+#   machine  battery, disk space, logins about to expire (gh, aws, gcloud, az)
+#   repos    clone missing ones, pull clean ones, submodules, Git LFS; list uncommitted work
+#   deps     every project's dependencies (cargo, npm/pnpm/yarn/bun, uv/poetry/pip, go, maven,
+#            gradle, bundler, composer, dotnet, mix, pub, swift, cabal/stack, zig, deno)
+#   docker   images in each compose file and each Dockerfile's FROM (not with DATA_SAVER)
+#   build    compile once (WARM_BUILD = "yes" only)
+#   verify   each project in its tools' offline mode; services in .env that need the network
+#   docs     cargo doc per Rust project, rustup's offline docs, tldr pages
+#   pages    SAVE_PAGES as single HTML files
+#   github   issues and PRs with comments and diffs, as Markdown (GITHUB_SNAPSHOT)
+#   ai       ollama pull AI_MODEL (not with DATA_SAVER)
+# Everything saved is linked from OFFLINE_DIR/index.html.
+
+[workspace]
+label = "Offline prep"
+description = "Get your projects ready to work with no internet"
+
+[[step]]
+name = "check"
+description = "The projects exist, the answers make sense"
+mode = "supervised"
+timeout_s = 60
+
+[[step]]
+name = "machine"
+description = "Battery, disk space, logins about to expire"
+mode = "supervised"
+timeout_s = 180
+
+[[step]]
+name = "repos"
+description = "Clone, pull, submodules, Git LFS; uncommitted work"
+mode = "supervised"
+timeout_s = 1800
+
+[[step]]
+name = "deps"
+description = "Every project's dependencies"
+mode = "supervised"
+timeout_s = 3600
+
+[[step]]
+name = "docker"
+description = "Docker images the projects use"
+mode = "supervised"
+timeout_s = 3600
+
+[[step]]
+name = "build"
+description = "Compile each project once (WARM_BUILD)"
+mode = "supervised"
+timeout_s = 3600
+
+[[step]]
+name = "verify"
+description = "Does each project really work offline?"
+mode = "supervised"
+timeout_s = 1800
+
+[[step]]
+name = "docs"
+description = "cargo doc, rustup docs, tldr"
+mode = "supervised"
+timeout_s = 3600
+
+[[step]]
+name = "pages"
+description = "Save SAVE_PAGES for reading offline"
+mode = "supervised"
+timeout_s = 900
+
+[[step]]
+name = "github"
+description = "Issues and PRs as Markdown (GITHUB_SNAPSHOT)"
+mode = "supervised"
+timeout_s = 900
+
+[[step]]
+name = "ai"
+description = "Download a local AI model (AI_MODEL)"
+mode = "supervised"
+timeout_s = 3600
+
+[[step]]
+name = "summary"
+description = "The report: per project and per part; writes the start page"
+mode = "supervised"
+timeout_s = 60
+
+[cleanup]
+timeout_s = 900
