@@ -147,9 +147,13 @@ same folder as an ordinary, commented file, and is a good reference. You can edi
 ### Workspaces, the queue and the scheduler
 
 ```sh
-shimmer workspaces list                # every workspace and its state (ready, active, dirty)
-shimmer workspaces activate deep-work  # run its steps in order; add --wait to follow along
-shimmer workspaces status deep-work    # steps, last session, and why it's dirty if it is
+shimmer workspaces templates               # ready-made workspaces, by category
+shimmer workspaces peek web-project        # what one does before you use it
+shimmer workspaces new site --from web-project
+shimmer workspaces list                    # every workspace and its state (ready, active, dirty)
+shimmer workspaces activate site           # run its steps in order; add --wait to follow along
+shimmer workspaces status site             # steps, last session, and why it's dirty if it is
+shimmer workspaces stop site               # stop what it started
 shimmer queue list                     # what is running and waiting, per lane
 shimmer scheduler list                 # every trigger, when it next fires and its state
 shimmer scheduler add records.list '{"collection":"leetcode"}' --every 1d --catch-up skip
