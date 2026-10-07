@@ -1,0 +1,308 @@
+//! The fetchers heartbeat: a single, fixed-period scheduler trigger (ADR 0028 §5), and the
+//! per-source due-check and last-run bookkeeping it drives.
+//!
+//! `Module::triggers()` has no `Ctx`/config access (`crates/core/src/module.rs:25-27`, called
+//! before `Config::load` and before `Module::init`, `crates/daemon/src/lib.rs:95-96,98-102,120`)
+//! -- so the trigger's own firing period is a fixed constant here, not a `config.toml` key.
+//! Only which *sources* are due, and how often each one runs, is read from
+//! `[modules.fetchers]` when the trigger actually fires and the handler gets a real `Ctx`.
+//!
+//! (Amends ADR 0028 §5's own example config, which still showed a `tick_interval_s` key --
+//! that was never actually readable by `triggers()`, so it is dropped here rather than built.)
+
+use std::collections::BTreeMap;
+use std::time::Duration;
+
+use chrono::{DateTime, Utc};
+use serde::Deserialize;
+use serde_json::Value;
+use shimmer_core::{CatchUp, Ctx, Error, Result, Schedule, TriggerSpec};
+
+/// How often the heartbeat fires.
+pub const TICK_INTERVAL: Duration = Duration::from_secs(300);
+pub const TICK_OP: &str = "fetchers.tick";
+pub const FETCH_OP: &str = "fetchers.fetch";
+
+/// A source's own cadence must be at least this many seconds. Provisional and uniform across
+/// every source until a `Source` registry exists to know a source's `Method` and apply ADR
+/// 0028 §7's per-method floor (1800s API / 21600s scrape) instead.
+pub const MIN_INTERVAL_S: u64 = 900;
+
+/// The one `TriggerSpec` this module registers (ADR 0028 §5). `lane: None` defers to
+/// `fetchers.tick`'s own `CommandSpec` (`Execution::Queued { lane: "fetchers" }`) rather than
+/// repeating the lane name here.
+pub fn trigger() -> TriggerSpec {
+    TriggerSpec {
+        id: TICK_OP.into(),
+        schedule: Schedule::Every(TICK_INTERVAL),
+        catch_up: CatchUp::Skip,
+        op: TICK_OP.into(),
+        params: Value::Null,
+        lane: None,
+        fallback: None,
+    }
+}
+
+#[derive(Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct FetchersConfig {
+    pub sources: BTreeMap<String, SourceConfig>,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SourceConfig {
+    /// Every source starts disabled (ADR 0028 §5) -- the user opts in explicitly.
+    #[serde(default)]
+    pub enabled: bool,
+    pub interval: IntervalSpec,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum IntervalSpec {
+    Preset(String),
+    Seconds(u64),
+}
+
+impl IntervalSpec {
+    /// A named preset, or a raw seconds count, checked against [`MIN_INTERVAL_S`].
+    pub fn resolve(&self) -> Result<u64> {
+        let secs = match self {
+            Self::Seconds(n) => *n,
+            Self::Preset(name) => match name.as_str() {
+                "hourly" => 3600,
+                "daily" => 86_400,
+                "weekly" => 604_800,
+                other => {
+                    return Err(Error::invalid_params(format!(
+                    "unknown interval preset '{other}'; use \"hourly\", \"daily\", \"weekly\", or a number of seconds"
+                )))
+                }
+            },
+        };
+        if secs < MIN_INTERVAL_S {
+            return Err(Error::invalid_params(format!("interval must be at least {MIN_INTERVAL_S}s, got {secs}s")));
+        }
+        Ok(secs)
+    }
+}
+
+impl FetchersConfig {
+    /// Pure parse, no `Ctx` -- [`load`] is the thin wrapper that supplies `ctx.config.raw()`.
+    /// Every source's `interval` is resolved (and so validated) up front, not lazily on the
+    /// first tick that happens to look at it.
+    pub fn from_value(raw: &Value) -> Result<Self> {
+        // `ModuleConfig::default()` (no `[modules.fetchers]` section attached at all, e.g.
+        // `shimmer_core::testing::TestEnv`) wraps `Value::Null`, not `{}` -- both mean "no
+        // config given", so both resolve to every default.
+        if raw.is_null() {
+            return Ok(Self::default());
+        }
+        let cfg: Self = serde_json::from_value(raw.clone())
+            .map_err(|e| Error::invalid_params(format!("[modules.fetchers]: {e}")))?;
+        for (id, source) in &cfg.sources {
+            source.interval.resolve().map_err(|e| Error::invalid_params(format!("sources.{id}.interval: {e}")))?;
+        }
+        Ok(cfg)
+    }
+
+    pub fn load(ctx: &Ctx) -> Result<Self> {
+        Self::from_value(ctx.config.raw())
+    }
+}
+
+/// Every enabled, configured source whose interval has elapsed since its last run (or that
+/// has never run at all). Deterministic order (`BTreeMap`'s own id order).
+pub fn due_sources(
+    config: &FetchersConfig,
+    last_run: &BTreeMap<String, DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> Vec<String> {
+    config
+        .sources
+        .iter()
+        .filter(|(_, c)| c.enabled)
+        .filter_map(|(id, c)| {
+            let interval = c.interval.resolve().ok()?; // already validated by `FetchersConfig::load`
+            let due = match last_run.get(id) {
+                None => true,
+                Some(last) => now.signed_duration_since(*last).num_seconds() >= interval as i64,
+            };
+            due.then(|| id.clone())
+        })
+        .collect()
+}
+
+/// `data/fetchers/last_run.toml` -- one small file for every source, read-modified-written
+/// together rather than one file per source, since a tick always reads and updates it as a
+/// whole.
+const LAST_RUN_PATH: &str = "last_run.toml";
+
+pub fn load_last_run(ctx: &Ctx) -> Result<BTreeMap<String, DateTime<Utc>>> {
+    let Some(text) = ctx.store.read_string(LAST_RUN_PATH)? else { return Ok(BTreeMap::new()) };
+    let raw: BTreeMap<String, String> =
+        toml::from_str(&text).map_err(|e| Error::internal(format!("fetchers last_run.toml: {e}")))?;
+    raw.into_iter()
+        .map(|(id, at)| {
+            DateTime::parse_from_rfc3339(&at)
+                .map(|at| (id.clone(), at.with_timezone(&Utc)))
+                .map_err(|e| Error::internal(format!("fetchers last_run.toml: '{id}': {e}")))
+        })
+        .collect()
+}
+
+/// Records that `source` ran at `now`; every other source's record is left untouched.
+pub fn record_run(ctx: &Ctx, source: &str, now: DateTime<Utc>) -> Result<()> {
+    let mut all = load_last_run(ctx)?;
+    all.insert(source.to_owned(), now);
+    let raw: BTreeMap<&str, String> = all.iter().map(|(id, at)| (id.as_str(), at.to_rfc3339())).collect();
+    ctx.store.write(LAST_RUN_PATH, toml::to_string(&raw).unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use shimmer_core::testing::TestEnv;
+
+    use super::*;
+
+    fn at(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    #[test]
+    fn presets_resolve_to_the_expected_seconds() {
+        assert_eq!(IntervalSpec::Preset("hourly".into()).resolve().unwrap(), 3600);
+        assert_eq!(IntervalSpec::Preset("daily".into()).resolve().unwrap(), 86_400);
+        assert_eq!(IntervalSpec::Preset("weekly".into()).resolve().unwrap(), 604_800);
+    }
+
+    #[test]
+    fn an_unknown_preset_is_rejected() {
+        let err = IntervalSpec::Preset("fortnightly".into()).resolve().unwrap_err();
+        assert_eq!(err.code, shimmer_core::ErrorCode::InvalidParams);
+    }
+
+    #[test]
+    fn a_raw_interval_below_the_floor_is_rejected() {
+        let err = IntervalSpec::Seconds(MIN_INTERVAL_S - 1).resolve().unwrap_err();
+        assert_eq!(err.code, shimmer_core::ErrorCode::InvalidParams);
+        IntervalSpec::Seconds(MIN_INTERVAL_S).resolve().unwrap();
+    }
+
+    #[test]
+    fn an_absent_modules_section_is_no_sources_not_an_error() {
+        let cfg = FetchersConfig::from_value(&json!({})).unwrap();
+        assert!(cfg.sources.is_empty());
+    }
+
+    #[test]
+    fn a_null_config_is_also_no_sources_not_an_error() {
+        // `ModuleConfig::default()` wraps `Value::Null`, not `{}` -- both must mean the same
+        // thing, not a type error.
+        let cfg = FetchersConfig::from_value(&Value::Null).unwrap();
+        assert!(cfg.sources.is_empty());
+    }
+
+    #[test]
+    fn a_configured_source_parses_with_its_interval_validated_up_front() {
+        let cfg = FetchersConfig::from_value(&json!({
+            "sources": {
+                "hn-whoishiring": {"enabled": true, "interval": "daily"},
+                "weworkremotely": {"enabled": false, "interval": 3600},
+            }
+        }))
+        .unwrap();
+        assert!(cfg.sources["hn-whoishiring"].enabled);
+        assert!(!cfg.sources["weworkremotely"].enabled);
+    }
+
+    #[test]
+    fn a_bad_interval_fails_at_load_time_not_on_the_first_tick() {
+        let err = FetchersConfig::from_value(&json!({
+            "sources": {"hn-whoishiring": {"enabled": true, "interval": "fortnightly"}}
+        }))
+        .unwrap_err();
+        assert_eq!(err.code, shimmer_core::ErrorCode::InvalidParams);
+        assert!(err.message.contains("sources.hn-whoishiring"), "{}", err.message);
+    }
+
+    #[test]
+    fn an_unknown_top_level_key_is_rejected() {
+        let err = FetchersConfig::from_value(&json!({"tick_interval_s": 60})).unwrap_err();
+        assert_eq!(err.code, shimmer_core::ErrorCode::InvalidParams);
+    }
+
+    fn source(enabled: bool, interval_s: u64) -> SourceConfig {
+        SourceConfig { enabled, interval: IntervalSpec::Seconds(interval_s) }
+    }
+
+    #[test]
+    fn a_never_run_enabled_source_is_due() {
+        let mut cfg = FetchersConfig::default();
+        cfg.sources.insert("hn-whoishiring".into(), source(true, MIN_INTERVAL_S));
+        let due = due_sources(&cfg, &BTreeMap::new(), at("2026-01-01T00:00:00Z"));
+        assert_eq!(due, vec!["hn-whoishiring".to_string()]);
+    }
+
+    #[test]
+    fn a_disabled_source_is_never_due() {
+        let mut cfg = FetchersConfig::default();
+        cfg.sources.insert("hn-whoishiring".into(), source(false, MIN_INTERVAL_S));
+        let due = due_sources(&cfg, &BTreeMap::new(), at("2026-01-01T00:00:00Z"));
+        assert!(due.is_empty());
+    }
+
+    #[test]
+    fn a_source_run_within_its_interval_is_not_due_yet() {
+        let mut cfg = FetchersConfig::default();
+        cfg.sources.insert("hn-whoishiring".into(), source(true, 3600));
+        let mut last = BTreeMap::new();
+        last.insert("hn-whoishiring".to_string(), at("2026-01-01T00:00:00Z"));
+        let due = due_sources(&cfg, &last, at("2026-01-01T00:30:00Z"));
+        assert!(due.is_empty(), "only 30 minutes have passed of a 1-hour interval");
+    }
+
+    #[test]
+    fn a_source_run_past_its_interval_is_due_again() {
+        let mut cfg = FetchersConfig::default();
+        cfg.sources.insert("hn-whoishiring".into(), source(true, 3600));
+        let mut last = BTreeMap::new();
+        last.insert("hn-whoishiring".to_string(), at("2026-01-01T00:00:00Z"));
+        let due = due_sources(&cfg, &last, at("2026-01-01T01:00:01Z"));
+        assert_eq!(due, vec!["hn-whoishiring".to_string()]);
+    }
+
+    #[test]
+    fn trigger_shape_matches_adr_0028() {
+        let t = trigger();
+        assert_eq!(t.op, TICK_OP);
+        assert_eq!(t.schedule, Schedule::Every(TICK_INTERVAL));
+        assert_eq!(t.catch_up, CatchUp::Skip);
+        assert!(t.lane.is_none(), "defers to fetchers.tick's own CommandSpec lane");
+    }
+
+    #[test]
+    fn last_run_round_trips_and_leaves_other_sources_alone() {
+        let env = TestEnv::new("fetchers");
+        record_run(&env.ctx, "hn-whoishiring", at("2026-01-01T00:00:00Z")).unwrap();
+        record_run(&env.ctx, "weworkremotely", at("2026-01-02T00:00:00Z")).unwrap();
+
+        let all = load_last_run(&env.ctx).unwrap();
+        assert_eq!(all.get("hn-whoishiring"), Some(&at("2026-01-01T00:00:00Z")));
+        assert_eq!(all.get("weworkremotely"), Some(&at("2026-01-02T00:00:00Z")));
+
+        // Re-recording one source must not disturb the other's timestamp.
+        record_run(&env.ctx, "hn-whoishiring", at("2026-01-03T00:00:00Z")).unwrap();
+        let all = load_last_run(&env.ctx).unwrap();
+        assert_eq!(all.get("hn-whoishiring"), Some(&at("2026-01-03T00:00:00Z")));
+        assert_eq!(all.get("weworkremotely"), Some(&at("2026-01-02T00:00:00Z")));
+    }
+
+    #[test]
+    fn load_last_run_with_nothing_recorded_yet_is_empty_not_an_error() {
+        let env = TestEnv::new("fetchers");
+        assert!(load_last_run(&env.ctx).unwrap().is_empty());
+    }
+}

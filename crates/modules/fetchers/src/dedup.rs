@@ -95,6 +95,13 @@ impl RunGuard {
         let mut running = self.0.lock().unwrap_or_else(|e| e.into_inner());
         running.insert(source.to_owned()).then(|| RunPermit { guard: self, source: source.to_owned() })
     }
+
+    /// A non-mutating peek, for a caller (the tick handler) that only wants to skip enqueuing
+    /// a source it can already see is running -- an optimization, never the actual guarantee,
+    /// which is [`RunGuard::try_acquire`] at the point a run actually starts.
+    pub fn is_running(&self, source: &str) -> bool {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).contains(source)
+    }
 }
 
 pub struct RunPermit<'a> {
@@ -204,6 +211,20 @@ mod tests {
         let guard = RunGuard::default();
         let _a = guard.try_acquire("hn-whoishiring").unwrap();
         assert!(guard.try_acquire("weworkremotely").is_some());
+    }
+
+    #[test]
+    fn is_running_peeks_without_acquiring() {
+        let guard = RunGuard::default();
+        assert!(!guard.is_running("hn-whoishiring"));
+        let permit = guard.try_acquire("hn-whoishiring").unwrap();
+        assert!(guard.is_running("hn-whoishiring"));
+        // A peek must not itself hold anything -- a real acquire attempt still sees it as
+        // taken, not freed by the act of checking.
+        assert!(guard.is_running("hn-whoishiring"));
+        assert!(guard.try_acquire("hn-whoishiring").is_none());
+        drop(permit);
+        assert!(!guard.is_running("hn-whoishiring"));
     }
 
     #[test]

@@ -25,8 +25,10 @@ fn index_event_count(home: &Home) -> u64 {
 }
 
 /// One completed record (the collection is written in by `Home::with_leetcode`, not seeded):
-/// `records.item.created` + `records.item.completed`, 2 events. Shuts the daemon down so
-/// the index file sits still while the test tampers with it before the next restart.
+/// `records.item.created` + `records.item.completed`, plus one `scheduler.trigger.added`
+/// for `fetchers`' own heartbeat trigger (ADR 0028 §5), emitted exactly once, on this first
+/// start of a fresh `$SHIMMER_HOME` -- 3 events. Shuts the daemon down so the index file
+/// sits still while the test tampers with it before the next restart.
 fn seed_and_stop(home: &Home) {
     call(
         home,
@@ -43,7 +45,11 @@ fn a_corrupt_index_does_not_stop_the_daemon_starting() {
     let home = Home::with_leetcode();
     seed_and_stop(&home);
     let before = index_event_count(&home);
-    assert_eq!(before, 2, "item.created + item.completed (nothing is seeded on first start, ADR 0023)");
+    assert_eq!(
+        before, 3,
+        "item.created + item.completed (nothing is seeded on first start, ADR 0023) + \
+         fetchers' own heartbeat trigger registering for the first time (ADR 0028 §5)"
+    );
 
     std::fs::write(index_path(&home), b"not a sqlite file at all, just garbage bytes").unwrap();
 
