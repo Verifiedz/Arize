@@ -607,6 +607,9 @@ $ shimmer workspaces templates upkeep          # one category
 $ shimmer workspaces peek free-disk            # everything before using one: description, good
                                                # to know, needs, each step and how it runs, what
                                                # stop does, and every question
+$ shimmer workspaces peek free-disk --scripts  # …then each step's script, in order, and the
+                                               # cleanup script stop runs; other files named
+$ shimmer workspaces peek free-disk --file lib/shimmer-free.sh   # one file, as it is
 
 $ shimmer workspaces new site --from web-project
 Project folder: ~/code/site

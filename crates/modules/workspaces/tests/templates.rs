@@ -207,3 +207,27 @@ async fn the_vm_template_never_takes_a_password_only_a_keychain_entry_name() {
         .unwrap_err();
     assert!(e.message.contains("must be one of utm, parallels"), "{}", e.message);
 }
+
+#[tokio::test]
+async fn one_template_can_be_asked_for_with_its_files() {
+    // `peek --scripts` (ADR 0025 §8): every file a workspace made from it gets, as it gets them.
+    let env = TestEnv::new("workspaces");
+    let w = Workspaces::default();
+    let data = call(&w, &env, "workspaces.templates", json!({"id": "free-disk", "files": true})).await.unwrap();
+    let templates = data["templates"].as_array().unwrap();
+    assert_eq!(templates.len(), 1);
+    let files = templates[0]["files"].as_array().unwrap();
+    let paths: Vec<&str> = files.iter().map(|f| f["path"].as_str().unwrap()).collect();
+    assert!(paths.contains(&"steps/02-projects.sh") && paths.contains(&"cleanup.sh"), "{paths:?}");
+    assert!(paths.contains(&"lib/shimmer-free.sh") && !paths.contains(&"template.toml"), "{paths:?}");
+    let script = files.iter().find(|f| f["path"] == "steps/02-projects.sh").unwrap();
+    assert!(script["text"].as_str().unwrap().contains("rm -rf"), "the real script");
+
+    // Without `files`, no files: the list stays small.
+    let all = call(&w, &env, "workspaces.templates", json!({})).await.unwrap();
+    assert!(all["templates"][0].get("files").is_none());
+    let e = call(&w, &env, "workspaces.templates", json!({"id": "nope"})).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::NotFound);
+    let e = call(&w, &env, "workspaces.templates", json!({"scripts": true})).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::InvalidParams, "unknown params are named, not ignored");
+}

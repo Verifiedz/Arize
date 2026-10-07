@@ -99,8 +99,8 @@ impl Module for Workspaces {
             ("workspaces.restore", "Bring a removed workspace back", id, Execution::Inline),
             (
                 "workspaces.templates",
-                "List the built-in workspace templates and their questions",
-                json!({"type": "object"}),
+                "List the built-in workspace templates and their questions (one, with its files, to peek)",
+                json!({"type": "object", "properties": {"id": {"type": "string"}, "files": {"type": "boolean"}}}),
                 Execution::Inline,
             ),
             (
@@ -133,7 +133,7 @@ impl Module for Workspaces {
             "workspaces.stop" => self.stop(ctx, &decode::<Target>(params)?.id).await,
             "workspaces.remove" => self.remove(ctx, &decode::<Target>(params)?.id),
             "workspaces.restore" => self.restore_removed(ctx, &decode::<Target>(params)?.id),
-            "workspaces.templates" => templates(),
+            "workspaces.templates" => templates(decode(params)?),
             "workspaces.create" => self.create(ctx, decode(params)?),
             _ => Err(Error::unknown_op(format!("workspaces has no op '{op}'"))),
         }
@@ -156,14 +156,35 @@ struct Create {
     label: Option<String>,
 }
 
-/// Every built-in template with its questions, by id (ADR 0025 §7).
+/// `workspaces.templates` (ADR 0025 §7): every template, or only `id`; with `files`, each one's
+/// files too (every script exactly as a workspace made from it gets them), for `peek --scripts`.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct Which {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    files: bool,
+}
+
 /// Every built-in, by category (in [`CATEGORIES`]' order) then id, and the categories' headings.
-fn templates() -> Result<Value> {
-    let mut all = builtin::all()?;
+/// Only `id` when it's given (`not_found` naming the others when there's no such template).
+fn templates(which: Which) -> Result<Value> {
+    let mut all = match &which.id {
+        Some(id) => vec![builtin::find(id)?],
+        None => builtin::all()?,
+    };
     let rank = |c: &str| CATEGORIES.iter().position(|(id, _)| *id == c).unwrap_or(usize::MAX);
     all.sort_by(|a, b| (rank(&a.category), &a.id).cmp(&(rank(&b.category), &b.id)));
     let categories: Vec<Value> = CATEGORIES.iter().map(|(id, label)| json!({"id": id, "label": label})).collect();
-    Ok(json!({"templates": all.iter().map(Template::to_wire).collect::<Vec<_>>(), "categories": categories}))
+    let wire = |t: &Template| {
+        let mut out = t.to_wire();
+        if which.files {
+            out["files"] = t.files.iter().map(|(path, text)| json!({"path": path, "text": text})).collect();
+        }
+        out
+    };
+    Ok(json!({"templates": all.iter().map(wire).collect::<Vec<_>>(), "categories": categories}))
 }
 
 impl Workspaces {

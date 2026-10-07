@@ -41,6 +41,8 @@ commands:
   peek TEMPLATE                         everything about a template before you use it: what it
                                         does and changes, what it needs, its steps, what stop
                                         does, and its questions
+      [--scripts]                       also every step's script, and the cleanup script stop runs
+      [--file PATH]                     only that file, as it is (e.g. lib/shimmer-open.sh)
   new NAME --from TEMPLATE              create a workspace from a template; asks its questions,
       [--set QUESTION=ANSWER]…          e.g. shimmer workspaces new site --from web-project
       [--label TEXT]                    --set answers one without asking (needed in scripts)
@@ -97,8 +99,11 @@ pub enum WorkspacesCmd {
     Templates {
         which: Option<String>,
     },
+    /// `scripts`: each step's script and cleanup's after the summary. `file`: only that file.
     Peek {
         template: String,
+        scripts: bool,
+        file: Option<String>,
     },
     /// `set`: `--set NAME=VALUE` answers, in order (ADR 0025 §8).
     New {
@@ -117,6 +122,9 @@ pub fn parse(words: Vec<String>) -> std::result::Result<WorkspacesCmd, String> {
     let Some(sub) = words.next() else { return Ok(WorkspacesCmd::Help) };
     if sub == "new" {
         return parse_new(words.collect());
+    }
+    if sub == "peek" {
+        return parse_peek(words.collect());
     }
     let mut positional = Vec::new();
     let (mut yes, mut wait, mut path_only) = (false, false, false);
@@ -170,10 +178,6 @@ pub fn parse(words: Vec<String>) -> std::result::Result<WorkspacesCmd, String> {
             }
         }
         "restore" => Ok(WorkspacesCmd::Restore { id: name(positional)? }),
-        "peek" => match positional.as_slice() {
-            [template] => Ok(WorkspacesCmd::Peek { template: template.clone() }),
-            _ => Err("usage: shimmer workspaces peek TEMPLATE (see 'shimmer workspaces templates')".into()),
-        },
         "templates" => {
             let mut words = positional.into_iter();
             match (words.next(), words.next()) {
@@ -183,6 +187,28 @@ pub fn parse(words: Vec<String>) -> std::result::Result<WorkspacesCmd, String> {
         }
         other => Err(format!("unknown workspaces command '{other}'; see 'shimmer workspaces --help'")),
     }
+}
+
+/// `peek TEMPLATE [--scripts | --file PATH]`.
+fn parse_peek(words: Vec<String>) -> std::result::Result<WorkspacesCmd, String> {
+    let usage =
+        "usage: shimmer workspaces peek TEMPLATE [--scripts | --file PATH] (see 'shimmer workspaces templates')";
+    let (mut template, mut scripts, mut file) = (None, false, None);
+    let mut words = words.into_iter();
+    while let Some(word) = words.next() {
+        match word.as_str() {
+            "--scripts" => scripts = true,
+            "--file" => file = Some(words.next().ok_or("--file needs a path, e.g. --file lib/shimmer-open.sh")?),
+            w if w.starts_with("--file=") => file = Some(w["--file=".len()..].to_owned()),
+            w if w.starts_with('-') && w.len() > 1 => return Err(format!("unknown option '{w}'; {usage}")),
+            _ if template.is_some() => return Err(usage.into()),
+            _ => template = Some(word),
+        }
+    }
+    if scripts && file.is_some() {
+        return Err("use --scripts or --file, not both".into());
+    }
+    Ok(WorkspacesCmd::Peek { template: template.ok_or(usage)?, scripts, file })
 }
 
 /// `new NAME --from TEMPLATE [--label TEXT] [--set NAME=VALUE]…`: the one command here whose
@@ -356,11 +382,22 @@ pub async fn run(client: &mut Client, cmd: &WorkspacesCmd, json: bool, prompt: &
             let text = templates(&data, which.as_deref())?;
             Ok(out(&data, text))
         }
-        WorkspacesCmd::Peek { template } => {
+        WorkspacesCmd::Peek { template, scripts, file } => {
             let data = client.call("workspaces.templates", json!({})).await?;
             let text = peek(&data, template)?;
-            let one = data["templates"].as_array().and_then(|ts| ts.iter().find(|t| t["id"] == template.as_str()));
-            Ok(out(one.unwrap_or(&Value::Null), text))
+            if !*scripts && file.is_none() {
+                let one = data["templates"].as_array().and_then(|ts| ts.iter().find(|t| t["id"] == template.as_str()));
+                return Ok(out(one.unwrap_or(&Value::Null), text));
+            }
+            let full = client.call("workspaces.templates", json!({"id": template, "files": true})).await?;
+            let one = &full["templates"][0];
+            match file {
+                Some(path) => {
+                    let text = template_file(one, path)?;
+                    Ok(out(one, text))
+                }
+                None => Ok(out(one, format!("{text}\n\n{}", scripts_of(one)))),
+            }
         }
         WorkspacesCmd::New { id, template, label, set } => {
             let all = client.call("workspaces.templates", json!({})).await?;
@@ -806,6 +843,55 @@ fn peek(data: &Value, id: &str) -> Result<String> {
         None => {
             let names: Vec<String> = all.iter().map(|t| cell(&t["id"])).collect();
             Err(Error::not_found(format!("no template '{id}' (there are: {})", names.join(", "))))
+        }
+    }
+}
+
+/// The scripts that run, in order: each step's, then cleanup's, then the other files by name.
+/// `t` is a template with its `files` (`workspaces.templates` with `files: true`).
+fn scripts_of(t: &Value) -> String {
+    let id = t["id"].as_str().unwrap_or_default();
+    let files = t["files"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let steps = t["steps"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let mut shown: Vec<&str> = Vec::new();
+    let mut out = String::from("Scripts, exactly as a workspace made from it gets them (yours to edit after)\n");
+    let show = |out: &mut String, heading: String, file: &Value| {
+        let _ = write!(out, "\n── {heading} ──\n{}\n", file["text"].as_str().unwrap_or_default().trim_end());
+    };
+    for (i, step) in steps.iter().enumerate() {
+        let name = step["name"].as_str().unwrap_or_default();
+        // steps/NN-NAME.sh (ADR 0012); a template ships the scripts for its platforms.
+        let prefix = format!("steps/{:02}-{name}.", i + 1);
+        for file in files.iter().filter(|f| f["path"].as_str().is_some_and(|p| p.starts_with(&prefix))) {
+            let path = file["path"].as_str().unwrap_or_default();
+            shown.push(path);
+            show(&mut out, format!("step {}/{}: {name} · {} · {path}", i + 1, steps.len(), how_it_runs(step)), file);
+        }
+    }
+    for file in files.iter().filter(|f| f["path"].as_str().is_some_and(|p| p.starts_with("cleanup."))) {
+        let path = file["path"].as_str().unwrap_or_default();
+        shown.push(path);
+        show(&mut out, format!("when you stop it, or clean up a failed launch · {path}"), file);
+    }
+    let others: Vec<&str> = files.iter().filter_map(|f| f["path"].as_str()).filter(|p| !shown.contains(p)).collect();
+    if !others.is_empty() {
+        let _ = write!(out, "\nAlso in it: {}\nsee one: shimmer workspaces peek {id} --file PATH", others.join(", "));
+    }
+    out
+}
+
+/// One file of a template, as it is; `not_found` naming the files there are.
+fn template_file(t: &Value, path: &str) -> Result<String> {
+    let files = t["files"].as_array().map(Vec::as_slice).unwrap_or_default();
+    match files.iter().find(|f| f["path"] == path) {
+        Some(f) => Ok(f["text"].as_str().unwrap_or_default().trim_end().to_owned()),
+        None => {
+            let paths: Vec<&str> = files.iter().filter_map(|f| f["path"].as_str()).collect();
+            Err(Error::not_found(format!(
+                "{} has no file '{path}' (it has: {})",
+                t["id"].as_str().unwrap_or_default(),
+                paths.join(", ")
+            )))
         }
     }
 }
@@ -1373,11 +1459,29 @@ mod tests {
             WorkspacesCmd::Templates { which: Some("upkeep".into()) }
         );
         assert!(parse(vec!["templates".into(), "a".into(), "b".into()]).is_err());
+        let peek_of = |words: &[&str]| parse(words.iter().map(|w| (*w).to_owned()).collect());
         assert_eq!(
-            parse(vec!["peek".into(), "free-disk".into()]).unwrap(),
-            WorkspacesCmd::Peek { template: "free-disk".into() }
+            peek_of(&["peek", "free-disk"]).unwrap(),
+            WorkspacesCmd::Peek { template: "free-disk".into(), scripts: false, file: None }
         );
-        assert!(parse(vec!["peek".into()]).is_err());
+        assert_eq!(
+            peek_of(&["peek", "free-disk", "--scripts"]).unwrap(),
+            WorkspacesCmd::Peek { template: "free-disk".into(), scripts: true, file: None }
+        );
+        let file = Some("lib/shimmer-open.sh".to_owned());
+        assert_eq!(
+            peek_of(&["peek", "--file", "lib/shimmer-open.sh", "free-disk"]).unwrap(),
+            WorkspacesCmd::Peek { template: "free-disk".into(), scripts: false, file: file.clone() }
+        );
+        assert_eq!(
+            peek_of(&["peek", "free-disk", "--file=lib/shimmer-open.sh"]).unwrap(),
+            WorkspacesCmd::Peek { template: "free-disk".into(), scripts: false, file }
+        );
+        assert!(peek_of(&["peek"]).is_err());
+        assert!(peek_of(&["peek", "a", "b"]).is_err());
+        assert!(peek_of(&["peek", "a", "--file"]).unwrap_err().contains("needs a path"));
+        assert!(peek_of(&["peek", "a", "--scripts", "--file", "x"]).unwrap_err().contains("not both"));
+        assert!(peek_of(&["peek", "a", "--nope"]).unwrap_err().contains("unknown option '--nope'"));
     }
 
     #[test]
@@ -1465,6 +1569,36 @@ mod tests {
         let e = peek(&data, "nope").unwrap_err();
         assert!(e.message.contains("no template 'nope' (there are: web-project, smoke-test)"), "{}", e.message);
         assert_eq!([duration(30), duration(180), duration(3600), duration(90)], ["30 s", "3 min", "1 h", "90 s"]);
+
+        let mut with_files = data["templates"][0].clone();
+        with_files["files"] = json!([
+            {"path": "workspace.toml", "text": "[workspace]\n"},
+            {"path": "steps/01-check.sh", "text": "echo checking\n"},
+            {"path": "steps/02-editor.sh", "text": "code .\n"},
+            {"path": "cleanup.sh", "text": "echo bye\n"},
+            {"path": "lib/shimmer-open.sh", "text": "helpers\n"},
+        ]);
+        let scripts = scripts_of(&with_files);
+        assert!(
+            scripts.contains("\n── step 1/2: check · waits, up to 30 s · steps/01-check.sh ──\necho checking\n"),
+            "{scripts}"
+        );
+        assert!(
+            scripts.contains("\n── step 2/2: editor · starts, keeps running · steps/02-editor.sh ──\ncode .\n"),
+            "{scripts}"
+        );
+        assert!(
+            scripts.contains("── when you stop it, or clean up a failed launch · cleanup.sh ──\necho bye\n"),
+            "{scripts}"
+        );
+        assert!(scripts.ends_with("Also in it: workspace.toml, lib/shimmer-open.sh\nsee one: shimmer workspaces peek web-project --file PATH"), "{scripts}");
+        assert_eq!(template_file(&with_files, "lib/shimmer-open.sh").unwrap(), "helpers");
+        let e = template_file(&with_files, "nope.sh").unwrap_err();
+        assert!(
+            e.message.contains("web-project has no file 'nope.sh' (it has: workspace.toml, steps/01-check.sh"),
+            "{}",
+            e.message
+        );
         assert!(full.starts_with("web-project: Web project  (Coding)\n  Editor and dev server\n"), "{full}");
         assert!(full.contains("  PROJECT_DIR  Project folder\n               folder   required\n"), "{full}");
         assert!(

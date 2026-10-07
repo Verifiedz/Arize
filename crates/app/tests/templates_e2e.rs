@@ -143,6 +143,14 @@ impl Sandbox {
     fn create(&self, id: &str, template: &str, answers: &[(&str, &str)]) {
         let peek = self.ok(&["workspaces", "peek", template]);
         assert!(peek.contains("Good to know") && peek.contains("When you activate it"), "{peek}");
+        // --scripts shows every step's script and cleanup's: as many as it has steps.
+        let steps = peek.lines().find_map(|l| l.strip_prefix("When you activate it (")).expect("a step count");
+        let steps: usize = steps.split(' ').next().unwrap().parse().unwrap();
+        let scripts = self.ok(&["workspaces", "peek", template, "--scripts"]);
+        assert_eq!(scripts.matches("\n── step ").count(), steps, "{scripts}");
+        assert!(scripts.contains("· cleanup.sh ──\n"), "{scripts}");
+        let helper = self.ok(&["workspaces", "peek", template, "--file", "lib/shimmer-open.sh"]);
+        assert!(helper.starts_with("# Shared helpers for workspace templates"), "{helper}");
         let mut args = vec!["workspaces".to_owned(), "new".into(), id.into(), "--from".into(), template.into()];
         for (q, a) in answers {
             args.push("--set".into());
