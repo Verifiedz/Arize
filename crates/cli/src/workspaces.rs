@@ -43,6 +43,9 @@ commands:
                                         does, and its questions
       [--scripts]                       also every step's script, and the cleanup script stop runs
       [--file PATH]                     only that file, as it is (e.g. lib/shimmer-open.sh)
+  reconfigure NAME                      ask its template's questions again, your answers as the
+      [--set QUESTION=ANSWER]…          defaults (Enter keeps one, - clears it); only when it's
+                                        ready, and only its [env] changes
   new NAME --from TEMPLATE              create a workspace from a template; asks its questions,
       [--set QUESTION=ANSWER]…          e.g. shimmer workspaces new site --from web-project
       [--label TEXT]                    --set answers one without asking (needed in scripts)
@@ -105,6 +108,11 @@ pub enum WorkspacesCmd {
         scripts: bool,
         file: Option<String>,
     },
+    /// `set`: `--set NAME=VALUE` answers, in order (ADR 0025 §9).
+    Reconfigure {
+        id: String,
+        set: Vec<(String, String)>,
+    },
     /// `set`: `--set NAME=VALUE` answers, in order (ADR 0025 §8).
     New {
         id: String,
@@ -125,6 +133,9 @@ pub fn parse(words: Vec<String>) -> std::result::Result<WorkspacesCmd, String> {
     }
     if sub == "peek" {
         return parse_peek(words.collect());
+    }
+    if sub == "reconfigure" {
+        return parse_reconfigure(words.collect());
     }
     let mut positional = Vec::new();
     let (mut yes, mut wait, mut path_only) = (false, false, false);
@@ -189,6 +200,33 @@ pub fn parse(words: Vec<String>) -> std::result::Result<WorkspacesCmd, String> {
     }
 }
 
+/// `--set QUESTION=ANSWER`'s value, split.
+fn set_answer(value: &str) -> std::result::Result<(String, String), String> {
+    match value.split_once('=') {
+        Some((q, a)) if !q.trim().is_empty() => Ok((q.trim().to_owned(), a.to_owned())),
+        _ => Err(format!("--set takes QUESTION=ANSWER, e.g. --set PROJECT_DIR=~/code/site, got '{value}'")),
+    }
+}
+
+/// `reconfigure NAME [--set QUESTION=ANSWER]…`.
+fn parse_reconfigure(words: Vec<String>) -> std::result::Result<WorkspacesCmd, String> {
+    let usage = "usage: shimmer workspaces reconfigure NAME [--set QUESTION=ANSWER]…";
+    let (mut id, mut set) = (None, Vec::new());
+    let mut words = words.into_iter();
+    while let Some(word) = words.next() {
+        if word == "--set" {
+            set.push(set_answer(&words.next().ok_or("--set needs QUESTION=ANSWER")?)?);
+        } else if let Some(value) = word.strip_prefix("--set=") {
+            set.push(set_answer(value)?);
+        } else if word.starts_with('-') && word.len() > 1 {
+            return Err(format!("'workspaces reconfigure' takes --set, not '{word}'"));
+        } else if id.replace(word).is_some() {
+            return Err(usage.into());
+        }
+    }
+    Ok(WorkspacesCmd::Reconfigure { id: id.ok_or(usage)?, set })
+}
+
 /// `peek TEMPLATE [--scripts | --file PATH]`.
 fn parse_peek(words: Vec<String>) -> std::result::Result<WorkspacesCmd, String> {
     let usage =
@@ -233,14 +271,7 @@ fn parse_new(words: Vec<String>) -> std::result::Result<WorkspacesCmd, String> {
         match name.as_str() {
             "from" => template = Some(value),
             "label" => label = Some(value),
-            "set" => match value.split_once('=') {
-                Some((q, a)) if !q.trim().is_empty() => set.push((q.trim().to_owned(), a.to_owned())),
-                _ => {
-                    return Err(format!(
-                        "--set takes QUESTION=ANSWER, e.g. --set PROJECT_DIR=~/code/site, got '{value}'"
-                    ))
-                }
-            },
+            "set" => set.push(set_answer(&value)?),
             _ => unreachable!("checked above"),
         }
     }
@@ -398,6 +429,27 @@ pub async fn run(client: &mut Client, cmd: &WorkspacesCmd, json: bool, prompt: &
                 }
                 None => Ok(out(one, format!("{text}\n\n{}", scripts_of(one)))),
             }
+        }
+        WorkspacesCmd::Reconfigure { id, set } => {
+            let current = client.call("workspaces.answers", id_params(id)).await?;
+            let questions = with_current_answers(&current);
+            if prompt.interactive() {
+                eprintln!(
+                    "{id}'s answers ({}). Enter keeps an answer; - clears an optional one.",
+                    cell(&current["template"])
+                );
+            }
+            let mut values = answers(&questions, set, prompt, &Paths::from_env())?;
+            for value in values.values_mut() {
+                if value == "-" {
+                    *value = json!("");
+                }
+            }
+            let data = client
+                .call("workspaces.reconfigure", json!({"id": id, "values": values}))
+                .await
+                .map_err(|e| how_to_answer(e, prompt))?;
+            Ok(out(&data, reconfigured(id, &data)))
         }
         WorkspacesCmd::New { id, template, label, set } => {
             let all = client.call("workspaces.templates", json!({})).await?;
@@ -987,6 +1039,43 @@ fn template_in_full(t: &Value, categories: &[Value]) -> String {
     out
 }
 
+/// The template's questions with each current answer as its default, so Enter keeps it.
+fn with_current_answers(current: &Value) -> Value {
+    let mut questions = current["questions"].clone();
+    for q in questions.as_array_mut().into_iter().flatten() {
+        let name = q["name"].as_str().unwrap_or_default().to_owned();
+        match current["answers"][&name].as_str() {
+            Some(now) if !now.is_empty() => q["default"] = json!(now),
+            // Answered with nothing: shown as [none], and Enter keeps it that way.
+            Some(_) => {
+                if let Some(q) = q.as_object_mut() {
+                    q.remove("default");
+                }
+            }
+            None => {}
+        }
+    }
+    questions
+}
+
+/// What reconfigure changed, one line each.
+fn reconfigured(id: &str, data: &Value) -> String {
+    let changed = data["changed"].as_array().map(Vec::as_slice).unwrap_or_default();
+    if changed.is_empty() {
+        return format!("nothing changed in {id}");
+    }
+    let shown = |v: &Value| match v.as_str() {
+        Some("") | None => "(none)".to_owned(),
+        Some(s) => s.to_owned(),
+    };
+    let mut out = format!("✓ reconfigured {id}");
+    for c in changed {
+        let _ = write!(out, "\n  {}: {} → {}", cell(&c["name"]), shown(&c["from"]), shown(&c["to"]));
+    }
+    out.push_str("\n  it takes effect the next time you activate it");
+    out
+}
+
 fn created(id: &str, template: &str) -> String {
     [
         format!("✓ created workspace {id} from {template}"),
@@ -1478,6 +1567,17 @@ mod tests {
             WorkspacesCmd::Peek { template: "free-disk".into(), scripts: false, file }
         );
         assert!(peek_of(&["peek"]).is_err());
+        assert_eq!(
+            peek_of(&["reconfigure", "site", "--set", "CODE_EDITOR=cursor", "--set=LINKS="]).unwrap(),
+            WorkspacesCmd::Reconfigure {
+                id: "site".into(),
+                set: vec![("CODE_EDITOR".into(), "cursor".into()), ("LINKS".into(), String::new())]
+            }
+        );
+        assert!(peek_of(&["reconfigure"]).is_err());
+        assert!(peek_of(&["reconfigure", "a", "b"]).is_err());
+        assert!(peek_of(&["reconfigure", "a", "--set", "nope"]).unwrap_err().contains("QUESTION=ANSWER"));
+        assert!(peek_of(&["reconfigure", "a", "--wait"]).unwrap_err().contains("takes --set"));
         assert!(peek_of(&["peek", "a", "b"]).is_err());
         assert!(peek_of(&["peek", "a", "--file"]).unwrap_err().contains("needs a path"));
         assert!(peek_of(&["peek", "a", "--scripts", "--file", "x"]).unwrap_err().contains("not both"));
@@ -1642,5 +1742,26 @@ mod tests {
         assert_eq!(shown[1], "  line 6");
         assert_eq!(shown[40], "  line 45");
         assert_eq!(shown_log("a\n\nb\n", "l"), ["  a", "  b"]);
+    }
+
+    #[test]
+    fn reconfigure_asks_with_the_current_answers_and_says_what_changed() {
+        let current = json!({"template": "web-project", "questions": [
+            {"name": "CODE_EDITOR", "prompt": "Editor", "kind": "choice", "choices": ["vscode", "cursor"], "default": "vscode"},
+            {"name": "LINKS", "prompt": "Links", "kind": "urls"},
+            {"name": "NEW_ONE", "prompt": "New", "kind": "text", "default": "auto"}],
+            "answers": {"CODE_EDITOR": "cursor", "LINKS": "", "NEW_ONE": null}});
+        let q = with_current_answers(&current);
+        assert_eq!(q[0]["default"], "cursor", "the current answer");
+        assert!(q[1].get("default").is_none(), "answered with nothing: no default");
+        assert_eq!(q[2]["default"], "auto", "a question it has no answer to yet keeps the template's default");
+
+        let data = json!({"changed": [{"name": "CODE_EDITOR", "from": "vscode", "to": "cursor"},
+                                      {"name": "LINKS", "from": "https://a.dev", "to": ""}]});
+        assert_eq!(
+            reconfigured("site", &data),
+            "✓ reconfigured site\n  CODE_EDITOR: vscode → cursor\n  LINKS: https://a.dev → (none)\n  it takes effect the next time you activate it"
+        );
+        assert_eq!(reconfigured("site", &json!({"changed": []})), "nothing changed in site");
     }
 }

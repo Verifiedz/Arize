@@ -257,6 +257,62 @@ impl Template {
                "questions": questions})
     }
 
+    /// A workspace's answers after CHANGES, from CURRENT (its `[env]`): every question in order
+    /// (a question its `[env]` doesn't have yet takes its default), then any other `[env]` value
+    /// someone added by hand, kept. Only changed answers are checked, as create checks them;
+    /// unchanged ones stay exactly as they are (even ones edited by hand into several lines).
+    /// An empty answer clears an optional question; a required one can't be empty. Returns the
+    /// new `[env]` and the names that changed.
+    pub fn reconfigured(
+        &self,
+        current: &[(String, String)],
+        changes: &Map<String, Value>,
+    ) -> Result<(Env, Vec<String>)> {
+        if let Some(name) = changes.keys().find(|k| !self.questions.iter().any(|q| &q.name == *k)) {
+            let names: Vec<&str> = self.questions.iter().map(|q| q.name.as_str()).collect();
+            return Err(Error::invalid_params(format!(
+                "template '{}' has no question '{name}' (it asks: {})",
+                self.id,
+                names.join(", ")
+            )));
+        }
+        let now = |name: &str| current.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone());
+        let mut env = Vec::new();
+        let mut changed = Vec::new();
+        for q in &self.questions {
+            let before = now(&q.name);
+            let value = match changes.get(&q.name) {
+                None | Some(Value::Null) => before.clone().unwrap_or_else(|| q.default.clone().unwrap_or_default()),
+                Some(Value::String(s)) => {
+                    let v = s.trim().to_owned();
+                    if v.is_empty() && q.required {
+                        return Err(Error::invalid_params(format!("{} ({}) is required", q.name, q.prompt)));
+                    }
+                    if !v.is_empty()
+                        && Some(&v) != before.as_ref()
+                        && !(v == "auto" && q.default.as_deref() == Some("auto"))
+                    {
+                        q.check(&v).map_err(|m| Error::invalid_params(format!("{} ({}): {m}", q.name, q.prompt)))?;
+                    }
+                    v
+                }
+                Some(other) => {
+                    return Err(Error::invalid_params(format!("{}: answers are text, got {other}", q.name)));
+                }
+            };
+            if before.as_ref() != Some(&value) {
+                changed.push(q.name.clone());
+            }
+            env.push((q.name.clone(), value));
+        }
+        for (name, value) in current {
+            if !self.questions.iter().any(|q| &q.name == name) {
+                env.push((name.clone(), value.clone()));
+            }
+        }
+        Ok((env, changed))
+    }
+
     /// Every question's answer, in question order: the given value, else the default, else
     /// empty. Unknown names, missing required answers and answers that don't fit their kind are
     /// `invalid_params` naming the question.
@@ -314,10 +370,8 @@ impl Template {
                     out.push('\n');
                 }
                 if !answers.is_empty() {
-                    out.push_str("\n# Your answers. Change them here; every step reads them.\n[env]\n");
-                    for (name, value) in answers {
-                        out.push_str(&format!("{name} = {}\n", quoted(value)));
-                    }
+                    out.push('\n');
+                    out.push_str(&env_block(answers));
                 }
                 (path.clone(), out)
             })
@@ -327,7 +381,7 @@ impl Template {
 
 impl Question {
     /// Does `value` (non-empty) fit this question's kind? `Err` says what it should be.
-    fn check(&self, value: &str) -> std::result::Result<(), String> {
+    pub(crate) fn check(&self, value: &str) -> std::result::Result<(), String> {
         if value.contains(['\n', '\r']) {
             return Err("must be one line".into());
         }
@@ -366,6 +420,61 @@ fn check_name(name: &str) -> std::result::Result<(), String> {
 }
 
 /// A TOML basic string.
+/// `[env]`: (name, value), in order.
+pub type Env = Vec<(String, String)>;
+
+/// The `[env]` table of answers, with the comment that says where to change them.
+fn env_block(answers: &[(String, String)]) -> String {
+    let mut out = String::from("# Your answers. Change them here; every step reads them.\n[env]\n");
+    for (name, value) in answers {
+        out.push_str(&format!("{name} = {}\n", quoted(value)));
+    }
+    out
+}
+
+/// `workspace.toml`'s text with its `[env]` table (and the comment line just above it, if it's
+/// ours) replaced by ENV; everything else exactly as it was, comments and hand edits included.
+/// No `[env]` yet: added at the end.
+pub fn with_env(text: &str, env: &[(String, String)]) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(start) = lines.iter().position(|l| l.trim() == "[env]") else {
+        let mut out = text.trim_end().to_owned();
+        out.push_str("\n\n");
+        out.push_str(&env_block(env));
+        return out;
+    };
+    // The table ends at the next table header, or at the end of the file; a line inside a
+    // multi-line string ("[ -f x ] && …" in a command) is not a header.
+    let mut end = lines.len();
+    let mut open: Option<&str> = None;
+    for (i, line) in lines.iter().enumerate().skip(start + 1) {
+        if let Some(delim) = open {
+            if line.contains(delim) {
+                open = None;
+            }
+            continue;
+        }
+        if line.starts_with('[') {
+            end = i;
+            break;
+        }
+        open = ["\"\"\"", "'''"].into_iter().find(|d| line.matches(d).count() % 2 == 1);
+    }
+    let mut head = &lines[..start];
+    if head.last().is_some_and(|l| l.starts_with("# Your answers.")) {
+        head = &head[..head.len() - 1];
+    }
+    let mut out = head.join("\n");
+    out.push('\n');
+    out.push_str(&env_block(env));
+    if end < lines.len() {
+        out.push('\n');
+        out.push_str(&lines[end..].join("\n"));
+        out.push('\n');
+    }
+    out
+}
+
 fn quoted(s: &str) -> String {
     toml::Value::String(s.to_owned()).to_string()
 }
@@ -508,5 +617,33 @@ kind = "urls"
         )
         .unwrap_err();
         assert!(e.message.contains("must not have [env]"));
+    }
+
+    #[test]
+    fn with_env_replaces_only_the_env_table() {
+        let env = vec![("A".to_owned(), "new".to_owned()), ("B".to_owned(), "two\nlines".to_owned())];
+        let ours = "[workspace]\nlabel = \"S\"\n\n# Your answers. Change them here; every step reads them.\n[env]\nA = \"old\"\n";
+        let b = format!("B = {}\n", quoted("two\nlines"));
+        assert_eq!(
+            with_env(ours, &env),
+            format!("[workspace]\nlabel = \"S\"\n\n# Your answers. Change them here; every step reads them.\n[env]\nA = \"new\"\n{b}")
+        );
+        // [env] in the middle (someone moved it), with a multi-line value: what follows is kept.
+        let middle = "[workspace]\nlabel = \"S\"\n[env]\nA = '''\n[ -f x ] && echo x\n'''\n\n[[step]]\nname = \"s\"\n";
+        let out = with_env(middle, &env);
+        assert!(out.starts_with("[workspace]\nlabel = \"S\"\n# Your answers."), "{out}");
+        assert!(out.ends_with(&format!("{b}\n[[step]]\nname = \"s\"\n")), "{out}");
+        // No [env] yet.
+        let none = "[workspace]\nlabel = \"S\"\n";
+        assert_eq!(
+            with_env(none, &env[..1]),
+            "[workspace]\nlabel = \"S\"\n\n# Your answers. Change them here; every step reads them.\n[env]\nA = \"new\"\n"
+        );
+        for text in [ours, middle, none] {
+            let out = with_env(text, &env);
+            let doc: toml::Table = toml::from_str(&out).unwrap();
+            assert_eq!(doc["env"]["B"].as_str(), Some("two\nlines"), "{out}");
+            assert_eq!(out.matches("# Your answers.").count(), 1, "{out}");
+        }
     }
 }

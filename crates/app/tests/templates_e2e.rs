@@ -765,3 +765,31 @@ fn offline_prep_gets_projects_ready_and_back_online_pushes_only_when_asked() {
     assert!(stop.contains("site (main): pushed 1 commit"), "{stop}");
     sb.remove("trip");
 }
+
+// ---------------------------------------------------------------- reconfigure
+
+#[test]
+fn reconfigure_changes_answers_only_while_ready_and_the_next_activate_uses_them() {
+    let sb = Sandbox::new();
+    sb.create("try", "scratch", &[("LANGUAGE", "python"), ("CODE_EDITOR", "vscode"), ("TERMINAL_APP", "none")]);
+    let out = sb.ok(&["workspaces", "reconfigure", "try", "--set", "LANGUAGE=rust"]);
+    assert_eq!(
+        out.trim(),
+        "✓ reconfigured try\n  LANGUAGE: python → rust\n  it takes effect the next time you activate it"
+    );
+    let again = sb.ok(&["workspaces", "reconfigure", "try", "--set", "LANGUAGE=rust"]);
+    assert_eq!(again.trim(), "nothing changed in try");
+
+    let launched = sb.activate("try");
+    assert!(launched.contains("-rust") && launched.contains("cargo run"), "{launched}");
+    // While it runs, stop would read the new answers to undo what the old ones started.
+    let err = sb.fails(&["workspaces", "reconfigure", "try", "--set", "LANGUAGE=go"]);
+    assert!(err.contains("stop it first"), "{err}");
+    let err = sb.fails(&["workspaces", "reconfigure", "try", "--set", "LANGUAGE="]);
+    assert!(err.contains("stop it first"), "{err}");
+    sb.stop("try");
+
+    let err = sb.fails(&["workspaces", "reconfigure", "try", "--set", "CODE_EDITOR=notepad"]);
+    assert!(err.contains("must be one of"), "{err}");
+    sb.remove("try");
+}

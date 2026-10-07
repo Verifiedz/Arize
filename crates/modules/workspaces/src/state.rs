@@ -181,6 +181,21 @@ pub fn stop_succeeded(state: &WorkspaceState) -> Result<WorkspaceState> {
     }
 }
 
+/// Check before changing a workspace's answers (ADR 0025 §9): only when nothing of it runs. A
+/// running or dirty workspace's cleanup reads the answers, and would then stop what the new ones
+/// name rather than what the old ones started (another folder, another stop command).
+pub fn start_reconfigure(state: &WorkspaceState) -> Result<()> {
+    match state {
+        WorkspaceState::Ready => Ok(()),
+        WorkspaceState::Active | WorkspaceState::Launching => Err(Error::conflict(
+            "the workspace is running: stop it first (workspaces.stop), so stop uses the answers it started with",
+        )),
+        WorkspaceState::Dirty { .. } => Err(Error::conflict(
+            "the workspace is dirty: clean it up first (workspaces.cleanup), so cleanup uses the answers it started with",
+        )),
+    }
+}
+
 /// Check before removing (ADR 0026 §2): never while it may have processes running, so nothing
 /// is left behind with no workspace to stop it.
 pub fn start_remove(state: &WorkspaceState) -> Result<()> {
@@ -346,5 +361,20 @@ mod tests {
             assert_eq!(start_remove(&s).unwrap_err().code, ErrorCode::Conflict, "{s:?}");
         }
         assert!(start_remove(&WorkspaceState::Active).unwrap_err().message.contains("stop it first"));
+    }
+
+    #[test]
+    fn answers_change_only_while_nothing_runs() {
+        assert!(start_reconfigure(&WorkspaceState::Ready).is_ok());
+        let e = start_reconfigure(&WorkspaceState::Active).unwrap_err();
+        assert!(e.message.contains("stop it first"), "{}", e.message);
+        assert!(start_reconfigure(&WorkspaceState::Launching).is_err());
+        let dirty = WorkspaceState::Dirty {
+            reason: "x".into(),
+            failed_step: FailedStep { index: 1, count: 1, name: "s".into() },
+            failed_at: "2026-10-07T00:00:00Z".parse().unwrap(),
+            log: String::new(),
+        };
+        assert!(start_reconfigure(&dirty).unwrap_err().message.contains("clean it up first"));
     }
 }

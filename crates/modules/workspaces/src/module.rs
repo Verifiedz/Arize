@@ -96,7 +96,7 @@ impl Module for Workspaces {
                 id.clone(),
                 Execution::Inline,
             ),
-            ("workspaces.restore", "Bring a removed workspace back", id, Execution::Inline),
+            ("workspaces.restore", "Bring a removed workspace back", id.clone(), Execution::Inline),
             (
                 "workspaces.templates",
                 "List the built-in workspace templates and their questions (one, with its files, to peek)",
@@ -109,6 +109,19 @@ impl Module for Workspaces {
                 json!({"type": "object", "required": ["id", "template"], "properties": {
                     "id": {"type": "string"}, "template": {"type": "string"},
                     "values": {"type": "object"}, "label": {"type": "string"}}}),
+                Execution::Inline,
+            ),
+            (
+                "workspaces.answers",
+                "A workspace's template, its questions and the current answers",
+                id.clone(),
+                Execution::Inline,
+            ),
+            (
+                "workspaces.reconfigure",
+                "Change a workspace's answers (only while it's ready)",
+                json!({"type": "object", "required": ["id", "values"], "properties": {
+                    "id": {"type": "string"}, "values": {"type": "object"}}}),
                 Execution::Inline,
             ),
         ]
@@ -135,6 +148,8 @@ impl Module for Workspaces {
             "workspaces.restore" => self.restore_removed(ctx, &decode::<Target>(params)?.id),
             "workspaces.templates" => templates(decode(params)?),
             "workspaces.create" => self.create(ctx, decode(params)?),
+            "workspaces.answers" => self.answers(ctx, &decode::<Target>(params)?.id),
+            "workspaces.reconfigure" => self.reconfigure(ctx, decode(params)?),
             _ => Err(Error::unknown_op(format!("workspaces has no op '{op}'"))),
         }
     }
@@ -144,6 +159,17 @@ impl Module for Workspaces {
 struct Target {
     id: String,
 }
+
+/// `workspaces.reconfigure` (ADR 0025 §9): new answers, by question name.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Reconfigure {
+    id: String,
+    values: Map<String, Value>,
+}
+
+/// Where a workspace records the template it was made from (ADR 0025 §9).
+const TEMPLATE_FILE: &str = ".template";
 
 /// `workspaces.create` (ADR 0025 §7).
 #[derive(Deserialize)]
@@ -282,10 +308,94 @@ impl Workspaces {
                 for (path, text) in &files {
                     tx.put(&format!("{}/{path}", p.id), text.clone())?;
                 }
+                tx.put(&format!("{}/{TEMPLATE_FILE}", p.id), format!("{}\n", template.id))?;
                 tx.emit("workspaces.workspace.created", json!({"workspace": p.id, "template": p.template}))
             })?;
         }
         self.status(ctx, &p.id)
+    }
+
+    /// The template workspace ID was made from: its `.template` file, or for one made before that
+    /// file existed, the "Created from Shimmer's X template." line every template writes into
+    /// `workspace.toml`. `invalid_params` when it was made by hand.
+    fn template_of(&self, ctx: &Ctx, id: &str, toml: &str) -> Result<Template> {
+        let recorded = ctx.store.read_string(&format!("{id}/{TEMPLATE_FILE}"))?.map(|t| t.trim().to_owned());
+        let from_comment = || {
+            toml.lines()
+                .find_map(|l| l.split("Created from Shimmer's ").nth(1))
+                .and_then(|rest| rest.split(' ').next())
+                .map(str::to_owned)
+        };
+        match recorded.filter(|t| !t.is_empty()).or_else(from_comment) {
+            Some(template) => builtin::find(&template),
+            None => Err(Error::invalid_params(format!(
+                "'{id}' wasn't made from a template, so there are no questions to ask again: \
+                 edit its workspace.toml instead (shimmer workspaces edit {id})"
+            ))),
+        }
+    }
+
+    /// The `[env]` of workspace ID's `workspace.toml`, in file order, and the file's text.
+    fn current_env(&self, ctx: &Ctx, id: &str) -> Result<(Vec<(String, String)>, String)> {
+        folder(ctx, id)?;
+        let text = ctx
+            .store
+            .read_string(&format!("{id}/workspace.toml"))?
+            .ok_or_else(|| Error::invalid_params(format!("{id}: there is no workspace.toml")))?;
+        let doc: toml::Table =
+            toml::from_str(&text).map_err(|e| Error::invalid_params(format!("{id}/workspace.toml: {e}")))?;
+        let env = doc
+            .get("env")
+            .and_then(toml::Value::as_table)
+            .map(|t| t.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_owned())).collect())
+            .unwrap_or_default();
+        Ok((env, text))
+    }
+
+    /// `workspaces.answers`: the template's questions, as `workspaces.templates` gives them, and
+    /// the workspace's current answer to each (null when its `[env]` doesn't have one yet).
+    fn answers(&self, ctx: &Ctx, id: &str) -> Result<Value> {
+        let (env, text) = self.current_env(ctx, id)?;
+        let template = self.template_of(ctx, id, &text)?;
+        let answers: Map<String, Value> = template
+            .questions
+            .iter()
+            .map(|q| {
+                let now = env.iter().find(|(n, _)| *n == q.name).map(|(_, v)| json!(v));
+                (q.name.clone(), now.unwrap_or(Value::Null))
+            })
+            .collect();
+        Ok(json!({"id": id, "template": template.id, "questions": template.to_wire()["questions"], "answers": answers}))
+    }
+
+    /// `workspaces.reconfigure`: new answers into `[env]`, only while the workspace is ready, and
+    /// only that table rewritten. The result lists each change; the event only the names.
+    fn reconfigure(&self, ctx: &Ctx, p: Reconfigure) -> Result<Value> {
+        let _g = self.write.lock();
+        let f = folder(ctx, &p.id)?;
+        let saved = f.saved(ctx, &p.id).unwrap_or_else(|| Ok(Saved::ready()))?;
+        state::start_reconfigure(&saved.state)?;
+        let (env, text) = self.current_env(ctx, &p.id)?;
+        let template = self.template_of(ctx, &p.id, &text)?;
+        let (new_env, changed) = template.reconfigured(&env, &p.values)?;
+        let before = |name: &str| env.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone());
+        let changes: Vec<Value> = changed
+            .iter()
+            .map(|name| {
+                let to = new_env.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone()).unwrap_or_default();
+                json!({"name": name, "from": before(name), "to": to})
+            })
+            .collect();
+        if !changed.is_empty() {
+            let new_text = crate::template::with_env(&text, &new_env);
+            // Never write a workspace the next activate would reject.
+            manifest::parse(&p.id, &new_text, &f.files)?;
+            ctx.store.transaction(|tx| {
+                tx.put(&format!("{}/workspace.toml", p.id), new_text.clone())?;
+                tx.emit("workspaces.workspace.reconfigured", json!({"workspace": p.id, "changed": changed}))
+            })?;
+        }
+        Ok(json!({"id": p.id, "template": template.id, "changed": changes}))
     }
 
     /// Move a workspace that isn't running to `.removed/<id>/`, in one transaction (ADR 0026 §2).

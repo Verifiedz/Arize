@@ -61,7 +61,9 @@ fn workspaces_are_registered_with_their_lane() {
             "workspaces.remove",
             "workspaces.restore",
             "workspaces.templates",
-            "workspaces.create"
+            "workspaces.create",
+            "workspaces.answers",
+            "workspaces.reconfigure"
         ]
     );
     let lanes = m["lanes"].as_array().unwrap();

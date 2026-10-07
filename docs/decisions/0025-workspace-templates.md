@@ -637,6 +637,37 @@ Other links to open (live site, hosting dashboard, analytics…) []: https://me.
   would. It refuses a `FILE` outside the folder, an unknown workspace (the daemon's `not_found`),
   and running without a terminal (it prints the path instead). `--path` only prints the path.
 
+### 9. Reconfigure: answering again
+
+`shimmer workspaces reconfigure NAME [--set QUESTION=ANSWER]…` asks the template's questions
+again with the workspace's current answers as the defaults (Enter keeps one, `-` clears an
+optional one), instead of hand-editing `[env]`. Two ops:
+
+- `workspaces.answers {id}`: the template it was made from, the questions, and each current
+  answer (null when `[env]` doesn't have it yet; that question shows the template's default).
+- `workspaces.reconfigure {id, values}`: the new answers.
+
+Rules:
+
+- **Which template.** `create` now writes `.template` (the template's id) in the workspace's
+  folder. A workspace made before that is known by the "Created from Shimmer's X template." line
+  every template writes at the top of `workspace.toml`. One made by hand has no questions:
+  `invalid_params`, pointing at `workspaces edit`.
+- **Only `[env]` is rewritten**: the table (and our comment above it) is replaced, everything else
+  in `workspace.toml` (comments, step edits) stays byte for byte. A table header inside a
+  multi-line string isn't mistaken for the end of `[env]`. `[env]` values no question asks for
+  (added by hand) are kept, after the answers.
+- **Checked as `create` checks**, but only the answers that change: an unchanged answer stays
+  exactly as it is, even one edited by hand into several lines. A required question can't be
+  emptied. The new file is parsed as a manifest before it is written.
+- **Only while `ready`.** Active, launching or dirty is `conflict`: stop and cleanup read the
+  answers, and would undo what the *new* ones name (another project folder, another stop
+  command) instead of what the old ones started.
+- Nothing changed: nothing written, no event. Otherwise one transaction writes the file and emits
+  `workspaces.workspace.reconfigured` with the names that changed (never the values).
+- Scripts are not touched: bringing them up to a newer template is a separate feature (an
+  `upgrade`, not done here).
+
 ## Consequences
 
 - `crates/modules/workspaces`: a `templates/` folder embedded with `include_str!`, a pure

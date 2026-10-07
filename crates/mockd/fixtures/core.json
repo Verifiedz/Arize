@@ -277,6 +277,18 @@
                 "summary": "Create a workspace from a template and your answers",
                 "params_schema": {},
                 "execution": "inline"
+              },
+              {
+                "op": "workspaces.answers",
+                "summary": "A workspace's template, its questions and the current answers",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "workspaces.reconfigure",
+                "summary": "Change a workspace's answers (only while it's ready)",
+                "params_schema": {},
+                "execution": "inline"
               }
             ],
             "topics": [
@@ -287,7 +299,8 @@
               "workspaces.workspace.created",
               "workspaces.session.stopped",
               "workspaces.workspace.removed",
-              "workspaces.workspace.restored"
+              "workspaces.workspace.restored",
+              "workspaces.workspace.reconfigured"
             ]
           }
         ]
