@@ -36,6 +36,9 @@ commands:
                                         steps/01-check.sh) in $VISUAL/$EDITOR, then check it;
                                         --path only prints where the file is
   restore NAME                          bring a removed workspace back
+  rename NAME NEW [--move-schedules]    give a workspace that isn't running a new name; offers
+                                        to move schedules that activate it (--move-schedules:
+                                        without asking)
 
   templates [CATEGORY]                  list ready-made workspaces to start from, by category
   peek TEMPLATE                         everything about a template before you use it: what it
@@ -108,6 +111,12 @@ pub enum WorkspacesCmd {
         scripts: bool,
         file: Option<String>,
     },
+    /// `move_schedules`: move the schedules that name it without asking (ADR 0026 §2a).
+    Rename {
+        id: String,
+        to: String,
+        move_schedules: bool,
+    },
     /// `set`: `--set NAME=VALUE` answers, in order (ADR 0025 §9).
     Reconfigure {
         id: String,
@@ -136,6 +145,19 @@ pub fn parse(words: Vec<String>) -> std::result::Result<WorkspacesCmd, String> {
     }
     if sub == "reconfigure" {
         return parse_reconfigure(words.collect());
+    }
+    if sub == "rename" {
+        let usage = "usage: shimmer workspaces rename NAME NEW [--move-schedules]";
+        let (mut names, mut move_schedules) = (Vec::new(), false);
+        for word in words {
+            match word.as_str() {
+                "--move-schedules" => move_schedules = true,
+                w if w.starts_with('-') && w.len() > 1 => return Err(format!("unknown option '{w}'; {usage}")),
+                _ => names.push(word),
+            }
+        }
+        let [id, to]: [String; 2] = names.try_into().map_err(|_| usage.to_owned())?;
+        return Ok(WorkspacesCmd::Rename { id, to, move_schedules });
     }
     let mut positional = Vec::new();
     let (mut yes, mut wait, mut path_only) = (false, false, false);
@@ -429,6 +451,53 @@ pub async fn run(client: &mut Client, cmd: &WorkspacesCmd, json: bool, prompt: &
                 }
                 None => Ok(out(one, format!("{text}\n\n{}", scripts_of(one)))),
             }
+        }
+        WorkspacesCmd::Rename { id, to, move_schedules } => {
+            let data = client.call("workspaces.rename", json!({"id": id, "to": to})).await?;
+            let mut text = format!("✓ renamed {id} to {to}");
+            for note in data["notes"].as_array().into_iter().flatten() {
+                let _ = write!(text, "\n  note: {}", note.as_str().unwrap_or_default());
+            }
+            // Schedules that activate (or stop…) it by its old name would now fail: say so, and
+            // move them only when the person says yes.
+            let all = client.call("scheduler.list", json!({})).await.unwrap_or(Value::Null);
+            let old = schedules_for(&all, id);
+            if old.is_empty() {
+                return Ok(out(&data, text));
+            }
+            let verb = if old.len() == 1 { "uses" } else { "use" };
+            let mut listing = format!("\n  {} still {verb} the old name {id}:", plural(old.len(), "schedule"));
+            for t in &old {
+                let _ = write!(listing, "\n    {}", schedule_line(t));
+            }
+            let asked = !*move_schedules && prompt.interactive();
+            let go = *move_schedules || {
+                if asked {
+                    eprintln!("{}", listing.trim_start_matches('\n'));
+                    prompt.confirm(&format!("Move {} to {to}?", if old.len() == 1 { "it" } else { "them" }))
+                } else {
+                    false
+                }
+            };
+            if !asked {
+                text.push_str(&listing);
+            }
+            if !go {
+                let _ = write!(
+                    text,
+                    "\n  they'll fail until moved: run 'shimmer workspaces rename {to} {id}' to undo, or \
+                     remove each (shimmer scheduler remove ID) and add it again for {to}"
+                );
+                return Ok(out(&data, text));
+            }
+            for t in &old {
+                let line = match move_schedule(client, t, to).await {
+                    Ok(new) => format!("moved {} → {new}", cell(&t["id"])),
+                    Err(e) => format!("couldn't move {}: {} (it still uses {id})", cell(&t["id"]), e.message),
+                };
+                let _ = write!(text, "\n  {line}");
+            }
+            Ok(out(&data, text))
         }
         WorkspacesCmd::Reconfigure { id, set } => {
             let current = client.call("workspaces.answers", id_params(id)).await?;
@@ -1039,6 +1108,66 @@ fn template_in_full(t: &Value, categories: &[Value]) -> String {
     out
 }
 
+/// The schedules you added that run a `workspaces.*` op on workspace ID and haven't finished.
+fn schedules_for(all: &Value, id: &str) -> Vec<Value> {
+    all["triggers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|t| {
+            t["source"]["type"] == "user"
+                && t["done"] != true
+                && t["op"].as_str().is_some_and(|op| op.starts_with("workspaces."))
+                && t["params"]["id"] == id
+        })
+        .cloned()
+        .collect()
+}
+
+/// "usr-01… workspaces.activate, cron 0 9 * * 1-5".
+fn schedule_line(t: &Value) -> String {
+    let s = &t["schedule"];
+    let when = if let Some(c) = s["cron"].as_str() {
+        format!("cron {c}")
+    } else if let Some(n) = s["every"].as_u64() {
+        format!("every {n}s")
+    } else if let Some(at) = s["once"].as_str() {
+        format!("once at {at}")
+    } else {
+        s.to_string()
+    };
+    let paused = if t["paused"] == true { " (paused)" } else { "" };
+    format!("{} {}, {when}{paused}", cell(&t["id"]), cell(&t["op"]))
+}
+
+/// Move one schedule to workspace TO: the same trigger added again with the new id (paused if
+/// it was), then the old one removed. The old one stays if adding fails. Its new id.
+async fn move_schedule(client: &mut Client, t: &Value, to: &str) -> Result<String> {
+    let mut params = t["params"].clone();
+    params["id"] = json!(to);
+    let mut add = json!({"schedule": t["schedule"], "op": t["op"], "params": params, "catch_up": t["catch_up"]});
+    for key in ["lane", "fallback"] {
+        if !t[key].is_null() {
+            add[key] = t[key].clone();
+        }
+    }
+    let new = client.call("scheduler.add", add).await?;
+    let new_id = new["trigger_id"].as_str().unwrap_or_default().to_owned();
+    if t["paused"] == true {
+        client.call("scheduler.pause", json!({"trigger_id": new_id})).await?;
+    }
+    client.call("scheduler.remove", json!({"trigger_id": t["id"]})).await?;
+    Ok(new_id)
+}
+
+fn plural(n: usize, word: &str) -> String {
+    if n == 1 {
+        format!("1 {word}")
+    } else {
+        format!("{n} {word}s")
+    }
+}
+
 /// The template's questions with each current answer as its default, so Enter keeps it.
 fn with_current_answers(current: &Value) -> Value {
     let mut questions = current["questions"].clone();
@@ -1575,6 +1704,17 @@ mod tests {
             }
         );
         assert!(peek_of(&["reconfigure"]).is_err());
+        assert_eq!(
+            peek_of(&["rename", "site", "portfolio"]).unwrap(),
+            WorkspacesCmd::Rename { id: "site".into(), to: "portfolio".into(), move_schedules: false }
+        );
+        assert_eq!(
+            peek_of(&["rename", "--move-schedules", "site", "portfolio"]).unwrap(),
+            WorkspacesCmd::Rename { id: "site".into(), to: "portfolio".into(), move_schedules: true }
+        );
+        assert!(peek_of(&["rename", "site"]).is_err());
+        assert!(peek_of(&["rename", "a", "b", "c"]).is_err());
+        assert!(peek_of(&["rename", "a", "b", "--yes"]).unwrap_err().contains("unknown option '--yes'"));
         assert!(peek_of(&["reconfigure", "a", "b"]).is_err());
         assert!(peek_of(&["reconfigure", "a", "--set", "nope"]).unwrap_err().contains("QUESTION=ANSWER"));
         assert!(peek_of(&["reconfigure", "a", "--wait"]).unwrap_err().contains("takes --set"));
@@ -1763,5 +1903,29 @@ mod tests {
             "✓ reconfigured site\n  CODE_EDITOR: vscode → cursor\n  LINKS: https://a.dev → (none)\n  it takes effect the next time you activate it"
         );
         assert_eq!(reconfigured("site", &json!({"changed": []})), "nothing changed in site");
+    }
+
+    #[test]
+    fn rename_finds_the_schedules_that_name_the_workspace() {
+        let all = json!({"triggers": [
+            {"id": "usr-1", "source": {"type": "user"}, "op": "workspaces.activate", "params": {"id": "site"},
+             "schedule": {"cron": "0 9 * * 1-5"}, "paused": false, "done": false},
+            {"id": "usr-2", "source": {"type": "user"}, "op": "workspaces.stop", "params": {"id": "site"},
+             "schedule": {"every": 3600}, "paused": true, "done": false},
+            {"id": "usr-3", "source": {"type": "user"}, "op": "workspaces.activate", "params": {"id": "other"},
+             "schedule": {"every": 60}, "done": false},
+            {"id": "usr-4", "source": {"type": "user"}, "op": "workspaces.activate", "params": {"id": "site"},
+             "schedule": {"once": "2026-10-01T09:00:00Z"}, "done": true},
+            {"id": "records-x", "source": {"type": "module", "id": "records"}, "op": "workspaces.activate",
+             "params": {"id": "site"}, "schedule": {"every": 60}, "done": false},
+            {"id": "usr-5", "source": {"type": "user"}, "op": "records.list", "params": {"id": "site"},
+             "schedule": {"every": 60}, "done": false}]});
+        let found: Vec<String> = schedules_for(&all, "site").iter().map(|t| cell(&t["id"])).collect();
+        assert_eq!(found, ["usr-1", "usr-2"], "yours, unfinished, a workspaces op, this workspace");
+        let lines: Vec<String> = schedules_for(&all, "site").iter().map(schedule_line).collect();
+        assert_eq!(
+            lines,
+            ["usr-1 workspaces.activate, cron 0 9 * * 1-5", "usr-2 workspaces.stop, every 3600s (paused)"]
+        );
     }
 }

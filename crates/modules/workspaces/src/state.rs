@@ -196,6 +196,21 @@ pub fn start_reconfigure(state: &WorkspaceState) -> Result<()> {
     }
 }
 
+/// Check before renaming (ADR 0026 §2a): only when nothing of it runs. Stop and cleanup find what
+/// a launch started by the workspace's id (its temp folder, its process groups' records), so a
+/// running or dirty workspace keeps its name until it's stopped or cleaned up.
+pub fn start_rename(state: &WorkspaceState) -> Result<()> {
+    match state {
+        WorkspaceState::Ready => Ok(()),
+        WorkspaceState::Active | WorkspaceState::Launching => Err(Error::conflict(
+            "the workspace is running: stop it first (workspaces.stop), so stop finds what it started",
+        )),
+        WorkspaceState::Dirty { .. } => Err(Error::conflict(
+            "the workspace is dirty: clean it up first (workspaces.cleanup), so cleanup finds what it started",
+        )),
+    }
+}
+
 /// Check before removing (ADR 0026 §2): never while it may have processes running, so nothing
 /// is left behind with no workspace to stop it.
 pub fn start_remove(state: &WorkspaceState) -> Result<()> {
@@ -376,5 +391,12 @@ mod tests {
             log: String::new(),
         };
         assert!(start_reconfigure(&dirty).unwrap_err().message.contains("clean it up first"));
+    }
+
+    #[test]
+    fn a_name_changes_only_while_nothing_runs() {
+        assert!(start_rename(&WorkspaceState::Ready).is_ok());
+        assert!(start_rename(&WorkspaceState::Active).unwrap_err().message.contains("stop it first"));
+        assert!(start_rename(&WorkspaceState::Launching).is_err());
     }
 }

@@ -98,6 +98,13 @@ impl Module for Workspaces {
             ),
             ("workspaces.restore", "Bring a removed workspace back", id.clone(), Execution::Inline),
             (
+                "workspaces.rename",
+                "Give a workspace that isn't running a new id",
+                json!({"type": "object", "required": ["id", "to"], "properties": {
+                    "id": {"type": "string"}, "to": {"type": "string"}}}),
+                Execution::Inline,
+            ),
+            (
                 "workspaces.templates",
                 "List the built-in workspace templates and their questions (one, with its files, to peek)",
                 json!({"type": "object", "properties": {"id": {"type": "string"}, "files": {"type": "boolean"}}}),
@@ -146,6 +153,7 @@ impl Module for Workspaces {
             "workspaces.stop" => self.stop(ctx, &decode::<Target>(params)?.id).await,
             "workspaces.remove" => self.remove(ctx, &decode::<Target>(params)?.id),
             "workspaces.restore" => self.restore_removed(ctx, &decode::<Target>(params)?.id),
+            "workspaces.rename" => self.rename(ctx, decode(params)?),
             "workspaces.templates" => templates(decode(params)?),
             "workspaces.create" => self.create(ctx, decode(params)?),
             "workspaces.answers" => self.answers(ctx, &decode::<Target>(params)?.id),
@@ -166,6 +174,14 @@ struct Target {
 struct Reconfigure {
     id: String,
     values: Map<String, Value>,
+}
+
+/// `workspaces.rename` (ADR 0026 §2a).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Rename {
+    id: String,
+    to: String,
 }
 
 /// Where a workspace records the template it was made from (ADR 0025 §9).
@@ -422,6 +438,50 @@ impl Workspaces {
             tx.emit("workspaces.workspace.removed", json!({"workspace": id}))
         })?;
         Ok(json!({"removed": true}))
+    }
+
+    /// Move a workspace that isn't running to a new id, every file in one transaction (ADR 0026
+    /// §3). The result's `notes` name what stays under the old id outside the Shimmer folder,
+    /// which the daemon can't move: a separate browser window's profile.
+    fn rename(&self, ctx: &Ctx, p: Rename) -> Result<Value> {
+        let (id, to) = (p.id.as_str(), p.to.trim());
+        let _g = self.write.lock();
+        let f = folder(ctx, id)?;
+        if !manifest::valid_name(to) {
+            return Err(Error::invalid_params(format!(
+                "'{to}' is not a valid workspace id: lowercase letters, digits, '-' or '_', at most {} characters",
+                manifest::MAX_NAME_LEN
+            )));
+        }
+        if to == id {
+            return Err(Error::invalid_params(format!("'{id}' is already called that")));
+        }
+        // A state file that can't be read doesn't stop renaming a broken workspace.
+        if let Some(Ok(saved)) = f.saved(ctx, id) {
+            state::start_rename(&saved.state).map_err(|e| Error::new(e.code, format!("{id}: {}", e.message)))?;
+        }
+        if !ctx.store.list(to)?.is_empty() {
+            return Err(Error::conflict(format!("there is already a workspace '{to}'")));
+        }
+        let mut notes = Vec::new();
+        if let Ok((env, _)) = self.current_env(ctx, id) {
+            if env.iter().any(|(k, v)| k == "BROWSER_WINDOW" && v == "separate") {
+                notes.push(format!(
+                    "its browser window's profile (where you logged in to sites) stays under the old name; \
+                     to keep it: mv ~/.local/state/shimmer/browser-profiles/{id} ~/.local/state/shimmer/browser-profiles/{to}"
+                ));
+            }
+        }
+        ctx.store.transaction(|tx| {
+            for file in &f.files {
+                let from = format!("{id}/{file}");
+                let bytes = tx.read(&from)?.unwrap_or_default();
+                tx.put(&format!("{to}/{file}"), bytes)?;
+                tx.delete(&from)?;
+            }
+            tx.emit("workspaces.workspace.renamed", json!({"from": id, "to": to}))
+        })?;
+        Ok(json!({"from": id, "to": to, "notes": notes}))
     }
 
     /// Bring a removed workspace back exactly as it was (ADR 0026 §2).

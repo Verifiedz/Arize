@@ -345,6 +345,31 @@ fn count(sb: &Sandbox, id: &str, start: &str) -> usize {
     sb.processes(id).iter().filter(|(_, cmd)| cmd.starts_with(start)).count()
 }
 
+/// Exactly N processes of workspace ID run a command starting with START, and still N a second
+/// later. Detached steps (windows, servers) are still starting when activate returns, and a
+/// duplicate could appear a moment late, so one look isn't enough either way.
+fn settles(sb: &Sandbox, id: &str, start: &str, n: usize, why: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut since: Option<Instant> = None;
+    loop {
+        let now = count(sb, id, start);
+        if now == n {
+            let at = *since.get_or_insert_with(Instant::now);
+            if at.elapsed() >= Duration::from_secs(1) {
+                return;
+            }
+        } else {
+            since = None;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{why}: {now} processes starting '{start}', not {n}:\n{:#?}",
+            sb.processes(id)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 // ---------------------------------------------------------------- web-project
 
 #[test]
@@ -380,14 +405,14 @@ fn web_project_runs_its_server_services_and_windows_and_stop_leaves_nothing() {
         calls.contains("firefox --new-instance --profile") && calls.contains("https://example.com/docs"),
         "{calls}"
     );
-    assert_eq!(count(&sb, "site", "python3 -m http.server 18201"), 1);
-    assert_eq!(count(&sb, "site", "sleep 600"), 2, "a browser window and a terminal");
+    settles(&sb, "site", "python3 -m http.server 18201", 1, "running");
+    settles(&sb, "site", "sleep 600", 2, "a browser window and a terminal");
 
     // Again, while active: nothing new.
     let again = sb.activate("site");
-    assert_eq!(count(&sb, "site", "python3 -m http.server 18201"), 1, "{again}");
-    assert_eq!(count(&sb, "site", "python3 -m http.server 18211"), 1, "{again}");
-    assert_eq!(count(&sb, "site", "sleep 600"), 2, "no second window: {again}");
+    settles(&sb, "site", "python3 -m http.server 18201", 1, &again);
+    settles(&sb, "site", "python3 -m http.server 18211", 1, &again);
+    settles(&sb, "site", "sleep 600", 2, &format!("no second window: {again}"));
 
     let stop = sb.stop("site");
     assert!(stop.contains("stopped the dev server"), "{stop}");
@@ -433,11 +458,12 @@ fn monorepo_runs_every_app_and_its_logs_window_and_stop_leaves_nothing() {
     sb.activate("acme");
     assert!(up("http://127.0.0.1:18301") && up("http://127.0.0.1:18302"), "both apps answer");
     // The logs terminal; a second one only with TERMINAL_COMMAND.
-    assert_eq!(count(&sb, "acme", "tail "), 1, "{:#?}", sb.processes("acme"));
+    settles(&sb, "acme", "tail ", 1, "the logs terminal");
 
-    let before = sb.processes("acme").len();
-    sb.activate("acme");
-    assert_eq!(sb.processes("acme").len(), before, "activating again starts nothing new");
+    settles(&sb, "acme", "python3 -m http.server", 2, "both apps");
+    let again = sb.activate("acme");
+    settles(&sb, "acme", "python3 -m http.server", 2, &format!("activating again starts no app twice: {again}"));
+    settles(&sb, "acme", "tail ", 1, &format!("nor a second logs terminal: {again}"));
 
     let stop = sb.stop("acme");
     assert!(!up("http://127.0.0.1:18301") && !up("http://127.0.0.1:18302"), "{stop}");
@@ -462,7 +488,7 @@ fn scratch_makes_a_folder_opens_it_and_stop_keeps_the_folder() {
     let folder = out.lines().find_map(|l| l.trim().strip_prefix("folder: ")).expect("says where").to_owned();
     assert!(Path::new(&folder).join("main.py").exists(), "{out}");
     assert!(folder.starts_with(&sb.home().join("scratch").display().to_string()), "{folder}");
-    assert_eq!(count(&sb, "try", "sleep 600"), 1, "its terminal");
+    settles(&sb, "try", "sleep 600", 1, "its terminal");
 
     let stop = sb.stop("try");
     assert!(stop.contains("closed: the kitty terminal") && stop.contains(&format!("kept: {folder}")), "{stop}");
@@ -534,11 +560,11 @@ fn vm_starts_and_stops_a_custom_vm_once_and_only_one_it_started() {
     let out = sb.activate("box");
     assert!(up("http://127.0.0.1:18422"), "{out}");
     assert!(sb.calls().contains("ssh -p 18422 127.0.0.1"), "the terminal runs ssh: {}", sb.calls());
-    assert_eq!(count(&sb, "box", "python3 -m http.server 18422"), 1);
+    settles(&sb, "box", "python3 -m http.server 18422", 1, "running");
 
     let again = sb.activate("box");
-    assert!(again.contains("") && count(&sb, "box", "python3 -m http.server 18422") == 1, "started once: {again}");
-    assert_eq!(count(&sb, "box", "sleep 600"), 1, "one terminal");
+    settles(&sb, "box", "python3 -m http.server 18422", 1, &format!("started once: {again}"));
+    settles(&sb, "box", "sleep 600", 1, "one terminal");
 
     let stop = sb.stop("box");
     assert!(stop.contains("shutdown: test-vm") && stop.contains("closed: the kitty terminal"), "{stop}");
@@ -792,4 +818,59 @@ fn reconfigure_changes_answers_only_while_ready_and_the_next_activate_uses_them(
     let err = sb.fails(&["workspaces", "reconfigure", "try", "--set", "CODE_EDITOR=notepad"]);
     assert!(err.contains("must be one of"), "{err}");
     sb.remove("try");
+}
+
+// ---------------------------------------------------------------- rename
+
+/// The scheduler's triggers, as JSON.
+fn triggers(sb: &Sandbox) -> Vec<serde_json::Value> {
+    let o = sb.run(&["--json", "scheduler", "list"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    v["triggers"].as_array().cloned().unwrap_or_default()
+}
+
+#[test]
+fn rename_moves_the_workspace_and_only_with_a_yes_its_schedules() {
+    let sb = Sandbox::new();
+    sb.create("smoke", "smoke-test", &[]);
+    sb.ok(&[
+        "scheduler",
+        "add",
+        "workspaces.activate",
+        r#"{"id":"smoke"}"#,
+        "--cron",
+        "0 9 * * 1-5",
+        "--catch-up",
+        "skip",
+    ]);
+    sb.ok(&["scheduler", "add", "workspaces.stop", r#"{"id":"smoke"}"#, "--every", "1d", "--catch-up", "skip"]);
+    let paused = triggers(&sb).into_iter().find(|t| t["op"] == "workspaces.stop").unwrap();
+    sb.ok(&["scheduler", "pause", paused["id"].as_str().unwrap()]);
+
+    // No terminal, no --move-schedules: renamed, and the schedules are named but left alone.
+    let out = sb.ok(&["workspaces", "rename", "smoke", "checks"]);
+    assert!(out.starts_with("✓ renamed smoke to checks\n  2 schedules still use the old name smoke:"), "{out}");
+    assert!(out.contains("they'll fail until moved"), "{out}");
+    assert!(triggers(&sb).iter().all(|t| t["params"]["id"] == "smoke"), "untouched");
+    assert_eq!(sb.state("checks"), "ready");
+    assert!(sb.fails(&["workspaces", "status", "smoke"]).contains("no workspace 'smoke'"));
+
+    // Back, then with --move-schedules: each added again for the new name, paused if it was.
+    sb.ok(&["workspaces", "rename", "checks", "smoke"]);
+    let out = sb.ok(&["workspaces", "rename", "smoke", "checks", "--move-schedules"]);
+    assert_eq!(out.matches("\n  moved usr-").count(), 2, "{out}");
+    let now = triggers(&sb);
+    assert_eq!(now.len(), 2);
+    assert!(now.iter().all(|t| t["params"]["id"] == "checks"), "{now:#?}");
+    let stop = now.iter().find(|t| t["op"] == "workspaces.stop").unwrap();
+    assert_eq!(stop["paused"], true, "still paused");
+    assert_eq!(now.iter().find(|t| t["op"] == "workspaces.activate").unwrap()["schedule"]["cron"], "0 9 * * 1-5");
+
+    // It works under its new name, and can't be renamed while it runs.
+    sb.activate("checks");
+    let err = sb.fails(&["workspaces", "rename", "checks", "other"]);
+    assert!(err.contains("stop it first"), "{err}");
+    sb.stop("checks");
+    assert!(sb.fails(&["workspaces", "rename", "checks", "Bad Name"]).contains("not a valid workspace id"));
+    sb.remove("checks");
 }

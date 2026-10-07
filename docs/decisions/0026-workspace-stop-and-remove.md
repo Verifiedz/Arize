@@ -95,6 +95,27 @@ CLAUDE.md §10.3 gains one transition, `active ──stop (cleanup script)──
 - There is no "delete for good" op yet. The removed folder is small, and deleting
   `data/workspaces/.removed/` by hand is safe.
 
+### 2a. `rename`: a new id for a workspace that isn't running
+
+`shimmer workspaces rename NAME NEW [--move-schedules]` (`workspaces.rename {id, to}`) moves every
+file of `data/workspaces/<id>/` to `data/workspaces/<to>/` in one transaction (state,
+`.template` and all) and emits `workspaces.workspace.renamed {from, to}`.
+
+- **Only while `ready`**, as for `reconfigure` (ADR 0025 §9): a running or dirty workspace's stop
+  and cleanup find what its launch started by its id (its temp folder, its recorded windows), so
+  renaming it then would leave those behind. `to` must be a valid id, different, and free.
+- **What the daemon can't move, it names.** A template may keep things outside the Shimmer
+  folder under the id: the result's `notes` say so with the command that moves them (today: a
+  separate browser window's profile, where the person logged in to sites).
+- **Schedules are the person's call.** Triggers that run a `workspaces.*` op on the old id would
+  fail from now on. Neither the module nor the scheduler can know that (no module calls another,
+  and the scheduler never knows a module's names, CLAUDE.md §12 rule 7), so the CLI lists the
+  ones you added, unfinished, that name the old id, and moves them only on a yes (or
+  `--move-schedules`): each added again with the new id (paused if it was), then the old one
+  removed; one that can't be added stays as it was. Without a terminal and without the flag it
+  only lists them, with how to undo the rename.
+- The event log and old step logs keep the old id: they're history.
+
 ### 3. `web-project`'s cleanup stops services too
 
 The template (ADR 0025 §6) gains one optional question, `SERVICES_STOP_COMMAND` (e.g.
