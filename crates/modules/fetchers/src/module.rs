@@ -190,9 +190,11 @@ impl Fetchers {
 /// Classifies a fetch failure for `fetchers.fetch.failed`'s `reason` (ADR 0028 §9).
 /// `ctx.cancel` is checked first since a cancelled run can surface as almost any underlying
 /// error, depending on exactly where the cancellation landed. `http_error` relies on
-/// `http::require_ok`'s `"http_error:"` message convention; anything else `module_error` is
-/// treated as `parse_empty` -- a deliberate simplification (see `http::require_ok`'s own
-/// doc comment) rather than inventing a precise classifier for every possible failure shape.
+/// `http::require_ok`'s `"http_error:"` message convention; anything else `module_error` --
+/// including a `Method::Scrape` source's own robots.txt refusal, which has no bucket of its
+/// own in ADR 0028 §9's four-reason enum -- is treated as `parse_empty`. A deliberate
+/// simplification (see `http::require_ok`'s own doc comment) rather than inventing a
+/// precise classifier, or a fifth reason, for every possible failure shape.
 fn classify_failure(ctx: &Ctx, err: &Error) -> &'static str {
     if ctx.cancel.is_cancelled() {
         "cancelled"

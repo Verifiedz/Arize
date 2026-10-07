@@ -56,7 +56,10 @@ pub trait Source: Send + Sync {
 /// Every `Source` this build knows about (ADR 0028 §10). A compiled-in list, not a plugin
 /// registry -- adding a source is adding a line here.
 pub fn registry() -> Vec<std::sync::Arc<dyn Source>> {
-    vec![std::sync::Arc::new(crate::sources::hn::HnWhoIsHiring)]
+    vec![
+        std::sync::Arc::new(crate::sources::hn::HnWhoIsHiring),
+        std::sync::Arc::new(crate::sources::wwr::WeWorkRemotely),
+    ]
 }
 
 pub fn find(id: &str) -> Option<std::sync::Arc<dyn Source>> {
@@ -68,11 +71,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_registry_has_hn_whoishiring_and_only_known_ids_resolve() {
+    fn the_registry_has_both_reference_sources_and_only_known_ids_resolve() {
         let all = registry();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].id(), "hn-whoishiring");
+        let ids: Vec<_> = all.iter().map(|s| s.id()).collect();
+        assert_eq!(ids, vec!["hn-whoishiring", "weworkremotely"]);
         assert!(find("hn-whoishiring").is_some());
+        assert!(find("weworkremotely").is_some());
         assert!(find("not-a-real-source").is_none());
     }
 }

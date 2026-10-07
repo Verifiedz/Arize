@@ -26,6 +26,24 @@ pub fn select_or_fail<'a>(doc: &'a Html, selector: &str, what: &str) -> Result<V
     Ok(found)
 }
 
+/// The first element matching `selector` within `scope`, or `None` if nothing matched --
+/// for a field that's optional on one listing without failing the whole page, unlike
+/// [`select_or_fail`], which is for the listing boundary itself.
+pub fn select_one<'a>(scope: ElementRef<'a>, selector: &str) -> Result<Option<ElementRef<'a>>> {
+    let parsed =
+        Selector::parse(selector).map_err(|e| Error::internal(format!("invalid selector '{selector}': {e:?}")))?;
+    Ok(scope.select(&parsed).next())
+}
+
+/// [`select_one`]'s matched element's text, trimmed; `None` if nothing matched or its text
+/// was empty (never a distinction a caller needs to make between the two).
+pub fn text_of(scope: ElementRef<'_>, selector: &str) -> Result<Option<String>> {
+    let Some(el) = select_one(scope, selector)? else { return Ok(None) };
+    let text = el.text().collect::<String>();
+    let trimmed = text.trim();
+    Ok((!trimmed.is_empty()).then(|| trimmed.to_owned()))
+}
+
 #[cfg(test)]
 mod tests {
     use shimmer_core::ErrorCode;
@@ -44,6 +62,21 @@ mod tests {
         assert_eq!(titles.len(), 2);
         assert_eq!(titles[0].text().collect::<String>(), "Senior Rustacean");
         assert_eq!(titles[1].value().attr("href"), Some("/jobs/2"));
+    }
+
+    #[test]
+    fn select_one_and_text_of_find_a_scoped_optional_field() {
+        let doc = parse(PAGE.as_bytes());
+        let job = select_or_fail(&doc, "div.job", "jobs").unwrap()[0];
+        assert_eq!(text_of(job, "a.title").unwrap(), Some("Senior Rustacean".to_string()));
+        assert_eq!(select_one(job, "a.title").unwrap().unwrap().value().attr("href"), Some("/jobs/1"));
+    }
+
+    #[test]
+    fn text_of_is_none_rather_than_erroring_when_an_optional_field_is_missing() {
+        let doc = parse(PAGE.as_bytes());
+        let job = select_or_fail(&doc, "div.job", "jobs").unwrap()[0];
+        assert_eq!(text_of(job, "span.salary-that-does-not-exist").unwrap(), None);
     }
 
     #[test]
