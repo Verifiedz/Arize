@@ -1,0 +1,225 @@
+# 0028. The fetchers module: `Source`, scheduling, dedup
+
+Status: proposed · Raised by Dev A (taking over the `fetchers` module from Dev B's territory
+per handoff) · Needs sign-off: Dev A · Dev C notified (protocol change: a new op, two payload
+shapes — see §9) · No `core` change
+
+## Context
+
+`fetchers` is the last unbuilt host module from CLAUDE.md's M6 scope (CLAUDE.md:831). ADR
+0027 (`docs/decisions/0027-real-http-gateway.md`, merged via PR #109) already built the part
+of this that used to be fetchers' own job — rate limiting, caching, redirects, cooldown —
+behind `ctx.http`. What ADR 0027's own "Dev B's side" section left for this module: `Source`,
+scheduling and dedup (`docs/decisions/0027-real-http-gateway.md` §"Dev B's side").
+
+Everything here lives inside `crates/modules/fetchers`, `core`-only, because
+`.dev/check-deps.py` grants a `module`-role crate a dependency on `core` alone and bans
+module-to-module dependencies outright (`.dev/check-deps.py:27-36`) — there is nowhere else
+in the dependency graph for a `Source` impl or a scraping helper to live.
+
+## Decision
+
+### 1. Crate and dependency shape
+
+`crates/modules/fetchers`, one new workspace member, `core`-only. One registration line in
+`crates/app/src/main.rs:95` (`Arc::new(shimmer_fetchers::Fetchers::default())`), the same
+shape the two existing modules already use there.
+
+### 2. The `Source` trait — paginated, in-crate, method-tagged
+
+```rust
+pub enum Method { Api, Scrape }
+
+pub struct Page { pub items: Vec<RawItem>, pub next_cursor: Option<String> }
+
+pub struct RawItem {
+    pub source_id: String,   // dedup key (§4) -- never a content hash
+    pub title: String,
+    pub url: String,
+    pub raw_data: Value,     // capped, see §3
+}
+
+#[async_trait]
+pub trait Source: Send + Sync {
+    fn id(&self) -> &'static str;
+    fn method(&self) -> Method;
+    async fn fetch_page(&self, ctx: &Ctx, cursor: Option<&str>) -> Result<Page>;
+}
+```
+
+The host loops `fetch_page` up to a fixed max-pages cap, following `next_cursor` until it's
+`None` or the cap is hit. One trait, no API-then-scrape fallback inside a single `Source` —
+a source that genuinely wants both is two `Source` impls, each ~40 lines, matching CLAUDE.md
+§8's "one `impl Source` of about forty lines."
+
+### 3. Item event
+
+`fetchers.item.found` payload: `{source_name, source_id, title, url, raw_data}`. `raw_data`
+capped at 8 KiB — enough for a job posting's text, small enough that one large item can't
+turn into the next cache-bloat problem. This is a protocol.md addition (§9).
+
+### 4. Dedup
+
+`data/fetchers/<source>/seen.toml`: a map `id -> last_seen` (RFC3339), through `ctx.store`,
+never the index (CLAUDE.md §1.4/§7 — nothing that isn't a file is truth). One
+`ctx.store.transaction` per **run**, not per item: the final `seen.toml` is written once and
+`tx.emit("fetchers.item.found", ...)` is called once per new item inside that same
+transaction — the pattern `records::import` already uses for "many writes, many events, one
+transaction" (`crates/modules/records/src/lib.rs:864-872`). This makes "a failed or partial
+run never prunes" free: nothing commits until the whole run's result is known.
+
+Pruning: at the end of a successful run, drop `seen.toml` entries whose `last_seen` is older
+than 90 days. Per-run cap: at most 50 new items processed (and thus emitted) per run; items
+beyond the cap are left unmarked and picked up by a later run — see §7.
+
+### 5. Scheduling
+
+**Finding:** `Module::triggers()` is `fn triggers(&self) -> Vec<TriggerSpec>` — synchronous,
+`&self`-only (`crates/core/src/module.rs:25-27`) — called once at registry-build time,
+*before* `Config::load` and *before* `Module::init(&ctx)` run
+(`crates/daemon/src/lib.rs:95-96,98-102,120`). Module construction is also config-blind
+(`crates/app/src/main.rs:95`, plain `::default()`). So a literal "one `TriggerSpec` per
+*configured* source" is not implementable: nothing at the point `triggers()` runs has seen
+`config.toml` yet. This is reported, not worked around by changing `core` — no `core` edit is
+in this ADR.
+
+**Decision:** one fixed `TriggerSpec` — a heartbeat, needing no config to exist:
+`op: "fetchers.tick"`, `lane: "fetchers"`, `catch_up: Skip`, default period 300s. Its handler
+(which gets a full `Ctx`, including `ctx.config`) reads `[modules.fetchers]` on every firing
+and decides which sources are due, tracking each source's own `last_run_at` itself in
+`ctx.store` — not the scheduler's per-trigger bookkeeping. This gives correct catch-up
+behaviour at the *source* level for free: a "daily" source whose last run was 3 days ago
+(daemon asleep) is simply overdue whenever a tick notices it, however many ticks were
+skipped getting there. `fetchers.tick` is a protocol.md addition (§9) — discoverable like
+any op via `core.manifest`, even though only the scheduler calls it in practice.
+
+Config lives in the already-generic `[modules.fetchers]` section (plain JSON via
+`ModuleConfig`, `crates/core/src/ctx.rs:30-51`) — unlike `[http]`
+(`crates/daemon/src/config.rs:97-99`), which the daemon parses specially because the real
+`HttpBackend` must exist before any `Ctx`, module config needs no daemon change at all:
+
+```toml
+[modules.fetchers]
+tick_interval_s = 300
+
+[modules.fetchers.sources.hn-whoishiring]
+enabled = true
+interval = "daily"        # a preset, or an integer seconds count >= the method's floor
+
+[modules.fetchers.sources.weworkremotely]
+enabled = false
+interval = "daily"
+```
+
+Presets: `hourly` = 3600, `daily` = 86400, `weekly` = 604800. Floors (§7): 1800s for `Api`,
+21600s for `Scrape`. Sources default **disabled**. Overlap guard: an in-process
+`Mutex<HashSet<SourceId>>` on the `Fetchers` struct — the same shape as `records`'
+`WriteLock` (`crates/core/src/sync.rs:13-20`), but keyed. `fetchers.fetch`'s handler tries to
+insert the source id and fails fast (`module_error`) if another run (tick-triggered or
+manual) already holds it; the tick handler additionally skips enqueuing a source it already
+sees as running, as an optimization only, not the actual guarantee.
+
+### 6. Retry
+
+`ctx.http.get` returns `Ok(HttpResponse)` for *every* in-band HTTP status, including
+4xx/429/503 (`crates/core/src/http.rs:14-26`; `crates/daemon/src/http_backend.rs`'s `finish`
+and cooldown paths never return `Err` for a status code) — only a transport-level failure is
+`Err(unavailable)`, and only `Unavailable` is retryable
+(`crates/core/src/error.rs:98-99`). So the module's retry wrapper branches on `resp.status`
+itself:
+
+```rust
+let resp = ctx.retry_with_backoff(RetryPolicy::standard(), |_| async {
+    let r = ctx.http.get(&url).await?;
+    if r.status >= 500 { return Err(Error::unavailable(format!("http {}", r.status))); }
+    Ok(r)
+}).await?;
+```
+
+A `retry_after_secs` on the result means the gateway has this host in cooldown: stop this
+source's run now, no further attempt, let the next tick try again. A `4xx` is a terminal
+failure for this run (`reason: "http_error"`, no retry). `RetryPolicy::standard()` (3
+attempts, 1s/2s, `crates/core/src/retry.rs:15-17`) is already documented as "what a fetcher
+wants" — reused as-is.
+
+### 7. Scraping and politeness
+
+A shared parse helper inside the crate, built on **`scraper` 0.27.0** (pure Rust, ISC
+license, 31M+ downloads, actively maintained, no system/C dependency — verified live against
+crates.io; builds identically on `ubuntu-latest` and `macos-latest`,
+`.github/workflows/ci.yml:10`). `select_or_fail(doc, selector, what)` returns
+`Err(module_error)` when a selector matches zero elements on an otherwise-200 response — a
+distinct `reason: "parse_empty"` in `fetchers.fetch.failed` (§9), so a source's health is
+visible instead of silently reporting "0 new items" the same way a genuinely quiet board
+would. JS-rendered pages are out of scope; a headless-browser subprocess is a follow-up (its
+own ADR — §12 rule 8 bans raw process spawning outside `Launcher`, itself gated to the
+`"process"` capability only `workspaces` uses today).
+
+Politeness lives in **fetchers**, not the gateway: robots.txt is a crawling-ethics judgment
+tied to "is this traversing a site's pages," which only a `Source` can know, and ADR 0027 is
+already merged scoped to rate-limit/cache/redirect only. Applies to `Method::Scrape` sources
+only, fetched once through the existing `ctx.http` (so it gets the same cache/rate-limit
+treatment as everything else) via **`texting_robots` 0.2.2** (pure Rust, zero dependencies,
+dual MIT/Apache-2.0 — verified live, more recently touched than the alternative `robotstxt`
+crate). A `Disallow` match is a hard refusal, never a soft warning. User-Agent identifies the
+bot by default (`Shimmer-Fetchers/<version>`, overridable in config), never spoofs a browser.
+Scrape sources get the longer config floor from §5 as their "more conservative default
+interval."
+
+### 8. First-run flood
+
+The per-run item cap (§4) is the whole mitigation: a board with hundreds of unseen items on
+first contact surfaces only the cap's worth per run; the rest stay unmarked and are picked
+up on later ticks, spreading both the event volume (against the 1024-event per-connection
+backpressure queue, `docs/protocol.md:175`) and the event-log growth across time instead of
+one burst. Not hypothetical: the reference HN source (§9) can have 500+ top-level comments
+on one month's thread, each needing its own fetch — at `ctx.http`'s default 2 req/s per
+host, an uncapped cold-start run would take minutes before the event-queue angle is even
+considered.
+
+### 9. Protocol changes needed (additive, Dev C notified)
+
+- New op `fetchers.tick` (§5) — scheduler-only in practice, discoverable like any op.
+- `fetchers.item.found`'s actual payload (§3) — the existing illustrative example
+  (`docs/protocol.md:550`, `{"source":"hn-whoishiring","id":"c-41883"}`) is superseded by
+  `{source_name, source_id, title, url, raw_data}`.
+- `fetchers.fetch.failed`'s payload gains a `reason` enum:
+  `"network" | "http_error" | "parse_empty" | "cancelled"`, plus `{source, error, attempt}`.
+
+### 10. Reference sources
+
+Both public, no login, no API key, verified live on 2026-10-06:
+
+- **`hn-whoishiring`** (`Method::Api`). Hacker News's official, public, unauthenticated
+  Firebase API (`hacker-news.firebaseio.com`). No robots.txt applies — it's an API host, not
+  a crawled site, and the API is explicitly meant for third-party clients. Flow:
+  `user/whoishiring.json` for submitted story ids → the latest "Who is hiring?" thread →
+  `item/<thread>.json`'s `kids` as the paginated item list → one `item/<id>.json` fetch per
+  comment. HN states no hard rate limit beyond "be reasonable"; `ctx.http`'s own per-host
+  default (2 req/s) is the actual governor.
+- **`weworkremotely`** (`Method::Scrape`). `weworkremotely.com/categories/*`: confirmed
+  static, server-rendered HTML (fetched and read listings directly out of the raw page, no
+  JS needed). `robots.txt` is `Allow: /`, disallowing only `/admin/`, `/account/`,
+  `/job-seekers/.../profile`, `/manage-company/` — the category paths used here are not
+  disallowed. No login wall. No `?page=` on a category page (confirmed: 48 jobs, no visible
+  pager), so pagination walks the site's own category slugs
+  (`remote-programming-jobs` → `remote-devops-sysadmin-jobs` → …) as the trait's
+  `next_cursor`, rather than inventing a page number the site doesn't have.
+
+## Not done here
+
+- Credentials/secret storage for a future authenticated source. **Not** blocked by the
+  `Source` trait or the `[modules.fetchers.sources.*]` config shape (both take `ctx`, which
+  can carry a key via `ctx.config` later). **Is** blocked by `HttpBackend::get`'s current
+  signature (`crates/core/src/http.rs:29-32`), which takes no custom headers — no module can
+  set an `Authorization` header through `ctx.http` today. ADR 0027 already named this as its
+  own open question ("Not done here": "Request headers on `HttpBackend::get`... deferred
+  until a real consumer defines the actual need"). A credentialed source needs that ADR's
+  follow-up before it can exist, regardless of anything here.
+- `records` inbox/triage (matching a found item to a saved record) — a `records` feature,
+  separate from this module.
+- TUI surface, CLI surface (`crates/cli` commands for `fetchers.*`) — out of scope for this
+  ADR.
+- Headless-browser scraping for JS-rendered sites.
+- A `core` change that would let `Module::triggers()` read config directly (§5's finding) —
+  would affect every module, not just this one; not proposed here.
