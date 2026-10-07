@@ -274,7 +274,10 @@ field is a security decision, not a convenience.
 pub struct Ctx {
     /// Store scoped to this module's namespace. Cannot read or write outside it.
     pub store: NamespacedStore,
-    /// Rate-limited, on-disk-cached HTTP client. The ONLY way out to the network.
+    /// Rate-limited, on-disk-cached HTTP client (ADR 0027). The ONLY way out to the
+    /// network. Populated only for a module whose manifest declares the `"network"`
+    /// capability; every other module gets a stub that fails `unavailable`, same posture
+    /// as `launcher` below.
     pub http: HttpGateway,
     /// Emit-only handle onto the event bus.
     pub bus: Emitter,
@@ -455,7 +458,7 @@ $SHIMMER_HOME/
   notifications/failed.jsonl  Deliveries that exhausted every sink (§11.3).
   packs/<name>/            Command packs: aliases + animations (§15.1). Client-read only.
   .staging/<txid>/         In-flight store transactions (§7.1). Never edit by hand.
-  cache/http/              Gateway response cache. Safe to delete.
+  cache/http/<module>/     Gateway response cache (ADR 0027), per module. Safe to delete.
   index.sqlite             DERIVED. Gitignored. Safe to delete.
   logs/                    daemon.log.<date>: rotated daily at UTC midnight, oldest deleted past
                            8 files (~a week), never archived elsewhere. A pre-rotation
@@ -512,8 +515,12 @@ small trait implemented per specific thing.
 | Host module | Owns (written once) | Trait | Implementations |
 |---|---|---|---|
 | `records` | schema, storage, filtering, completion metrics | `Collection` | leetcode, job apps, OSS repos, outreach |
-| `fetchers` | scheduling, rate limits, dedup, caching | `Source` | job boards, HN, docs sites, transcripts |
+| `fetchers` | scheduling, dedup | `Source` | job boards, HN, docs sites, transcripts |
 | `notify` | subscription, batching, retry, quiet hours | `Sink` | email, push, desktop, webhook |
+
+Rate limits and caching for outbound HTTP live in `ctx.http` itself (ADR 0027), not in
+`fetchers` — every module that reaches the network shares the one gateway, so this is
+written once at a layer below any specific host module, not per-module infrastructure.
 
 **Adding a job board must not mean adding a module.** It means one `impl Source` of about
 forty lines, registered in that module's registry.
