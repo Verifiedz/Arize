@@ -281,6 +281,27 @@ clean. Steps `check`, `projects`, `caches`, `system`, all supervised, then `summ
 first (at most 15 lines), anything skipped or failed, the total, and the free space before and
 after, which `activate --wait` prints. A failure is reported, never the end of the run.
 
+**`health`**: one read-only report on the computer: nothing is changed and nothing needs sudo.
+Its helper is `lib/shimmer-health.sh`, one function per check, each printing `ok`, `warn` or
+`info` lines (or nothing when it doesn't apply here, e.g. no battery):
+
+| Check | Warns when |
+|---|---|
+| `disk` | a real disk (one line per device; no loop or macOS system volumes) is `DISK_WARN_PERCENT` full (90) |
+| `memory` | memory is `MEMORY_WARN_PERCENT` used (90); swap shown |
+| `load` | the 15-minute load is above the core count |
+| `uptime` | a restart is needed (`/var/run/reboot-required`, or the running kernel's modules are gone after an update), or up `UPTIME_WARN_DAYS` (30) |
+| `battery` | health (full ÷ design capacity; `Maximum Capacity` on macOS) is below `BATTERY_WARN_PERCENT` (80) |
+| `temperature` | a sensor is at 85 °C (Linux only; macOS needs sudo for it) |
+| `services` | a systemd unit, system or user, has failed |
+| `workspaces` | a Shimmer workspace is `dirty` or `invalid`, through `shimmer workspaces list` |
+| `updates`, `ports`, `docker`, `folders` | information only: updates waiting (`checkupdates`, `apt`, `brew`), what of yours listens on a port, what docker could free, the `BIGGEST_FOLDERS` in your home |
+
+Steps `check`, `report`, then `summary`: needs attention (`!`) first, then fine (`✓`), then
+information (`·`), which `activate --wait` prints. `NOTIFY = on-warning` sends a desktop
+notification (`notify-send`, or `osascript` on macOS) only when something needs attention, for
+a scheduled run. `SKIP` leaves checks out.
+
 **`monorepo`**: several apps from one repo at once, with their logs side by side. Separate from
 `web-project` so the single-app case stays simple. Its own helper, `lib/shimmer-monorepo.sh`,
 recognises the tool and builds the commands:

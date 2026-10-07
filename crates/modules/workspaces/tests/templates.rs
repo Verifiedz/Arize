@@ -31,8 +31,11 @@ async fn templates_lists_the_built_ins_with_their_questions() {
     let env = TestEnv::new("workspaces");
     let data = call(&Workspaces::default(), &env, "workspaces.templates", json!({})).await.unwrap();
     let ids: Vec<&str> = data["templates"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["free-disk", "monorepo", "scratch", "smoke-test", "update-everything", "vm", "web-project"]);
-    let web = &data["templates"][6];
+    assert_eq!(
+        ids,
+        ["free-disk", "health", "monorepo", "scratch", "smoke-test", "update-everything", "vm", "web-project"]
+    );
+    let web = &data["templates"][7];
     assert_eq!(
         web["questions"][0],
         json!({"name": "PROJECT_DIR", "prompt": "Project folder", "kind": "folder", "required": true})
@@ -124,7 +127,9 @@ async fn create_never_overwrites_and_checks_everything_first() {
     let e = call(&w, &env, "workspaces.create", create("site", "nope", json!({}))).await.unwrap_err();
     assert_eq!(e.code, ErrorCode::NotFound);
     assert!(
-        e.message.contains("there are: free-disk, monorepo, scratch, smoke-test, update-everything, vm, web-project"),
+        e.message.contains(
+            "there are: free-disk, health, monorepo, scratch, smoke-test, update-everything, vm, web-project"
+        ),
         "{}",
         e.message
     );

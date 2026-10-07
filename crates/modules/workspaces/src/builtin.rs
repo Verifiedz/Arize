@@ -15,6 +15,7 @@ macro_rules! file {
 const HELPER: (&str, &str) = file!("lib/shimmer-open.sh", "lib/shimmer-open.sh");
 const VM_HELPER: (&str, &str) = file!("lib/shimmer-vm.sh", "lib/shimmer-vm.sh");
 const FREE_HELPER: (&str, &str) = file!("lib/shimmer-free.sh", "lib/shimmer-free.sh");
+const HEALTH_HELPER: (&str, &str) = file!("lib/shimmer-health.sh", "lib/shimmer-health.sh");
 const MONOREPO_HELPER: (&str, &str) = file!("lib/shimmer-monorepo.sh", "lib/shimmer-monorepo.sh");
 const SCRATCH_HELPER: (&str, &str) = file!("lib/shimmer-scratch.sh", "lib/shimmer-scratch.sh");
 const UPDATE_HELPER: (&str, &str) = file!("lib/shimmer-update.sh", "lib/shimmer-update.sh");
@@ -34,6 +35,19 @@ const BUILTINS: &[(&str, &[(&str, &str)])] = &[
             file!("cleanup.sh", "free-disk/cleanup.sh"),
             HELPER,
             FREE_HELPER,
+        ],
+    ),
+    (
+        "health",
+        &[
+            file!("template.toml", "health/template.toml"),
+            file!("workspace.toml", "health/workspace.toml"),
+            file!("steps/01-check.sh", "health/steps/01-check.sh"),
+            file!("steps/02-report.sh", "health/steps/02-report.sh"),
+            file!("steps/03-summary.sh", "health/steps/03-summary.sh"),
+            file!("cleanup.sh", "health/cleanup.sh"),
+            HELPER,
+            HEALTH_HELPER,
         ],
     ),
     (
