@@ -116,6 +116,26 @@ file of `data/workspaces/<id>/` to `data/workspaces/<to>/` in one transaction (s
   only lists them, with how to undo the rename.
 - The event log and old step logs keep the old id: they're history.
 
+### 2b. `copy`: a new workspace like an existing one
+
+`shimmer workspaces copy NAME NEW [--set QUESTION=ANSWER]… [--label TEXT]` (`workspaces.copy
+{id, to, values?, label?}`) makes `<to>` from every file of `<id>` (scripts with their hand edits,
+`.template`) **except its state**: the copy starts `ready`, with no last session. In one
+transaction; emits `workspaces.workspace.copied`.
+
+- **The original can be in any state**, even running: it is only read.
+- **Different answers in the same step**: `values` are checked exactly as `reconfigure` checks
+  them (ADR 0025 §9, shared code), so a second site is `copy site blog --set PROJECT_DIR=…`.
+  At a terminal with no `--set`, the CLI asks whether to change any, then asks the questions with
+  the original's answers as defaults. A workspace made by hand copies as it is, with no questions.
+- **Sharing is said out loud.** With no answer changed, the CLI warns that running both at once
+  means the same folders and ports, and how to change them. Everything a template keeps per
+  workspace (its temp folder, recorded windows, `vm.started`, a browser profile) is keyed by the
+  id, so the two never stop each other's processes; the end-to-end tests run a copy beside its
+  original and stop each alone.
+- Not copied: the state, schedules (they keep naming the original), and anything outside the
+  Shimmer folder (a separate browser window's profile: the copy gets its own).
+
 ### 3. `web-project`'s cleanup stops services too
 
 The template (ADR 0025 §6) gains one optional question, `SERVICES_STOP_COMMAND` (e.g.

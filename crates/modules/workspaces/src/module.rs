@@ -98,6 +98,14 @@ impl Module for Workspaces {
             ),
             ("workspaces.restore", "Bring a removed workspace back", id.clone(), Execution::Inline),
             (
+                "workspaces.copy",
+                "Make a new workspace from an existing one, optionally with some answers changed",
+                json!({"type": "object", "required": ["id", "to"], "properties": {
+                    "id": {"type": "string"}, "to": {"type": "string"},
+                    "values": {"type": "object"}, "label": {"type": "string"}}}),
+                Execution::Inline,
+            ),
+            (
                 "workspaces.rename",
                 "Give a workspace that isn't running a new id",
                 json!({"type": "object", "required": ["id", "to"], "properties": {
@@ -154,6 +162,7 @@ impl Module for Workspaces {
             "workspaces.remove" => self.remove(ctx, &decode::<Target>(params)?.id),
             "workspaces.restore" => self.restore_removed(ctx, &decode::<Target>(params)?.id),
             "workspaces.rename" => self.rename(ctx, decode(params)?),
+            "workspaces.copy" => self.copy(ctx, decode(params)?),
             "workspaces.templates" => templates(decode(params)?),
             "workspaces.create" => self.create(ctx, decode(params)?),
             "workspaces.answers" => self.answers(ctx, &decode::<Target>(params)?.id),
@@ -174,6 +183,28 @@ struct Target {
 struct Reconfigure {
     id: String,
     values: Map<String, Value>,
+}
+
+/// What new answers make of a `workspace.toml`.
+struct NewAnswers {
+    text: String,
+    /// The questions whose answers changed, for the event.
+    names: Vec<String>,
+    /// `{name, from, to}` each, for the result.
+    changes: Vec<Value>,
+    template: String,
+}
+
+/// `workspaces.copy` (ADR 0026 §2b).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Copy {
+    id: String,
+    to: String,
+    #[serde(default)]
+    values: Map<String, Value>,
+    #[serde(default)]
+    label: Option<String>,
 }
 
 /// `workspaces.rename` (ADR 0026 §2a).
@@ -391,27 +422,80 @@ impl Workspaces {
         let f = folder(ctx, &p.id)?;
         let saved = f.saved(ctx, &p.id).unwrap_or_else(|| Ok(Saved::ready()))?;
         state::start_reconfigure(&saved.state)?;
-        let (env, text) = self.current_env(ctx, &p.id)?;
-        let template = self.template_of(ctx, &p.id, &text)?;
-        let (new_env, changed) = template.reconfigured(&env, &p.values)?;
+        let (_, text) = self.current_env(ctx, &p.id)?;
+        let new = self.new_answers(ctx, &p.id, &text, &p.values)?;
+        if !new.names.is_empty() {
+            // Never write a workspace the next activate would reject.
+            manifest::parse(&p.id, &new.text, &f.files)?;
+            ctx.store.transaction(|tx| {
+                tx.put(&format!("{}/workspace.toml", p.id), new.text.clone())?;
+                tx.emit("workspaces.workspace.reconfigured", json!({"workspace": p.id, "changed": new.names}))
+            })?;
+        }
+        Ok(json!({"id": p.id, "template": new.template, "changed": new.changes}))
+    }
+
+    /// Workspace ID's `workspace.toml` (TEXT) with VALUES as its new answers, checked as `create`
+    /// checks them (ADR 0025 §9). Shared by reconfigure and copy.
+    fn new_answers(&self, ctx: &Ctx, id: &str, text: &str, values: &Map<String, Value>) -> Result<NewAnswers> {
+        let (env, _) = self.current_env(ctx, id)?;
+        let template = self.template_of(ctx, id, text)?;
+        let (new_env, names) = template.reconfigured(&env, values)?;
         let before = |name: &str| env.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone());
-        let changes: Vec<Value> = changed
+        let changes = names
             .iter()
             .map(|name| {
                 let to = new_env.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone()).unwrap_or_default();
                 json!({"name": name, "from": before(name), "to": to})
             })
             .collect();
-        if !changed.is_empty() {
-            let new_text = crate::template::with_env(&text, &new_env);
-            // Never write a workspace the next activate would reject.
-            manifest::parse(&p.id, &new_text, &f.files)?;
-            ctx.store.transaction(|tx| {
-                tx.put(&format!("{}/workspace.toml", p.id), new_text.clone())?;
-                tx.emit("workspaces.workspace.reconfigured", json!({"workspace": p.id, "changed": changed}))
-            })?;
+        let text = if names.is_empty() { text.to_owned() } else { crate::template::with_env(text, &new_env) };
+        Ok(NewAnswers { text, names, changes, template: template.id })
+    }
+
+    /// Copy workspace ID to TO, with VALUES as new answers and LABEL as its label (ADR 0026 §2b):
+    /// every file but its state, in one transaction, so the copy starts `ready` with no history.
+    /// The original may be in any state: it is only read.
+    fn copy(&self, ctx: &Ctx, p: Copy) -> Result<Value> {
+        let (id, to) = (p.id.as_str(), p.to.trim());
+        let _g = self.write.lock();
+        let f = folder(ctx, id)?;
+        if !manifest::valid_name(to) {
+            return Err(Error::invalid_params(format!(
+                "'{to}' is not a valid workspace id: lowercase letters, digits, '-' or '_', at most {} characters",
+                manifest::MAX_NAME_LEN
+            )));
         }
-        Ok(json!({"id": p.id, "template": template.id, "changed": changes}))
+        if !ctx.store.list(to)?.is_empty() {
+            return Err(Error::conflict(format!("there is already a workspace '{to}'")));
+        }
+        let (_, text) = self.current_env(ctx, id)?;
+        let mut new = if p.values.is_empty() {
+            NewAnswers { text: text.clone(), names: Vec::new(), changes: Vec::new(), template: String::new() }
+        } else {
+            self.new_answers(ctx, id, &text, &p.values)?
+        };
+        if let Some(label) = p.label.as_deref().map(str::trim) {
+            if label.is_empty() || label.contains(['\n', '\r']) {
+                return Err(Error::invalid_params("label must be one line of text"));
+            }
+            new.text = crate::template::with_label(&new.text, label);
+        }
+        let files: Vec<&String> = f.files.iter().filter(|file| *file != STATE_FILE).collect();
+        let names: Vec<String> = files.iter().map(|f| (*f).clone()).collect();
+        manifest::parse(to, &new.text, &names)?;
+        ctx.store.transaction(|tx| {
+            for file in &files {
+                let bytes = if *file == "workspace.toml" {
+                    new.text.clone().into_bytes()
+                } else {
+                    tx.read(&format!("{id}/{file}"))?.unwrap_or_default()
+                };
+                tx.put(&format!("{to}/{file}"), bytes)?;
+            }
+            tx.emit("workspaces.workspace.copied", json!({"from": id, "to": to, "changed": new.names}))
+        })?;
+        Ok(json!({"from": id, "to": to, "changed": new.changes}))
     }
 
     /// Move a workspace that isn't running to `.removed/<id>/`, in one transaction (ADR 0026 §2).

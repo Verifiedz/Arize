@@ -874,3 +874,59 @@ fn rename_moves_the_workspace_and_only_with_a_yes_its_schedules() {
     assert!(sb.fails(&["workspaces", "rename", "checks", "Bad Name"]).contains("not a valid workspace id"));
     sb.remove("checks");
 }
+
+// ---------------------------------------------------------------- copy
+
+#[test]
+fn a_copy_runs_beside_its_original_and_each_stops_only_its_own() {
+    let sb = Sandbox::new();
+    let (site, blog) = (sb.home().join("code/site"), sb.home().join("code/blog"));
+    repo(&sb, &site, &[("index.html", "site")]);
+    repo(&sb, &blog, &[("index.html", "blog")]);
+    let answers = [
+        ("PROJECT_DIR", site.to_str().unwrap()),
+        ("CODE_EDITOR", "vscode"),
+        ("DEV_COMMAND", "python3 -m http.server 18601 --bind 127.0.0.1"),
+        ("LOCAL_URL", "http://127.0.0.1:18601"),
+        ("REPO_PAGE", "none"),
+        ("TERMINAL_APP", "kitty"),
+    ];
+    sb.create("site", "web-project", &answers);
+    sb.activate("site");
+
+    // Copied while the original runs: only read, and the copy starts ready.
+    let same = sb.ok(&["workspaces", "copy", "site", "twin"]);
+    assert!(same.contains("same answers as site"), "{same}");
+    assert_eq!(sb.state("twin"), "ready");
+    sb.remove("twin");
+
+    let blog_dir = format!("PROJECT_DIR={}", blog.display());
+    let out = sb.ok(&[
+        "workspaces",
+        "copy",
+        "site",
+        "blog",
+        "--label",
+        "Blog",
+        "--set",
+        &blog_dir,
+        "--set",
+        "DEV_COMMAND=python3 -m http.server 18602 --bind 127.0.0.1",
+        "--set",
+        "LOCAL_URL=http://127.0.0.1:18602",
+    ]);
+    assert!(
+        out.contains("PROJECT_DIR:") && out.contains("LOCAL_URL: http://127.0.0.1:18601 → http://127.0.0.1:18602"),
+        "{out}"
+    );
+    sb.activate("blog");
+    assert!(up("http://127.0.0.1:18601") && up("http://127.0.0.1:18602"), "both run at once");
+    settles(&sb, "blog", "sleep 600", 1, "the copy's own terminal");
+
+    sb.stop("blog");
+    assert!(up("http://127.0.0.1:18601"), "stopping the copy leaves the original running");
+    settles(&sb, "site", "sleep 600", 1, "and the original's terminal open");
+    sb.stop("site");
+    sb.remove("blog");
+    sb.remove("site");
+}

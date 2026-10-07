@@ -475,6 +475,20 @@ pub fn with_env(text: &str, env: &[(String, String)]) -> String {
     out
 }
 
+/// `workspace.toml`'s text with its `label = …` line set to LABEL; the rest as it was.
+pub fn with_label(text: &str, label: &str) -> String {
+    let mut out = String::new();
+    for line in text.lines() {
+        if line.starts_with("label = ") {
+            out.push_str(&format!("label = {}", quoted(label)));
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    out
+}
+
 fn quoted(s: &str) -> String {
     toml::Value::String(s.to_owned()).to_string()
 }

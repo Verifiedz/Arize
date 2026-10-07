@@ -36,6 +36,9 @@ commands:
                                         steps/01-check.sh) in $VISUAL/$EDITOR, then check it;
                                         --path only prints where the file is
   restore NAME                          bring a removed workspace back
+  copy NAME NEW [--set QUESTION=ANSWER]… [--label TEXT]
+                                        a new workspace like NAME, starting ready; asks whether
+                                        to change answers (e.g. another project folder)
   rename NAME NEW [--move-schedules]    give a workspace that isn't running a new name; offers
                                         to move schedules that activate it (--move-schedules:
                                         without asking)
@@ -111,6 +114,13 @@ pub enum WorkspacesCmd {
         scripts: bool,
         file: Option<String>,
     },
+    /// `set`: answers the copy has differently; `label`: its own label (ADR 0026 §2b).
+    Copy {
+        id: String,
+        to: String,
+        set: Vec<(String, String)>,
+        label: Option<String>,
+    },
     /// `move_schedules`: move the schedules that name it without asking (ADR 0026 §2a).
     Rename {
         id: String,
@@ -145,6 +155,28 @@ pub fn parse(words: Vec<String>) -> std::result::Result<WorkspacesCmd, String> {
     }
     if sub == "reconfigure" {
         return parse_reconfigure(words.collect());
+    }
+    if sub == "copy" {
+        let usage = "usage: shimmer workspaces copy NAME NEW [--set QUESTION=ANSWER]… [--label TEXT]";
+        let (mut names, mut set, mut label) = (Vec::new(), Vec::new(), None);
+        let mut words = words;
+        while let Some(word) = words.next() {
+            if word == "--set" {
+                set.push(set_answer(&words.next().ok_or("--set needs QUESTION=ANSWER")?)?);
+            } else if let Some(value) = word.strip_prefix("--set=") {
+                set.push(set_answer(value)?);
+            } else if word == "--label" {
+                label = Some(words.next().ok_or("--label needs a value")?);
+            } else if let Some(value) = word.strip_prefix("--label=") {
+                label = Some(value.to_owned());
+            } else if word.starts_with('-') && word.len() > 1 {
+                return Err(format!("unknown option '{word}'; {usage}"));
+            } else {
+                names.push(word);
+            }
+        }
+        let [id, to]: [String; 2] = names.try_into().map_err(|_| usage.to_owned())?;
+        return Ok(WorkspacesCmd::Copy { id, to, set, label });
     }
     if sub == "rename" {
         let usage = "usage: shimmer workspaces rename NAME NEW [--move-schedules]";
@@ -317,6 +349,18 @@ pub trait Prompt {
     }
 }
 
+/// Asks nothing: for answers given with --set only.
+struct NoQuestions;
+
+impl Prompt for NoQuestions {
+    fn interactive(&self) -> bool {
+        false
+    }
+    fn confirm(&mut self, _question: &str) -> bool {
+        false
+    }
+}
+
 /// The real one: asks on stderr, so `--json` output on stdout stays clean.
 pub struct Terminal;
 
@@ -451,6 +495,33 @@ pub async fn run(client: &mut Client, cmd: &WorkspacesCmd, json: bool, prompt: &
                 }
                 None => Ok(out(one, format!("{text}\n\n{}", scripts_of(one)))),
             }
+        }
+        WorkspacesCmd::Copy { id, to, set, label } => {
+            // Answers to change: --set ones, or at a terminal, asked when the person wants to.
+            let wants = !set.is_empty()
+                || (prompt.interactive()
+                    && prompt.confirm(&format!("{to} starts with {id}'s answers. Change any of them?")));
+            let mut values = serde_json::Map::new();
+            if wants {
+                let current = client.call("workspaces.answers", id_params(id)).await?;
+                let questions = with_current_answers(&current);
+                values = if set.is_empty() {
+                    answers(&questions, set, prompt, &Paths::from_env())?
+                } else {
+                    answers(&questions, set, &mut NoQuestions, &Paths::from_env())?
+                };
+                for value in values.values_mut() {
+                    if value == "-" {
+                        *value = json!("");
+                    }
+                }
+            }
+            let mut params = json!({"id": id, "to": to, "values": values});
+            if let Some(label) = label {
+                params["label"] = json!(label);
+            }
+            let data = client.call("workspaces.copy", params).await?;
+            Ok(out(&data, copied(id, to, &data)))
         }
         WorkspacesCmd::Rename { id, to, move_schedules } => {
             let data = client.call("workspaces.rename", json!({"id": id, "to": to})).await?;
@@ -1187,6 +1258,28 @@ fn with_current_answers(current: &Value) -> Value {
     questions
 }
 
+/// What copy made: the answers that differ, or a warning that none do.
+fn copied(id: &str, to: &str, data: &Value) -> String {
+    let changed = data["changed"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let shown = |v: &Value| match v.as_str() {
+        Some("") | None => "(none)".to_owned(),
+        Some(s) => s.to_owned(),
+    };
+    let mut out = format!("✓ copied {id} to {to}");
+    for c in changed {
+        let _ = write!(out, "\n  {}: {} → {}", cell(&c["name"]), shown(&c["from"]), shown(&c["to"]));
+    }
+    if changed.is_empty() {
+        let _ = write!(
+            out,
+            "\n  it has the same answers as {id}: running both at once means the same folders and ports.\n  \
+             change what should differ with: shimmer workspaces reconfigure {to}"
+        );
+    }
+    let _ = write!(out, "\n  start it: shimmer workspaces activate {to} --wait");
+    out
+}
+
 /// What reconfigure changed, one line each.
 fn reconfigured(id: &str, data: &Value) -> String {
     let changed = data["changed"].as_array().map(Vec::as_slice).unwrap_or_default();
@@ -1713,6 +1806,22 @@ mod tests {
             WorkspacesCmd::Rename { id: "site".into(), to: "portfolio".into(), move_schedules: true }
         );
         assert!(peek_of(&["rename", "site"]).is_err());
+        assert_eq!(
+            peek_of(&["copy", "site", "blog", "--set", "PROJECT_DIR=~/code/blog", "--label", "My blog"]).unwrap(),
+            WorkspacesCmd::Copy {
+                id: "site".into(),
+                to: "blog".into(),
+                set: vec![("PROJECT_DIR".into(), "~/code/blog".into())],
+                label: Some("My blog".into())
+            }
+        );
+        assert_eq!(
+            peek_of(&["copy", "site", "blog", "--label=B"]).unwrap(),
+            WorkspacesCmd::Copy { id: "site".into(), to: "blog".into(), set: vec![], label: Some("B".into()) }
+        );
+        assert!(peek_of(&["copy", "site"]).is_err());
+        assert!(peek_of(&["copy", "a", "b", "--label"]).unwrap_err().contains("needs a value"));
+        assert!(peek_of(&["copy", "a", "b", "--wait"]).unwrap_err().contains("unknown option"));
         assert!(peek_of(&["rename", "a", "b", "c"]).is_err());
         assert!(peek_of(&["rename", "a", "b", "--yes"]).unwrap_err().contains("unknown option '--yes'"));
         assert!(peek_of(&["reconfigure", "a", "b"]).is_err());
@@ -1927,5 +2036,16 @@ mod tests {
             lines,
             ["usr-1 workspaces.activate, cron 0 9 * * 1-5", "usr-2 workspaces.stop, every 3600s (paused)"]
         );
+    }
+
+    #[test]
+    fn copy_says_what_differs_or_warns_that_nothing_does() {
+        let changed = json!({"changed": [{"name": "PROJECT_DIR", "from": "/a", "to": "/b"}]});
+        assert_eq!(
+            copied("site", "blog", &changed),
+            "✓ copied site to blog\n  PROJECT_DIR: /a → /b\n  start it: shimmer workspaces activate blog --wait"
+        );
+        let same = copied("site", "blog", &json!({"changed": []}));
+        assert!(same.contains("same answers as site") && same.contains("reconfigure blog"), "{same}");
     }
 }
