@@ -5,7 +5,7 @@
 [ "${TERMINAL_APP:-none}" = "none" ] && exit 0
 dir=$(shimmer_scratch_current)
 [ -n "$dir" ] || exit 0
-run=$(shimmer_scratch_run "${LANGUAGE:-none}")
+run=$(shimmer_scratch_run "${LANGUAGE:-python}")
 hint=""
 [ -n "$run" ] && hint="echo $(shimmer_quote "run it with: $run")"
 shimmer_open_terminal "$TERMINAL_APP" "$dir" "$hint"

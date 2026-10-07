@@ -8,6 +8,10 @@
 # Each activate makes a new folder in SCRATCH_DIR (or reopens today's, with NEW_FOLDER =
 # "once-a-day"). Change the language in [env] below, or make one scratch workspace per language:
 #   shimmer workspaces new scratch-rust --from scratch --set LANGUAGE=rust
+# A language the template doesn't know: give a file name and how to run it, e.g.
+#   LANGUAGE = "main.odin"
+#   RUN_COMMAND = "odin run main.odin -file"
+# Its starters and run commands are in lib/shimmer-scratch.sh: add your own languages there.
 #
 # Nothing is ever deleted. With KEEP_DAYS set, folders this template made (they hold a
 # .shimmer-scratch file) that haven't changed in that many days go to the trash, where you can

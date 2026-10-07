@@ -4,11 +4,16 @@ description = "A fresh throwaway folder with a starter file in your language, op
 
 [[question]]
 name = "LANGUAGE"
-prompt = "Language"
-kind = "choice"
-choices = ["python", "rust", "javascript", "typescript", "go", "c", "cpp", "java", "shell", "none"]
+prompt = "Language (or a file name like main.odin)"
+kind = "text"
 default = "python"
-help = "The starter file, and the command that runs it. none: an empty folder."
+help = "python, rust, javascript, typescript, go, c, cpp, java, kotlin, swift, csharp, ruby, php, lua, perl, r, julia, haskell, ocaml, elixir, clojure, dart, scala, zig, nim, crystal, fortran, sql, html, shell, or none for an empty folder. Any other language: a file name, e.g. main.odin, which is made and opened (say how to run it below)."
+
+[[question]]
+name = "RUN_COMMAND"
+prompt = "Command that runs it (optional)"
+kind = "command"
+help = "Run inside the folder. Leave empty for the language's usual one (e.g. python3 main.py); needed only for a file name of your own, e.g. odin run main.odin -file."
 
 [[question]]
 name = "SCRATCH_DIR"

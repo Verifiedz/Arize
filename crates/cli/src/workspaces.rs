@@ -524,6 +524,12 @@ fn explain(e: Error, id: &str) -> Error {
     let detail = e.detail.clone().unwrap_or(Value::Null);
     let mut message = e.message.clone();
     if let Some(log) = detail["log"].as_str().filter(|l| !l.is_empty()) {
+        // Why it failed is the end of the step's log (a template's check step says it in one line).
+        if let Ok(text) = std::fs::read_to_string(shimmer_proto::paths::shimmer_home().join(log)) {
+            for line in shown_log(&text, log) {
+                let _ = write!(message, "\n{line}");
+            }
+        }
         let _ = write!(message, "\n  log: {log}");
     }
     let _ = write!(message, "\n{}", ways_out(id, detail["has_cleanup_script"] == true));

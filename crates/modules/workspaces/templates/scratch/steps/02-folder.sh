@@ -5,7 +5,6 @@
 
 root=$(shimmer_scratch_root)
 mkdir -p "$root" || shimmer_fail "can't make $root"
-lang=${LANGUAGE:-none}
 
 # Old ones first, so today's is never a candidate. Only folders this template made.
 if [ -n "$KEEP_DAYS" ]; then
@@ -22,7 +21,7 @@ if [ -n "$KEEP_DAYS" ]; then
     done
 fi
 
-name="$(date +%Y-%m-%d)-$lang"
+name="$(date +%Y-%m-%d)-$(shimmer_scratch_label "${LANGUAGE:-python}")"
 dir="$root/$name"
 if [ "$NEW_FOLDER" != "once-a-day" ]; then
     n=2
@@ -35,7 +34,7 @@ fresh=no
 [ -d "$dir" ] || fresh=yes
 mkdir -p "$dir" || shimmer_fail "can't make $dir"
 echo "made by Shimmer's scratch template: with KEEP_DAYS set, it goes to the trash once nothing in it has changed for that long" >"$dir/.shimmer-scratch"
-shimmer_scratch_starter "$lang" "$dir"
+shimmer_scratch_starter "${LANGUAGE:-python}" "$dir"
 if [ "$GIT_INIT" = "yes" ] && [ ! -d "$dir/.git" ]; then
     git -C "$dir" init -q && echo ".shimmer-scratch" >>"$dir/.git/info/exclude"
 fi

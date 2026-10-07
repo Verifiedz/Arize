@@ -4,7 +4,7 @@
 
 dir=$(shimmer_scratch_current)
 [ -n "$dir" ] || exit 0
-main=$(shimmer_scratch_main "${LANGUAGE:-none}")
+main=$(shimmer_scratch_main "${LANGUAGE:-python}")
 cmd=$(shimmer_editor_command "${CODE_EDITOR:-none}")
 case "${CODE_EDITOR:-none}" in
     # These take the folder and a file in one go: the folder's window, with the file open.

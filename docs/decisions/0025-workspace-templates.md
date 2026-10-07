@@ -280,9 +280,17 @@ in-editor terminal, live site, links, browser window, `CLOSE_ON_STOP`) is `web-p
 
 **`scratch`**: a fresh throwaway folder for trying something out. Each activate makes
 `SCRATCH_DIR/<date>-<language>` (`-2`, `-3`… on the same day; `NEW_FOLDER = once-a-day` reopens
-that day's instead) with a starter file for `LANGUAGE` (python, rust, javascript, typescript, go,
-c, cpp, java, shell, or none), opens the folder in the editor with that file, and a terminal in it
-showing the command that runs it. Its helper is `lib/shimmer-scratch.sh`.
+that day's instead) with a starter file for `LANGUAGE`, opens the folder in the editor with that
+file, and a terminal in it showing the command that runs it. Its helper is
+`lib/shimmer-scratch.sh`.
+
+There is no end to languages, so `LANGUAGE` is text, not a choice. About 30 are known, each with a
+starter that prints "hello from scratch" and its usual run command (python, rust, javascript,
+typescript, go, c, cpp, java, kotlin, swift, csharp, ruby, php, lua, perl, r, julia, haskell,
+ocaml, elixir, clojure, dart, scala, zig, nim, crystal, fortran, sql, html, shell; common other
+spellings such as `c++`, `ts`, `golang` too), plus `none` for an empty folder. **Any other
+language is a file name** (`main.odin`): that file is made empty and opened, and the folder is
+named by its extension. `RUN_COMMAND` gives the run command for it, or replaces a known one.
 
 | # | Step | Mode | Does |
 |---|---|---|---|
