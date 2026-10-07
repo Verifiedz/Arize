@@ -1,6 +1,6 @@
 [template]
 label = "Web project"
-description = "Editor, dev server, localhost and your links (live site, host, repo) in one go"
+description = "Editor, dev server, localhost and your links, opened in one go"
 category = "code"
 needs = [
     "Your editor (VS Code, Cursor, Zed, WebStorm, IntelliJ, Sublime or Neovim)",
@@ -28,20 +28,19 @@ prompt = "Editor"
 kind = "choice"
 choices = ["vscode", "cursor", "zed", "webstorm", "intellij", "sublime", "neovim", "none"]
 default = "vscode"
-
-[[question]]
-name = "OPEN_ON"
-prompt = "Where windows open"
-kind = "choice"
-choices = ["auto", "this-machine", "connected-computer"]
-default = "auto"
-help = "this-machine: this computer's own screen, even if Shimmer was started from a Cursor/VS Code terminal connected from elsewhere. connected-computer: the computer you're connected from. auto: wherever Shimmer was started."
+help = "The project opens in it. neovim opens in a terminal (TERMINAL_APP). none: no editor."
 
 [[question]]
 name = "OPEN_PATH"
 prompt = "File to open instead of the folder"
 kind = "text"
 help = "Inside the project, e.g. site.code-workspace or src/app/page.tsx. Leave empty to open the folder."
+
+[[question]]
+name = "IDE_TERMINAL_COMMAND"
+prompt = "Command to run in a terminal inside the editor"
+kind = "command"
+help = "VS Code and Cursor only, e.g. claude or npm run lint -- --watch. Leave empty for none. Shimmer writes .vscode/tasks.json (kept out of git); the editor may ask once to allow automatic tasks."
 
 [[question]]
 name = "GIT_ON_OPEN"
@@ -106,12 +105,6 @@ kind = "urls"
 help = "Anything else: your hosting dashboard (Vercel, Netlify…), analytics, docs. Separate them with spaces."
 
 [[question]]
-name = "IDE_TERMINAL_COMMAND"
-prompt = "Command to run in a terminal inside the editor"
-kind = "command"
-help = "VS Code and Cursor only, e.g. claude or npm run lint -- --watch. Leave empty for none. Shimmer writes .vscode/tasks.json (kept out of git); the editor may ask once to allow automatic tasks."
-
-[[question]]
 name = "BROWSER_WINDOW"
 prompt = "Open the links in your normal browser, or a window of their own"
 kind = "choice"
@@ -140,6 +133,14 @@ name = "TERMINAL_COMMAND"
 prompt = "Command to run in the external terminal"
 kind = "command"
 help = "e.g. claude. Leave empty for just a shell in the project."
+
+[[question]]
+name = "OPEN_ON"
+prompt = "Where windows open"
+kind = "choice"
+choices = ["auto", "this-machine", "connected-computer"]
+default = "auto"
+help = "this-machine: this computer's own screen, even if Shimmer was started from a Cursor/VS Code terminal connected from elsewhere. connected-computer: the computer you're connected from. auto: wherever Shimmer was started."
 
 [[question]]
 name = "CLOSE_ON_STOP"

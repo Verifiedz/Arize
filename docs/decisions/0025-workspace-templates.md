@@ -40,7 +40,7 @@ crates/modules/workspaces/templates/web-project/
 # template.toml
 [template]
 label = "Web project"
-description = "Editor, dev server, localhost and your links (live site, host, repo) in one go"
+description = "Editor, dev server, localhost and your links, opened in one go"
 category = "code"
 needs = ["Your editor (VS Code, Cursor, Zed, WebStorm, IntelliJ, Sublime or Neovim)", "…"]
 good_to_know = ["Pulls the latest code each time it opens, only when … never merges", "…"]
@@ -89,6 +89,13 @@ up; `on_stop` what `workspaces stop` does. With the steps, read from the templat
 `workspace.toml` (name, `supervised` with its time limit or `detached`, description) so they can't
 drift from what runs, they are what `shimmer workspaces peek TEMPLATE` shows before anything is
 created.
+
+**Consistency.** Questions several templates share are asked the same way: `CODE_EDITOR`,
+`TERMINAL_APP` (`auto` first, `none` last when offered), `OPEN_ON` and `CLOSE_ON_STOP` have the
+same prompt and help everywhere, and the window questions come last, after the ones about the
+project. A `description` fits the list on one line (72 characters); the detail is in `peek`.
+Every `workspace.toml` starts with the same commands (activate, stop, reconfigure), and every
+hint a script prints is the exact `shimmer workspaces reconfigure ID --set …` that fixes it.
 
 **Categories.** Every template names one `category`, so the list is grouped rather than one
 long alphabet. The set is fixed in the module (`template::CATEGORIES`), in this order, and

@@ -8,6 +8,6 @@ run=$(shimmer_scratch_run "${LANGUAGE:-python}")
 if [ -n "$run" ]; then
     echo "run it: cd $(shimmer_quote "$dir") && $run"
 elif [ "$(shimmer_scratch_lang "${LANGUAGE:-python}")" = "file" ]; then
-    echo "to have it say how to run your code, set RUN_COMMAND: shimmer workspaces edit $SHIMMER_WORKSPACE_ID"
+    echo "to have it say how to run your code: shimmer workspaces reconfigure $SHIMMER_WORKSPACE_ID --set RUN_COMMAND='…'"
 fi
 exit 0

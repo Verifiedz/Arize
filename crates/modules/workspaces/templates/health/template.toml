@@ -1,6 +1,6 @@
 [template]
 label = "Health check"
-description = "One read-only report on this computer: disks, memory, CPU load, restart needed, battery health, temperature, failed services, dirty workspaces, updates waiting, ports in use, biggest folders"
+description = "One read-only report: disks, memory, battery, failed services and more"
 category = "upkeep"
 needs = [
     "Nothing (uses what the system has: df, /proc or sysctl, systemctl, ss or lsof)",

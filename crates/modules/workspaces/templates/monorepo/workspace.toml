@@ -1,10 +1,10 @@
 # Monorepo: several apps from one repo, started together, with their logs side by side.
 # Created from Shimmer's monorepo template. It's your folder now: edit it freely.
 #
-#   shimmer workspaces activate <id>      start every app and open it all
-#   shimmer workspaces stop <id>          stop every app and the services, and close what it can
-#                                         (it lists what it closed and what it left open)
-#   shimmer workspaces edit <id>          change an answer (the [env] table at the bottom)
+#   shimmer workspaces activate <id> --wait     start every app and open it all
+#   shimmer workspaces stop <id> --wait         stop every app and the services, close what it can,
+#                                               and list what it closed and what it left open
+#   shimmer workspaces reconfigure <id>         change your answers (the [env] table at the bottom)
 #
 # "auto" is worked out each time it opens, from the repo itself (turbo.json, nx.json,
 # pnpm-workspace.yaml, package.json workspaces, Cargo.toml [workspace], go.work).

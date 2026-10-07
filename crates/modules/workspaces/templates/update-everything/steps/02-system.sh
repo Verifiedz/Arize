@@ -23,7 +23,7 @@ if [ "$mode" = "passwordless" ]; then
     if [ "$code" -eq 0 ]; then
         shimmer_update_result "updated system ($tool)"
     elif grep -q "password is required" "$out"; then
-        shimmer_update_result "failed system ($tool): sudo wants a password; add a sudo rule for it (see workspace.toml) or use SYSTEM_UPDATES = terminal"
+        shimmer_update_result "failed system ($tool): sudo wants a password; add a sudo rule for it (an example is at the top of workspace.toml) or use SYSTEM_UPDATES = terminal"
     else
         shimmer_update_result "failed system ($tool) (exit $code)"
     fi

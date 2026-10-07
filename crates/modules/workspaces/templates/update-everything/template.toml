@@ -1,6 +1,6 @@
 [template]
 label = "Update everything"
-description = "Update every developer tool you have installed (rustup, brew, npm, pipx, uv…) and your system's packages, then show what updated and what failed"
+description = "Update your developer tools and system packages, then see what changed"
 category = "upkeep"
 needs = [
     "Nothing beyond what you want updated: it runs only the updaters that are installed (or topgrade, if you have it)",
@@ -20,7 +20,7 @@ prompt = "Update, or only show what it would run"
 kind = "choice"
 choices = ["preview", "update"]
 required = true
-help = "preview: runs nothing; the summary lists every command update would run. Start with preview, then switch to update with shimmer workspaces edit."
+help = "preview: runs nothing; the summary lists every command update would run. Start with preview, then: shimmer workspaces reconfigure NAME --set MODE=update."
 
 [[question]]
 name = "SYSTEM_UPDATES"
@@ -56,7 +56,7 @@ prompt = "Terminal for the system update"
 kind = "choice"
 choices = ["auto", "kitty", "foot", "alacritty", "wezterm", "ghostty", "gnome-terminal", "konsole", "terminal", "iterm"]
 default = "auto"
-help = "Only with terminal. auto: Terminal on macOS, the first one found on Linux."
+help = "auto: Terminal on macOS, the first one found on Linux. terminal and iterm are macOS only. Only with terminal."
 
 [[question]]
 name = "OPEN_ON"

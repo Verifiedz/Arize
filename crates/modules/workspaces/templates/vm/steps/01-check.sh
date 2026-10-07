@@ -6,7 +6,7 @@ problem=$(shimmer_display_problem)
 [ -z "$problem" ] || shimmer_fail "$problem"
 
 if [ "$VM_SOFTWARE" = "custom" ]; then
-    [ -n "$START_COMMAND" ] || shimmer_fail "VM_SOFTWARE is custom: set START_COMMAND in workspace.toml's [env]"
+    [ -n "$START_COMMAND" ] || shimmer_fail "VM_SOFTWARE is custom, so it needs START_COMMAND: shimmer workspaces reconfigure $SHIMMER_WORKSPACE_ID --set START_COMMAND='…'"
 else
     [ -n "$(shimmer_vm_cli "$VM_SOFTWARE")" ] || shimmer_fail "$VM_SOFTWARE isn't installed (or its command-line tool isn't on PATH)"
     shimmer_vm_exists || shimmer_fail "$VM_SOFTWARE has no VM called '$VM_NAME'"

@@ -1,14 +1,13 @@
 # Web project: everything you need to work on a website or web app, opened in one go.
 # Created from Shimmer's web-project template. It's your folder now: edit it freely.
 #
-#   shimmer workspaces activate <id>      open it all
-#   shimmer workspaces stop <id>          stop the dev server and services, and close what it can
-#                                         (it lists what it closed and what it left open)
-#   shimmer workspaces cleanup <id>       after a failed launch: the same, and back to ready
+#   shimmer workspaces activate <id> --wait     open it all
+#   shimmer workspaces stop <id> --wait         stop the dev server and services, close what it can,
+#                                               and list what it closed and what it left open
+#   shimmer workspaces reconfigure <id>         change your answers (the [env] table at the bottom)
 #
-# Your answers are the [env] table at the bottom: change them there. "auto" is worked out each
-# time it opens, from the project itself (package.json, the lockfile, the git remote). A step
-# whose answer is empty does nothing.
+# "auto" is worked out each time it opens, from the project itself (package.json, the lockfile,
+# the git remote). A step whose answer is empty does nothing.
 #
 # Never put API keys or passwords in [env]: this file lives in your Shimmer folder, which is
 # meant to be copied between machines and committed to git. Secrets stay in the project's own

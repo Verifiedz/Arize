@@ -4,7 +4,7 @@
 problem=$(shimmer_display_problem)
 [ -z "$problem" ] || shimmer_fail "$problem"
 
-[ -n "$PROJECT_DIR" ] || shimmer_fail "PROJECT_DIR is empty: set it in workspace.toml's [env]"
+[ -n "$PROJECT_DIR" ] || shimmer_fail "PROJECT_DIR is empty: shimmer workspaces reconfigure $SHIMMER_WORKSPACE_ID --set PROJECT_DIR=~/code/…"
 [ -d "$PROJECT_DIR" ] || shimmer_fail "the project folder $PROJECT_DIR doesn't exist"
 
 shimmer_has_editor "${CODE_EDITOR:-none}" || shimmer_fail "${CODE_EDITOR} isn't installed (looked for $(shimmer_editor_commands "$CODE_EDITOR") and the app)"

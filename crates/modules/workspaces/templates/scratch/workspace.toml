@@ -3,14 +3,14 @@
 # your folder now: edit it freely.
 #
 #   shimmer workspaces activate <id> --wait     make the folder, open it, print where it is
-#   shimmer workspaces stop <id>                close the terminal (the folder is kept)
+#   shimmer workspaces stop <id> --wait         close the terminal (the folder is kept)
+#   shimmer workspaces reconfigure <id>         change your answers, e.g. LANGUAGE
 #
 # Each activate makes a new folder in SCRATCH_DIR (or reopens today's, with NEW_FOLDER =
-# "once-a-day"). Change the language in [env] below, or make one scratch workspace per language:
-#   shimmer workspaces new scratch-rust --from scratch --set LANGUAGE=rust
+# "once-a-day"). One scratch workspace per language works well:
+#   shimmer workspaces copy <id> scratch-rust --set LANGUAGE=rust
 # A language the template doesn't know: give a file name and how to run it, e.g.
-#   LANGUAGE = "main.odin"
-#   RUN_COMMAND = "odin run main.odin -file"
+#   LANGUAGE = "main.odin", RUN_COMMAND = "odin run main.odin -file"
 # Its starters and run commands are in lib/shimmer-scratch.sh: add your own languages there.
 #
 # Nothing is ever deleted. With KEEP_DAYS set, folders this template made (they hold a

@@ -241,7 +241,7 @@ TASK
     mkdir -p "$folder/.vscode" || return 0
     {
         echo "$marker: opens a terminal in the editor"
-        echo "// running your command when this folder opens. Change it with: shimmer workspaces edit $SHIMMER_WORKSPACE_ID"
+        echo "// running your command when this folder opens. Change it with: shimmer workspaces reconfigure $SHIMMER_WORKSPACE_ID --set IDE_TERMINAL_COMMAND='…'"
         echo "// (IDE_TERMINAL_COMMAND). Shimmer rewrites this file on every launch; it's kept out of git."
         echo "{"
         echo '  "version": "2.0.0",'
@@ -305,7 +305,7 @@ shimmer_open_terminal() {
     dir=$2
     command=$3
     [ "$term" = "auto" ] && term=$(shimmer_terminal_auto)
-    [ -n "$term" ] || shimmer_fail "no terminal found (set TERMINAL_APP in workspace.toml)"
+    [ -n "$term" ] || shimmer_fail "no terminal found: install one, or choose one with shimmer workspaces reconfigure $SHIMMER_WORKSPACE_ID --set TERMINAL_APP=…"
     [ "$term" = "none" ] && return 0
     if [ "${SHIMMER_REUSE_WINDOW:-yes}" = "yes" ] && shimmer_window_open; then
         echo "already open from the last activate: the $term terminal"

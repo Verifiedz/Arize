@@ -5,7 +5,7 @@
 problem=$(shimmer_display_problem)
 [ -z "$problem" ] || shimmer_fail "$problem"
 
-[ -n "$PROJECT_DIR" ] || shimmer_fail "PROJECT_DIR is empty: set it with shimmer workspaces edit $SHIMMER_WORKSPACE_ID"
+[ -n "$PROJECT_DIR" ] || shimmer_fail "PROJECT_DIR is empty: shimmer workspaces reconfigure $SHIMMER_WORKSPACE_ID --set PROJECT_DIR=~/code/…"
 [ -d "$PROJECT_DIR" ] || shimmer_fail "the monorepo folder $PROJECT_DIR doesn't exist"
 [ -n "$APPS" ] || shimmer_fail "APPS is empty: list the apps to run"
 

@@ -1,11 +1,12 @@
 # Smoke test: a workspace that opens nothing, for checking that workspaces work on this machine.
 # Created from Shimmer's smoke-test template. It's your folder now: edit it freely.
 #
-#   shimmer workspaces activate <id>      ready → launching → active
-#   shimmer workspaces status <id>        each step, and the log of a failed one
+#   shimmer workspaces activate <id> --wait     ready → launching → active
+#   shimmer workspaces stop <id> --wait         active → ready
+#   shimmer workspaces status <id>              each step, and the log of a failed one
 #
-# Set FAIL_AT below to "check" to see a launch go dirty, then run
-#   shimmer workspaces cleanup <id>       dirty → ready (unless FAIL_AT = "cleanup")
+# To see a launch go dirty: shimmer workspaces reconfigure <id> --set FAIL_AT=check, then
+#   shimmer workspaces cleanup <id> --wait      dirty → ready (unless FAIL_AT = "cleanup")
 #
 # Step 1's log lists every SHIMMER_* variable the scripts receive, and runs `shimmer ping`
 # through SHIMMER_SOCKET, so you can check both by hand.

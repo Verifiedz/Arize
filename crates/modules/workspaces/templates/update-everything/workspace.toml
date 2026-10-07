@@ -1,7 +1,8 @@
 # Update everything: every developer tool you have installed, and your system's packages, in one
 # go. Created from Shimmer's update-everything template. It's your folder now: edit it freely.
 #
-#   shimmer workspaces activate <id> --wait     update, then print what updated and what failed
+#   shimmer workspaces activate <id> --wait     update (or preview), then print what updated
+#   shimmer workspaces reconfigure <id>         change your answers, e.g. MODE preview → update
 #
 # Run it again any time: it starts over each time. One updater failing never stops the others;
 # the summary lists it, and the full output of every updater is in the steps' logs.

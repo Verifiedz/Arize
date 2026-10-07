@@ -1,6 +1,6 @@
 [template]
 label = "Scratch"
-description = "A fresh throwaway folder with a starter file in your language, opened in your editor and a terminal, for trying something out"
+description = "A fresh throwaway folder with a starter file in any language"
 category = "code"
 needs = [
     "Your editor, and the language's tools if you want to run the code (python3, cargo, node…)",
@@ -59,6 +59,7 @@ prompt = "Editor"
 kind = "choice"
 choices = ["vscode", "cursor", "zed", "webstorm", "intellij", "sublime", "neovim", "none"]
 default = "vscode"
+help = "The project opens in it. neovim opens in a terminal (TERMINAL_APP). none: no editor."
 
 [[question]]
 name = "TERMINAL_APP"
@@ -66,7 +67,7 @@ prompt = "Terminal in the folder"
 kind = "choice"
 choices = ["auto", "kitty", "foot", "alacritty", "wezterm", "ghostty", "gnome-terminal", "konsole", "terminal", "iterm", "none"]
 default = "auto"
-help = "auto: Terminal on macOS, the first one found on Linux. It shows the command that runs your code."
+help = "auto: Terminal on macOS, the first one found on Linux. terminal and iterm are macOS only. It shows the command that runs your code."
 
 [[question]]
 name = "OPEN_ON"
@@ -78,7 +79,7 @@ help = "this-machine: this computer's own screen, even if Shimmer was started fr
 
 [[question]]
 name = "CLOSE_ON_STOP"
-prompt = "Close the terminal when you run workspaces stop"
+prompt = "Close what it opened when you run workspaces stop"
 kind = "choice"
 choices = ["yes", "no"]
 default = "yes"

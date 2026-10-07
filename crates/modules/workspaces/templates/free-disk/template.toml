@@ -1,6 +1,6 @@
 [template]
 label = "Free disk space"
-description = "Free space safely: build folders of projects you haven't touched in a while, and tool caches (npm, cargo, pip, go, docker…). Only things that come back by themselves"
+description = "Free disk space safely: only what comes back by itself"
 category = "upkeep"
 needs = [
     "Nothing: it cleans only what's installed",
@@ -19,7 +19,7 @@ prompt = "Clean, or only show what it would free"
 kind = "choice"
 choices = ["preview", "clean"]
 required = true
-help = "preview: nothing is removed; the summary lists what clean would free. Start with preview, then switch to clean with shimmer workspaces edit."
+help = "preview: nothing is removed; the summary lists what clean would free. Start with preview, then: shimmer workspaces reconfigure NAME --set MODE=clean."
 
 [[question]]
 name = "CODE_DIRS"
@@ -55,7 +55,7 @@ prompt = "Terminal for the system clean"
 kind = "choice"
 choices = ["auto", "kitty", "foot", "alacritty", "wezterm", "ghostty", "gnome-terminal", "konsole", "terminal", "iterm"]
 default = "auto"
-help = "Only with SYSTEM_CLEAN = terminal. auto: Terminal on macOS, the first one found on Linux."
+help = "auto: Terminal on macOS, the first one found on Linux. terminal and iterm are macOS only. Only with SYSTEM_CLEAN = terminal."
 
 [[question]]
 name = "OPEN_ON"

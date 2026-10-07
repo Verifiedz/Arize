@@ -2,12 +2,12 @@
 # It's your folder now: edit it freely.
 #
 #   shimmer workspaces activate <id> --wait     check, then print the report
+#   shimmer workspaces reconfigure <id>         change your answers (thresholds, SKIP, NOTIFY)
 #
 # Nothing is changed and nothing needs sudo. Things that need attention come first (!), then
-# what's fine (✓), then information (·). Change a threshold in [env] below; leave a check out
-# with SKIP; add your own check in lib/shimmer-health.sh.
+# what's fine (✓), then information (·). Add a check of your own in lib/shimmer-health.sh.
 #
-# On a schedule (e.g. every morning), set NOTIFY = "on-warning" to get a desktop notification
+# On a schedule (e.g. every morning), set NOTIFY to "on-warning" to get a desktop notification
 # only when something needs attention.
 
 [workspace]

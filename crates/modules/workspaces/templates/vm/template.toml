@@ -1,6 +1,6 @@
 [template]
 label = "Virtual machine"
-description = "Start a VM (UTM, Parallels, VirtualBox, VMware, libvirt, Multipass or your own commands), wait for SSH, then open an editor and a terminal inside it"
+description = "Start a VM, wait for SSH, then open an editor and terminal inside it"
 category = "code"
 needs = [
     "The VM program's command-line tool (utmctl, prlctl, VBoxManage, vmrun, virsh or multipass), or your own start and stop commands",
@@ -50,14 +50,6 @@ default = "window"
 help = "headless works with VirtualBox, VMware and libvirt; UTM, Parallels and Multipass decide for themselves."
 
 [[question]]
-name = "OPEN_ON"
-prompt = "Where windows open"
-kind = "choice"
-choices = ["auto", "this-machine", "connected-computer"]
-default = "auto"
-help = "this-machine: this computer's own screen, even if Shimmer was started from a Cursor/VS Code terminal connected from elsewhere. connected-computer: the computer you're connected from. auto: wherever Shimmer was started."
-
-[[question]]
 name = "VM_HOST"
 prompt = "The VM's address for SSH"
 kind = "text"
@@ -98,9 +90,17 @@ help = "e.g. /home/me/code/project. Leave empty for your home folder."
 name = "TERMINAL_APP"
 prompt = "Terminal for an SSH session into the VM"
 kind = "choice"
-choices = ["none", "auto", "kitty", "foot", "alacritty", "wezterm", "ghostty", "gnome-terminal", "konsole", "terminal", "iterm"]
+choices = ["auto", "kitty", "foot", "alacritty", "wezterm", "ghostty", "gnome-terminal", "konsole", "terminal", "iterm", "none"]
 default = "none"
-help = "auto: Terminal on macOS, the first one found on Linux. none: no SSH terminal."
+help = "auto: Terminal on macOS, the first one found on Linux. terminal and iterm are macOS only. none: no SSH terminal."
+
+[[question]]
+name = "OPEN_ON"
+prompt = "Where windows open"
+kind = "choice"
+choices = ["auto", "this-machine", "connected-computer"]
+default = "auto"
+help = "this-machine: this computer's own screen, even if Shimmer was started from a Cursor/VS Code terminal connected from elsewhere. connected-computer: the computer you're connected from. auto: wherever Shimmer was started."
 
 [[question]]
 name = "ON_STOP"

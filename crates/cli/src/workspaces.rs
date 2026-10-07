@@ -946,7 +946,7 @@ fn how_to_answer(e: Error, prompt: &dyn Prompt) -> Error {
 }
 
 /// The longest description shown in the list; `templates TEMPLATE` shows it whole.
-const LISTED_DESCRIPTION: usize = 64;
+const LISTED_DESCRIPTION: usize = 72;
 
 /// `workspaces.templates`, grouped under the categories' headings in the daemon's order. With
 /// `which`: only that category's templates, or that one template in full.
@@ -1960,7 +1960,7 @@ mod tests {
         assert_eq!(shorten("short"), "short");
         assert_eq!(
             shorten("Free space safely: build folders of projects you haven't touched in a while, and tool caches"),
-            "Free space safely: build folders of projects you haven't…"
+            "Free space safely: build folders of projects you haven't touched in a…"
         );
         assert!(created("site", "web-project")
             .starts_with("✓ created workspace site from web-project\n  start it: shimmer workspaces activate site"));

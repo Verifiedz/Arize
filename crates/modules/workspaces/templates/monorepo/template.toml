@@ -1,6 +1,6 @@
 [template]
 label = "Monorepo"
-description = "Several apps from one repo at once: Turborepo, Nx, pnpm/npm/yarn/bun workspaces, Cargo or Go workspaces, with their logs side by side"
+description = "Several apps from one repo at once, with their logs side by side"
 category = "code"
 needs = [
     "Your editor",
@@ -55,14 +55,7 @@ prompt = "Editor"
 kind = "choice"
 choices = ["vscode", "cursor", "zed", "webstorm", "intellij", "sublime", "neovim", "none"]
 default = "vscode"
-
-[[question]]
-name = "OPEN_ON"
-prompt = "Where windows open"
-kind = "choice"
-choices = ["auto", "this-machine", "connected-computer"]
-default = "auto"
-help = "this-machine: this computer's own screen, even if Shimmer was started from a Cursor/VS Code terminal connected from elsewhere. connected-computer: the computer you're connected from. auto: wherever Shimmer was started."
+help = "The project opens in it. neovim opens in a terminal (TERMINAL_APP). none: no editor."
 
 [[question]]
 name = "IDE_TERMINAL_COMMAND"
@@ -148,13 +141,21 @@ prompt = "External terminal (for the logs, and the command below)"
 kind = "choice"
 choices = ["auto", "kitty", "foot", "alacritty", "wezterm", "ghostty", "gnome-terminal", "konsole", "terminal", "iterm", "none"]
 default = "auto"
-help = "auto: Terminal on macOS, the first one found on Linux. kitty, foot, alacritty, wezterm, ghostty, konsole and xterm windows can be closed by workspaces stop."
+help = "auto: Terminal on macOS, the first one found on Linux. terminal and iterm are macOS only. kitty, foot, alacritty, wezterm, ghostty, konsole and xterm windows can be closed by workspaces stop."
 
 [[question]]
 name = "TERMINAL_COMMAND"
 prompt = "Command to run in another external terminal"
 kind = "command"
 help = "e.g. claude. Leave empty for no extra terminal."
+
+[[question]]
+name = "OPEN_ON"
+prompt = "Where windows open"
+kind = "choice"
+choices = ["auto", "this-machine", "connected-computer"]
+default = "auto"
+help = "this-machine: this computer's own screen, even if Shimmer was started from a Cursor/VS Code terminal connected from elsewhere. connected-computer: the computer you're connected from. auto: wherever Shimmer was started."
 
 [[question]]
 name = "CLOSE_ON_STOP"

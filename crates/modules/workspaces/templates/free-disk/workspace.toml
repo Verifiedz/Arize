@@ -1,9 +1,8 @@
 # Free disk space: removes only what comes back by itself. Created from Shimmer's free-disk
 # template. It's your folder now: edit it freely.
 #
-#   shimmer workspaces activate <id> --wait     clean, then print what was freed
-#
-# Set MODE = "preview" below to see what it would free without removing anything.
+#   shimmer workspaces activate <id> --wait     clean (or preview), then print what was freed
+#   shimmer workspaces reconfigure <id>         change your answers, e.g. MODE preview → clean
 #
 # What goes:
 #   - Build folders of projects in CODE_DIRS that you haven't touched in UNTOUCHED_DAYS days:

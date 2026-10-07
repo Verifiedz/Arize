@@ -4,6 +4,7 @@
 #   shimmer workspaces activate <id> --wait     before you go: prepare, then a report per project
 #   shimmer workspaces stop <id> --wait         back online: what's unpushed or behind (and
 #                                               pull / push, with PULL_ON_RETURN / PUSH_ON_RETURN)
+#   shimmer workspaces reconfigure <id>         change your answers (PROJECTS, UPDATE_REPOS…)
 #
 # Run it on good Wi-Fi, plugged in, an hour or so before you leave: the first run downloads the
 # most. The report's "works offline" lines come from each tool's own offline mode, so you find
@@ -17,7 +18,8 @@
 #
 # Parts, in order (leave any out with SKIP):
 #   machine  battery, disk space, logins about to expire (gh, aws, gcloud, az)
-#   repos    clone missing ones, pull clean ones, submodules, Git LFS; list uncommitted work
+#   repos    clone missing ones; fetch, and with UPDATE_REPOS = "pull" fast-forward clean ones;
+#            submodules, Git LFS; list uncommitted work
 #   deps     every project's dependencies (cargo, npm/pnpm/yarn/bun, uv/poetry/pip, go, maven,
 #            gradle, bundler, composer, dotnet, mix, pub, swift, cabal/stack, zig, deno)
 #   docker   images in each compose file and each Dockerfile's FROM (not with DATA_SAVER)

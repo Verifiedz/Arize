@@ -1,6 +1,6 @@
 [template]
 label = "Smoke test"
-description = "Opens nothing: checks that workspaces launch, fail and clean up on this machine"
+description = "Opens nothing: checks that workspaces work on this machine"
 category = "testing"
 needs = [
     "Nothing",

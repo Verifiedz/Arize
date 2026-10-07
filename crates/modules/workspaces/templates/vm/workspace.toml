@@ -1,11 +1,10 @@
 # Virtual machine: start a VM, wait until it answers over SSH, then open an editor and a terminal
 # inside it. Created from Shimmer's vm template. It's your folder now: edit it freely.
 #
-#   shimmer workspaces activate <id>      start it all
-#   shimmer workspaces stop <id>          suspend or shut down the VM (ON_STOP), close the SSH
-#                                         terminal if it can, and list what it left open
-#
-# Your answers are the [env] table at the bottom: change them there.
+#   shimmer workspaces activate <id> --wait     start it all
+#   shimmer workspaces stop <id> --wait         suspend or shut down the VM (ON_STOP), only if this
+#                                               workspace started it; close the SSH terminal
+#   shimmer workspaces reconfigure <id>         change your answers (the [env] table at the bottom)
 #
 # Passwords: never put one in [env]. This file lives in your Shimmer folder, which is meant to be
 # copied between machines and committed to git. In order of preference:
