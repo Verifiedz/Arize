@@ -2,15 +2,15 @@
 //! 0028). Rate limiting and caching are not this module's job; they live behind `ctx.http`
 //! (ADR 0027).
 //!
-//! [`dedup`] has the per-source "seen" bookkeeping and [`RunGuard`](dedup::RunGuard), the
-//! overlap guard (ADR 0028 §4, §5). [`module`]'s `Fetchers` wires `RunGuard` and the
-//! heartbeat trigger/commands from [`schedule`] together, so scheduling runs end to end:
-//! `fetchers.tick` finds due sources and enqueues `fetchers.fetch` for each, which records
-//! the run. [`http`] is the retry wrapper around `ctx.http.get` (ADR 0028 §6); [`html`] and
-//! [`robots`] are the scraping and robots.txt helpers a `Method::Scrape` source will use
-//! (ADR 0028 §7). None of these four have a real caller yet -- there is still no `Source`
-//! (ADR 0028 §10 lands in a later change), so `fetchers.fetch` does nothing beyond recording
-//! that it ran.
+//! [`source`] is the `Source` trait (ADR 0028 §2); [`sources`] holds one file per
+//! implementation, starting with `hn-whoishiring` (ADR 0028 §10). [`dedup`] has the
+//! per-source "seen" bookkeeping and [`RunGuard`](dedup::RunGuard), the overlap guard
+//! (ADR 0028 §4, §5). [`http`] is the retry wrapper around `ctx.http.get` (ADR 0028 §6);
+//! [`html`] and [`robots`] are the scraping and robots.txt helpers a future `Method::Scrape`
+//! source will use (ADR 0028 §7) -- neither has a real caller yet, since `hn-whoishiring`
+//! is `Method::Api`. [`module`]'s `Fetchers` wires all of this together: `fetchers.tick`
+//! finds due sources and enqueues `fetchers.fetch` for each, which runs the matching
+//! `Source`, dedupes its items, and emits `fetchers.item.found` for each new one.
 //!
 //! Depends on `core` only.
 
@@ -20,5 +20,7 @@ pub mod http;
 mod module;
 pub mod robots;
 mod schedule;
+pub mod source;
+mod sources;
 
 pub use module::Fetchers;

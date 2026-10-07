@@ -18,6 +18,13 @@ use shimmer_core::{Ctx, Error, Result};
 /// pruned, and would be (correctly) treated as new again if the source ever returned it.
 pub const RETENTION_DAYS: i64 = 90;
 
+/// At most this many ids not already in the set are accepted as new in one run (ADR 0028
+/// §8) -- the rest are left unmarked and picked up on a later run, which is also how a first
+/// contact with a large, already-stuffed board gets spread across several runs instead of
+/// flooding one. Enforced by the orchestration that drives a `Source`, not by `SeenSet`
+/// itself, which only ever sees the ids it's told to.
+pub const MAX_NEW_PER_RUN: usize = 50;
+
 /// One source's dedup state: every id it has returned, and when it was last seen.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SeenSet(BTreeMap<String, DateTime<Utc>>);

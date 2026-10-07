@@ -24,6 +24,21 @@ pub async fn get(ctx: &Ctx, url: &str) -> Result<HttpResponse> {
     .await
 }
 
+/// For a response [`get`] already returned successfully (so never a bare 5xx -- those are
+/// retried away): a 4xx, or a cooldown this run can't wait out, is reported as a
+/// `"http_error:"`-prefixed `module_error` -- a convention the caller classifies into
+/// `fetchers.fetch.failed`'s `reason` (ADR 0028 §9) without re-deriving it from a status
+/// code. Simplification, noted rather than hidden: a cooldown technically isn't a client/
+/// server error, but ADR 0028's `reason` enum has no separate bucket for it, and "the
+/// gateway won't let this through right now" is close enough to `"http_error"` not to
+/// invent a fifth reason for one case.
+pub fn require_ok(resp: HttpResponse, url: &str) -> Result<HttpResponse> {
+    if (200..300).contains(&resp.status) {
+        return Ok(resp);
+    }
+    Err(Error::module_error(format!("http_error: {} fetching {url}", resp.status)))
+}
+
 #[cfg(test)]
 mod tests {
     use shimmer_core::testing::TestEnv;
@@ -33,6 +48,20 @@ mod tests {
 
     fn response(status: u16) -> HttpResponse {
         HttpResponse { status, body: Vec::new(), from_cache: false, stale: false, retry_after_secs: None }
+    }
+
+    #[test]
+    fn require_ok_passes_through_every_2xx() {
+        for status in [200, 201, 204, 299] {
+            assert_eq!(require_ok(response(status), "u").unwrap().status, status);
+        }
+    }
+
+    #[test]
+    fn require_ok_rejects_a_4xx_as_a_classifiable_module_error() {
+        let err = require_ok(response(404), "http://x/a").unwrap_err();
+        assert_eq!(err.code, ErrorCode::ModuleError);
+        assert!(err.message.starts_with("http_error:"), "{}", err.message);
     }
 
     #[tokio::test]
