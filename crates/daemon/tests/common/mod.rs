@@ -208,6 +208,46 @@ impl Module for ProcessUser {
     }
 }
 
+/// Its manifest's `capabilities` is configurable so a test can start the *same* op logic
+/// with and without `"network"` declared, to prove `Core::new`'s capability-scoped
+/// `ctx.http` wiring (ADR 0027 §4) rather than anything about fetch behaviour itself
+/// (covered by `crates/daemon/src/http_backend.rs`'s own tests).
+pub struct NetworkUser {
+    pub declares_capability: bool,
+}
+
+#[async_trait]
+impl Module for NetworkUser {
+    fn manifest(&self) -> Manifest {
+        Manifest {
+            id: "netuser".into(),
+            version: "0.0.1".into(),
+            namespace: "netuser".into(),
+            topics: vec![],
+            capabilities: if self.declares_capability { vec!["network".into()] } else { vec![] },
+        }
+    }
+
+    async fn init(&self, _ctx: &Ctx) -> Result<()> {
+        Ok(())
+    }
+
+    fn commands(&self) -> Vec<CommandSpec> {
+        vec![spec("netuser.fetch", Execution::Inline)]
+    }
+
+    async fn handle(&self, op: &str, params: Value, ctx: &Ctx) -> Result<Value> {
+        match op {
+            "netuser.fetch" => {
+                let url = params["url"].as_str().unwrap_or("http://127.0.0.1:1/").to_string();
+                let resp = ctx.http.get(&url).await?;
+                Ok(json!({"status": resp.status, "body": String::from_utf8_lossy(&resp.body)}))
+            }
+            _ => Err(Error::unknown_op(op)),
+        }
+    }
+}
+
 // ---------------------------------------------------------------- a raw client
 
 pub struct Client {
