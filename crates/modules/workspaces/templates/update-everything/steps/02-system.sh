@@ -27,30 +27,11 @@ if [ "$mode" = "passwordless" ]; then
     exit 0
 fi
 
-# terminal: the window records its process id when it starts and its exit code when it ends.
-pid_file="$SHIMMER_STATE_DIR/system.pid"
-exit_file="$SHIMMER_STATE_DIR/system.exit"
-inner="echo \$\$ > $(shimmer_quote "$pid_file"); echo '$ $cmd'; $cmd; code=\$?; echo \$code > $(shimmer_quote "$exit_file")"
-inner="$inner; echo; echo 'Done: this window closes in 10 seconds.'; sleep 10; exit"
-shimmer_open_terminal "${TERMINAL_APP:-auto}" "$HOME" "$inner"
-echo "opened a terminal for: $cmd"
-
-waited=0
-while [ ! -f "$exit_file" ]; do
-    sleep 1
-    waited=$((waited + 1))
-    if [ -f "$pid_file" ]; then
-        if ! kill -s 0 "$(cat "$pid_file")" 2>/dev/null && [ ! -f "$exit_file" ]; then
-            shimmer_update_result "failed system ($tool): its window was closed before it finished"
-            exit 0
-        fi
-    elif [ "$waited" -ge 30 ]; then
-        shimmer_fail "the terminal for the system update didn't open within 30 seconds"
-    fi
-done
-code=$(cat "$exit_file")
-if [ "$code" = "0" ]; then
-    shimmer_update_result "updated system ($tool)"
-else
-    shimmer_update_result "failed system ($tool) (exit $code, see its window)"
-fi
+# terminal: you type your password into sudo in that window.
+shimmer_terminal_and_wait system "$cmd"
+code=$?
+case "$code" in
+    0) shimmer_update_result "updated system ($tool)" ;;
+    254) shimmer_update_result "failed system ($tool): its window was closed before it finished" ;;
+    *) shimmer_update_result "failed system ($tool) (exit $code, see its window)" ;;
+esac

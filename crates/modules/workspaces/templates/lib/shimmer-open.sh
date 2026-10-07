@@ -605,5 +605,36 @@ shimmer_stop_group() {
 }
 
 
+# ---------------------------------------------------------------- a command that needs you
+
+# Run COMMAND in a new terminal window (TERMINAL_APP) and wait until it ends, for something you
+# must type into yourself, like sudo's password: Shimmer never sees it. NAME names its files in
+# the temp folder. Returns the command's exit code, or 254 when the window was closed before it
+# finished; fails the step when no window opens within 30 seconds.
+shimmer_terminal_and_wait() {
+    name=$1
+    cmd=$2
+    mkdir -p "$SHIMMER_STATE_DIR"
+    pid_file="$SHIMMER_STATE_DIR/$name.pid"
+    exit_file="$SHIMMER_STATE_DIR/$name.exit"
+    rm -f "$pid_file" "$exit_file"
+    # The window records its process id when it starts and the exit code when it ends.
+    inner="echo \$\$ > $(shimmer_quote "$pid_file"); echo $(shimmer_quote "\$ $cmd"); $cmd; code=\$?; echo \$code > $(shimmer_quote "$exit_file")"
+    inner="$inner; echo; echo 'Done: this window closes in 10 seconds.'; sleep 10; exit"
+    shimmer_open_terminal "${TERMINAL_APP:-auto}" "$HOME" "$inner"
+    echo "opened a terminal for: $cmd"
+    waited=0
+    while [ ! -f "$exit_file" ]; do
+        sleep 1
+        waited=$((waited + 1))
+        if [ -f "$pid_file" ]; then
+            kill -s 0 "$(cat "$pid_file")" 2>/dev/null || [ -f "$exit_file" ] || return 254
+        elif [ "$waited" -ge 30 ]; then
+            shimmer_fail "the terminal for '$cmd' didn't open within 30 seconds"
+        fi
+    done
+    return "$(cat "$exit_file")"
+}
+
 # Every step that loads this file opens things where OPEN_ON says.
 shimmer_use_display

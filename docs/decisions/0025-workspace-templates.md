@@ -256,6 +256,31 @@ same on every machine and needs nothing installed.
 So one template walks through `ready → launching → active`, `dirty` (with `FAIL_AT = check`),
 cleanup back to `ready`, and a failed cleanup that stays `dirty`.
 
+**`free-disk`**: free space by removing only what comes back by itself. Its helper is
+`lib/shimmer-free.sh`.
+
+- **Build folders of projects untouched for `UNTOUCHED_DAYS`** (default 30) under `CODE_DIRS`
+  (searched 6 levels deep, never inside hidden folders): a Rust `target/` only when Cargo's own
+  `CACHEDIR.TAG` marker is inside, and a `node_modules/` only next to a `package.json` and not a
+  symlink. "Untouched" means none of the project's own files (not its build folders or `.git`)
+  changed for that long, so the project you're working on is never cleaned. They are removed,
+  not moved to the trash, which would free nothing; `cargo build` or `npm install` makes them
+  again.
+- **Download caches** through each installed tool's own command: npm, pnpm, yarn, bun, pip, uv,
+  go, cargo (`cargo-cache --autoclean`, when installed), brew, docker (`docker system prune -f`:
+  never volumes), and the thumbnail cache. Each is measured by its folder before and after, or
+  by the disk's free space when it has none.
+- **`SYSTEM_CLEAN`** (`skip` by default): the package manager's downloaded packages (`paccache`,
+  `pacman -Sc`, `apt-get clean`, `dnf`/`zypper clean`) and journal logs over 2 weeks old, with
+  sudo, the same three ways as `update-everything`'s `SYSTEM_UPDATES`. The terminal-and-wait
+  code both use is `shimmer_terminal_and_wait` in `lib/shimmer-open.sh`.
+- **Never**: your files, git repos, virtualenvs, the trash, docker volumes.
+
+`MODE = preview` removes nothing and lists what `clean` would free. `SKIP` names things never to
+clean. Steps `check`, `projects`, `caches`, `system`, all supervised, then `summary`: biggest
+first (at most 15 lines), anything skipped or failed, the total, and the free space before and
+after, which `activate --wait` prints. A failure is reported, never the end of the run.
+
 **`monorepo`**: several apps from one repo at once, with their logs side by side. Separate from
 `web-project` so the single-app case stays simple. Its own helper, `lib/shimmer-monorepo.sh`,
 recognises the tool and builds the commands:

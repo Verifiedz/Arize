@@ -14,12 +14,28 @@ macro_rules! file {
 
 const HELPER: (&str, &str) = file!("lib/shimmer-open.sh", "lib/shimmer-open.sh");
 const VM_HELPER: (&str, &str) = file!("lib/shimmer-vm.sh", "lib/shimmer-vm.sh");
+const FREE_HELPER: (&str, &str) = file!("lib/shimmer-free.sh", "lib/shimmer-free.sh");
 const MONOREPO_HELPER: (&str, &str) = file!("lib/shimmer-monorepo.sh", "lib/shimmer-monorepo.sh");
 const SCRATCH_HELPER: (&str, &str) = file!("lib/shimmer-scratch.sh", "lib/shimmer-scratch.sh");
 const UPDATE_HELPER: (&str, &str) = file!("lib/shimmer-update.sh", "lib/shimmer-update.sh");
 
 /// `(id, files)`, sorted by id.
 const BUILTINS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "free-disk",
+        &[
+            file!("template.toml", "free-disk/template.toml"),
+            file!("workspace.toml", "free-disk/workspace.toml"),
+            file!("steps/01-check.sh", "free-disk/steps/01-check.sh"),
+            file!("steps/02-projects.sh", "free-disk/steps/02-projects.sh"),
+            file!("steps/03-caches.sh", "free-disk/steps/03-caches.sh"),
+            file!("steps/04-system.sh", "free-disk/steps/04-system.sh"),
+            file!("steps/05-summary.sh", "free-disk/steps/05-summary.sh"),
+            file!("cleanup.sh", "free-disk/cleanup.sh"),
+            HELPER,
+            FREE_HELPER,
+        ],
+    ),
     (
         "monorepo",
         &[
