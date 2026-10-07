@@ -3,9 +3,12 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::time::Duration;
 
 use serde_json::Value;
 use shimmer_core::{Error, LocalTimezone, Result};
+
+use crate::http_backend::{HostLimits, HttpConfig};
 
 #[derive(Debug, Default)]
 pub struct Config {
@@ -15,6 +18,8 @@ pub struct Config {
     pub modules: HashMap<String, Value>,
     /// `[general] local_timezone = "America/New_York"` (ADR 0009). Defaults to UTC.
     pub local_timezone: LocalTimezone,
+    /// `[http]` (ADR 0027): the real gateway's rate limits, cache and timeout.
+    pub http: HttpConfig,
 }
 
 impl Config {
@@ -82,8 +87,83 @@ impl Config {
                 Error::invalid_params(format!("config.toml: general.local_timezone: unknown IANA timezone '{name}'"))
             })?;
         }
+        if let Some(http) = root.get("http") {
+            cfg.http = parse_http(http)?;
+        }
         Ok(cfg)
     }
+}
+
+fn number(v: &toml::Value) -> Option<f64> {
+    v.as_float().or_else(|| v.as_integer().map(|n| n as f64))
+}
+
+/// `[http]` (ADR 0027). Every key is optional and falls back to `HttpConfig::default()`'s
+/// value; `[http.host.<name>]` entries need both fields together, so a host override is
+/// never half-specified.
+fn parse_http(http: &toml::Value) -> Result<HttpConfig> {
+    let table = http.as_table().ok_or_else(|| Error::invalid_params("config.toml: [http] must be a table"))?;
+    let mut cfg = HttpConfig::default();
+    let positive = |key: &str, v: &toml::Value| {
+        number(v)
+            .filter(|n| *n > 0.0)
+            .ok_or_else(|| Error::invalid_params(format!("config.toml: http.{key} must be a positive number")))
+    };
+    let non_negative_secs = |key: &str, v: &toml::Value| {
+        v.as_integer()
+            .filter(|n| *n >= 0)
+            .map(|n| Duration::from_secs(n as u64))
+            .ok_or_else(|| Error::invalid_params(format!("config.toml: http.{key} must be an integer >= 0")))
+    };
+    if let Some(v) = table.get("default_requests_per_sec") {
+        cfg.default_requests_per_sec = positive("default_requests_per_sec", v)?;
+    }
+    if let Some(v) = table.get("default_concurrent") {
+        cfg.default_concurrent = v
+            .as_integer()
+            .filter(|n| *n >= 1)
+            .ok_or_else(|| Error::invalid_params("config.toml: http.default_concurrent must be an integer >= 1"))?
+            as usize;
+    }
+    if let Some(v) = table.get("timeout_s") {
+        cfg.timeout = non_negative_secs("timeout_s", v)?;
+    }
+    if let Some(v) = table.get("max_cooldown_wait_s") {
+        cfg.max_cooldown_wait = non_negative_secs("max_cooldown_wait_s", v)?;
+    }
+    if let Some(v) = table.get("cache_default_ttl_s") {
+        cfg.cache_default_ttl = non_negative_secs("cache_default_ttl_s", v)?;
+    }
+    if let Some(v) = table.get("cache_max_bytes") {
+        cfg.cache_max_bytes = v
+            .as_integer()
+            .filter(|n| *n >= 0)
+            .ok_or_else(|| Error::invalid_params("config.toml: http.cache_max_bytes must be an integer >= 0"))?
+            as u64;
+    }
+    if let Some(v) = table.get("max_response_bytes") {
+        cfg.max_response_bytes = v
+            .as_integer()
+            .filter(|n| *n >= 0)
+            .ok_or_else(|| Error::invalid_params("config.toml: http.max_response_bytes must be an integer >= 0"))?
+            as u64;
+    }
+    if let Some(hosts) = table.get("host").and_then(|h| h.as_table()) {
+        for (host, overrides) in hosts {
+            let o = overrides
+                .as_table()
+                .ok_or_else(|| Error::invalid_params(format!("config.toml: http.host.{host} must be a table")))?;
+            let requests_per_sec = o
+                .get("requests_per_sec")
+                .ok_or_else(|| Error::invalid_params(format!("config.toml: http.host.{host} needs requests_per_sec")))
+                .and_then(|v| positive(&format!("host.{host}.requests_per_sec"), v))?;
+            let concurrent = o.get("concurrent").and_then(|v| v.as_integer()).filter(|n| *n >= 1).ok_or_else(|| {
+                Error::invalid_params(format!("config.toml: http.host.{host}.concurrent must be an integer >= 1"))
+            })? as usize;
+            cfg.per_host.insert(host.clone(), HostLimits { requests_per_sec, concurrent });
+        }
+    }
+    Ok(cfg)
 }
 
 /// `TZ`, else the `/etc/localtime` symlink target (Linux/macOS), else `None` (caller decides
@@ -138,16 +218,18 @@ fn persist_detected_timezone(path: &Path, existing: &str, name: &str) -> Result<
 }
 
 /// Byte offset right after the `[general]` table header line, or `None` if the file has no
-/// such table. Matches a line whose content — ignoring surrounding whitespace and a trailing
-/// `# comment` — is exactly `[general]`, not merely a line that mentions the text
-/// `"[general]"` somewhere (e.g. inside a `#`-comment or a string value), which a plain
-/// substring search would wrongly match.
+/// such table. Matches a line whose content — ignoring surrounding whitespace, a trailing
+/// `# comment`, and whitespace just inside the brackets (`[ general ]` is the same table as
+/// `[general]` in TOML, #98) — is exactly a `[general]` header, not merely a line that
+/// mentions the text `"[general]"` somewhere (e.g. inside a `#`-comment or a string value),
+/// which a plain substring search would wrongly match.
 fn general_table_header_end(existing: &str) -> Option<usize> {
     let mut offset = 0;
     for line in existing.split_inclusive('\n') {
         offset += line.len();
-        let without_comment = line.split('#').next().unwrap_or("");
-        if without_comment.trim() == "[general]" {
+        let without_comment = line.split('#').next().unwrap_or("").trim();
+        let inner = without_comment.strip_prefix('[').and_then(|s| s.strip_suffix(']'));
+        if inner.map(str::trim) == Some("general") {
             return Some(offset);
         }
     }
@@ -179,6 +261,44 @@ mod tests {
     #[test]
     fn defaults_local_timezone_to_utc() {
         assert_eq!(Config::parse("").unwrap().local_timezone, LocalTimezone::UTC);
+    }
+
+    #[test]
+    fn parses_the_http_section_including_a_per_host_override() {
+        let text = "[http]\ndefault_requests_per_sec = 5\ndefault_concurrent = 3\ntimeout_s = 10\n\
+                     max_cooldown_wait_s = 15\ncache_default_ttl_s = 120\ncache_max_bytes = 1000\n\
+                     max_response_bytes = 2000\n\n[http.host.\"jobs.example.com\"]\nrequests_per_sec = 1\nconcurrent = 1\n";
+        let cfg = Config::parse(text).unwrap();
+        assert_eq!(cfg.http.default_requests_per_sec, 5.0);
+        assert_eq!(cfg.http.default_concurrent, 3);
+        assert_eq!(cfg.http.timeout, std::time::Duration::from_secs(10));
+        assert_eq!(cfg.http.max_cooldown_wait, std::time::Duration::from_secs(15));
+        assert_eq!(cfg.http.cache_default_ttl, std::time::Duration::from_secs(120));
+        assert_eq!(cfg.http.cache_max_bytes, 1000);
+        assert_eq!(cfg.http.max_response_bytes, 2000);
+        let host = cfg.http.per_host.get("jobs.example.com").unwrap();
+        assert_eq!((host.requests_per_sec, host.concurrent), (1.0, 1));
+    }
+
+    #[test]
+    fn missing_http_section_keeps_every_default() {
+        let cfg = Config::parse("").unwrap();
+        let defaults = HttpConfig::default();
+        assert_eq!(cfg.http.default_requests_per_sec, defaults.default_requests_per_sec);
+        assert_eq!(cfg.http.default_concurrent, defaults.default_concurrent);
+        assert!(cfg.http.per_host.is_empty());
+    }
+
+    #[test]
+    fn a_host_override_needs_both_fields_together() {
+        let text = "[http.host.\"jobs.example.com\"]\nrequests_per_sec = 1\n";
+        let e = Config::parse(text).unwrap_err();
+        assert!(e.message.contains("concurrent"), "{}", e.message);
+    }
+
+    #[test]
+    fn rejects_a_non_positive_rate() {
+        assert!(Config::parse("[http]\ndefault_requests_per_sec = 0\n").is_err());
     }
 
     #[test]
@@ -249,6 +369,22 @@ mod tests {
         persist_detected_timezone(&path, text, "America/New_York").unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(!written.contains("[general]local_timezone"), "must not glue onto the header line");
+        let cfg = Config::parse(&written).unwrap();
+        assert_eq!(cfg.lanes["fetchers"], 2, "existing content must survive");
+        assert_eq!(cfg.local_timezone.name(), "America/New_York");
+    }
+
+    #[test]
+    fn persist_inserts_into_a_general_header_with_spaces_inside_the_brackets() {
+        // `[ general ]` is the same TOML table as `[general]`. Before #98's fix, this was
+        // not recognized, so a second `[general]` table got appended -- and TOML rejects a
+        // table declared twice, so the daemon refused to start on the next run.
+        let text = "[lanes]\nfetchers = 2\n[ general ]\nsome_other_key = 1\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        persist_detected_timezone(&path, text, "America/New_York").unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(written.matches("general").count(), 1, "must not declare [general] a second time");
         let cfg = Config::parse(&written).unwrap();
         assert_eq!(cfg.lanes["fetchers"], 2, "existing content must survive");
         assert_eq!(cfg.local_timezone.name(), "America/New_York");
