@@ -14,6 +14,10 @@ rm -f "$SHIMMER_STATE_DIR/dev-server.pid"
 
 if [ -n "$SERVICES_STOP_COMMAND" ]; then
     shimmer_run_in_project "$PROJECT_DIR" "$SERVICES_STOP_COMMAND" || shimmer_fail "couldn't stop the services ($SERVICES_STOP_COMMAND)"
+    echo "stopped the services ($SERVICES_STOP_COMMAND)"
+elif [ -f "$SHIMMER_STATE_DIR/services.started" ]; then
+    echo "left running, stop them yourself: the services ($SERVICES_COMMAND), since SERVICES_STOP_COMMAND is empty"
 fi
+rm -f "$SHIMMER_STATE_DIR/services.started"
 
 shimmer_close_windows

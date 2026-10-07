@@ -4,9 +4,9 @@
 . "$SHIMMER_WORKSPACE_DIR/lib/shimmer-update.sh"
 
 mkdir -p "$SHIMMER_STATE_DIR"
-rm -f "$SHIMMER_RESULTS" "$SHIMMER_STATE_DIR/system.exit" "$SHIMMER_STATE_DIR/system.pid" "$SHIMMER_STATE_DIR/closable"
+rm -f "$SHIMMER_RESULTS" "$SHIMMER_STATE_DIR/system.exit" "$SHIMMER_STATE_DIR/system.pid"
 
-case "${SYSTEM_UPDATES:-terminal}" in
+case "${SYSTEM_UPDATES:-skip}" in
     skip) echo "system: skipped (SYSTEM_UPDATES = skip)" ;;
     terminal | passwordless)
         tool=$(shimmer_update_system_tool)
@@ -24,6 +24,11 @@ case "${SYSTEM_UPDATES:-terminal}" in
     *) shimmer_fail "SYSTEM_UPDATES must be terminal, passwordless or skip, not '$SYSTEM_UPDATES'" ;;
 esac
 
+case "${MODE:-preview}" in
+    preview) echo "preview: nothing will run; the summary lists what update would run" ;;
+    update) ;;
+    *) shimmer_fail "MODE must be preview or update, not '$MODE'" ;;
+esac
 if shimmer_update_use_topgrade; then
     shimmer_has topgrade || shimmer_fail "USE_TOPGRADE is yes, but topgrade isn't installed"
     echo "tools: topgrade"

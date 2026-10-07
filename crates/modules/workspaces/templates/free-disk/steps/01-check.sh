@@ -5,7 +5,7 @@
 
 mkdir -p "$SHIMMER_STATE_DIR"
 rm -f "$SHIMMER_RESULTS"
-case "${MODE:-clean}" in clean | preview) ;; *) shimmer_fail "MODE must be clean or preview, not '$MODE'" ;; esac
+case "${MODE:-preview}" in clean | preview) ;; *) shimmer_fail "MODE must be clean or preview, not '$MODE'" ;; esac
 case "${UNTOUCHED_DAYS:-30}" in
     *[!0-9]* | 0*) shimmer_fail "UNTOUCHED_DAYS must be a number of days from 1 up, not '$UNTOUCHED_DAYS'" ;;
 esac

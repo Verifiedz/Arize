@@ -6,6 +6,7 @@ needs = [
     "Nothing beyond what you want updated: it runs only the updaters that are installed (or topgrade, if you have it)",
 ]
 good_to_know = [
+    "MODE = preview first shows exactly which commands it would run, and runs none of them",
     "It really updates things: rustup, cargo-installed tools, brew, npm/pnpm globals, pipx, uv, flatpak, gh extensions and more",
     "System packages need sudo. SYSTEM_UPDATES = terminal opens a window where you type your password (Shimmer never sees it); passwordless needs a sudo rule of yours; skip leaves them",
     "One updater failing never stops the others; the summary says what updated, was skipped and failed",
@@ -14,11 +15,19 @@ good_to_know = [
 on_stop = "Nothing to undo: updates stay installed. Closes the system update's terminal if it's still open."
 
 [[question]]
+name = "MODE"
+prompt = "Update, or only show what it would run"
+kind = "choice"
+choices = ["preview", "update"]
+required = true
+help = "preview: runs nothing; the summary lists every command update would run. Start with preview, then switch to update with shimmer workspaces edit."
+
+[[question]]
 name = "SYSTEM_UPDATES"
 prompt = "Your system's packages (pacman, apt, dnf, macOS updates)"
 kind = "choice"
-choices = ["terminal", "passwordless", "skip"]
-default = "terminal"
+choices = ["skip", "terminal", "passwordless"]
+required = true
 help = "They need sudo. terminal: a window opens and you type your password there (Shimmer never sees it). passwordless: for a sudo rule that needs no password, and for running it on a schedule. skip: tools only."
 
 [[question]]

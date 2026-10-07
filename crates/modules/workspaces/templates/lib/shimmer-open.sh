@@ -307,6 +307,10 @@ shimmer_open_terminal() {
     [ "$term" = "auto" ] && term=$(shimmer_terminal_auto)
     [ -n "$term" ] || shimmer_fail "no terminal found (set TERMINAL_APP in workspace.toml)"
     [ "$term" = "none" ] && return 0
+    if [ "${SHIMMER_REUSE_WINDOW:-yes}" = "yes" ] && shimmer_window_open; then
+        echo "already open from the last activate: the $term terminal"
+        return 0
+    fi
     shell=${SHELL:-sh}
     # What runs inside the terminal: the command, then an interactive shell.
     if [ -n "$command" ]; then
@@ -354,9 +358,21 @@ shimmer_open_terminal() {
 
 # A window this step started as its own program: its process group (this step's own, since every
 # detached step is a group of its own, ADR 0010 §3) and what to call it.
+#   Each line: the process group, the step that opened it, what to call it.
 shimmer_record_closable() {
     mkdir -p "$SHIMMER_STATE_DIR"
-    echo "$$ $1" >>"$SHIMMER_STATE_DIR/closable"
+    echo "$$ $(basename "$0") $1" >>"$SHIMMER_STATE_DIR/closable"
+}
+
+# Is the window this step opened on an earlier activate still open? Activating an active
+# workspace again then opens nothing new, as with its dev server, instead of piling up windows.
+shimmer_window_open() {
+    file="$SHIMMER_STATE_DIR/closable"
+    [ -f "$file" ] || return 1
+    for pgid in $(awk -v step="$(basename "$0")" '$2 == step { print $1 }' "$file"); do
+        kill -s 0 -- "-$pgid" 2>/dev/null && return 0
+    done
+    return 1
 }
 
 # Something this workspace opened that stop can't close, and why.
@@ -371,7 +387,7 @@ shimmer_close_windows() {
     closable="$SHIMMER_STATE_DIR/closable"
     left="$SHIMMER_STATE_DIR/left-open"
     if [ -f "$closable" ]; then
-        while read -r pgid label; do
+        while read -r pgid _ label; do
             [ -n "$pgid" ] || continue
             if ! kill -s 0 -- "-$pgid" 2>/dev/null; then
                 echo "already closed: $label"
@@ -437,11 +453,9 @@ shimmer_open_urls_window() {
     pgid_file="$SHIMMER_STATE_DIR/browser.pgid"
     [ -f "$pgid_file" ] && kill -s 0 -- "-$(cat "$pgid_file")" 2>/dev/null && running=yes
     if [ -n "$running" ]; then
-        # The workspace's window is still up: the browser hands these tabs to it.
-        case "$(basename "$bin")" in
-            firefox*) "$bin" --profile "$profile" "$@" >/dev/null 2>&1 ;;
-            *) "$bin" --user-data-dir="$profile" "$@" >/dev/null 2>&1 ;;
-        esac
+        # Still open from the last activate, with its tabs: opening them again would only
+        # duplicate them.
+        echo "already open from the last activate: the $(basename "$bin") window with this workspace's tabs"
         return 0
     fi
     case "$(basename "$bin")" in
@@ -621,7 +635,8 @@ shimmer_terminal_and_wait() {
     # The window records its process id when it starts and the exit code when it ends.
     inner="echo \$\$ > $(shimmer_quote "$pid_file"); echo $(shimmer_quote "\$ $cmd"); $cmd; code=\$?; echo \$code > $(shimmer_quote "$exit_file")"
     inner="$inner; echo; echo 'Done: this window closes in 10 seconds.'; sleep 10; exit"
-    shimmer_open_terminal "${TERMINAL_APP:-auto}" "$HOME" "$inner"
+    # Always a new window: this one exists to run the command now.
+    SHIMMER_REUSE_WINDOW=no shimmer_open_terminal "${TERMINAL_APP:-auto}" "$HOME" "$inner"
     echo "opened a terminal for: $cmd"
     waited=0
     while [ ! -f "$exit_file" ]; do

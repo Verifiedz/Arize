@@ -20,9 +20,11 @@ fn file(env: &TestEnv, path: &str) -> Option<String> {
 fn answers(template: &str) -> Value {
     match template {
         "web-project" => json!({"PROJECT_DIR": "/home/me/code/site"}),
-        "vm" => json!({"VM_SOFTWARE": "virtualbox", "VM_NAME": "Debian"}),
+        "vm" => json!({"VM_SOFTWARE": "virtualbox", "VM_NAME": "Debian", "ON_STOP": "suspend"}),
         "monorepo" => json!({"PROJECT_DIR": "/home/me/code/acme", "APPS": "web api"}),
-        "offline-prep" => json!({"PROJECTS": "~/code/site ~/code/api"}),
+        "offline-prep" => json!({"PROJECTS": "~/code/site ~/code/api", "UPDATE_REPOS": "fetch-only"}),
+        "free-disk" => json!({"MODE": "preview"}),
+        "update-everything" => json!({"MODE": "preview", "SYSTEM_UPDATES": "skip"}),
         _ => json!({}),
     }
 }
@@ -184,7 +186,7 @@ async fn the_vm_template_never_takes_a_password_only_a_keychain_entry_name() {
     // asks for the NAME of a keychain entry, and its scripts read the secret at run time.
     let env = TestEnv::new("workspaces");
     let w = Workspaces::default();
-    let values = json!({"VM_SOFTWARE": "utm", "VM_NAME": "Debian", "VM_HOST": "auto", "SSH_USER": "me",
+    let values = json!({"VM_SOFTWARE": "utm", "VM_NAME": "Debian", "ON_STOP": "suspend", "VM_HOST": "auto", "SSH_USER": "me",
                         "SSH_PASSWORD_ITEM": "shimmer-vm-debian", "REMOTE_EDITOR": "cursor"});
     w.handle("workspaces.create", json!({"id": "dev-vm", "template": "vm", "values": values}), &env.ctx).await.unwrap();
     let text = file(&env, "dev-vm/workspace.toml").unwrap();

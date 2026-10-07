@@ -21,11 +21,21 @@ shimmer_update_result() {
     echo "$*" >>"$SHIMMER_RESULTS"
 }
 
+# MODE = preview: nothing runs; the summary lists what update would run.
+shimmer_update_preview() {
+    [ "${MODE:-preview}" != "update" ]
+}
+
 # Run one updater, record how it went, and carry on: one failure never stops the others.
-# Input is /dev/null, so nothing can sit waiting for an answer nobody will type.
+# Input is /dev/null, so nothing can sit waiting for an answer nobody will type. In preview, only
+# record what would run.
 shimmer_update_run() {
     name=$1
     cmd=$2
+    if shimmer_update_preview; then
+        shimmer_update_result "would $name: $cmd"
+        return 0
+    fi
     echo
     echo "== $name: $cmd"
     sh -c "$cmd" </dev/null
@@ -74,7 +84,7 @@ shimmer_update_needs_sudo() {
     case "$1" in
         npm)
             prefix=$(npm prefix -g 2>/dev/null)
-            [ -n "$prefix" ] && [ ! -w "$prefix/lib" ] && echo "its global folder $prefix belongs to root"
+            [ -n "$prefix" ] && [ -d "$prefix/lib" ] && [ ! -w "$prefix/lib" ] && echo "its global folder $prefix belongs to root"
             ;;
     esac
     return 0

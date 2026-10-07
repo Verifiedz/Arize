@@ -380,7 +380,11 @@ pub async fn run(client: &mut Client, cmd: &WorkspacesCmd, json: bool, prompt: &
         WorkspacesCmd::Reset { id, yes } => {
             if !*yes {
                 let current = client.call("workspaces.status", id_params(id)).await?;
-                let question = "Reset it to ready without running its cleanup script?";
+                // Say what's at stake: whatever the failed launch started keeps running, and nothing
+                // will stop it later.
+                let question = "Reset it to ready without running its cleanup script? Anything its \
+                                launch already started (a dev server, a VM, windows) keeps running, \
+                                and stop won't know about it";
                 if !confirm(prompt, false, "reset", question, id, &current)? {
                     return Ok(format!("{id} was not reset"));
                 }
@@ -1000,7 +1004,7 @@ pub fn ways_out(id: &str, has_cleanup_script: bool) -> String {
     let _ = write!(
         out,
         "\n    shimmer workspaces force-relaunch {id}   launch it anyway\n    \
-         shimmer workspaces reset {id}            mark it ready without cleanup"
+         shimmer workspaces reset {id}            mark it ready without cleanup (what it started keeps running)"
     );
     out
 }
@@ -1204,7 +1208,7 @@ mod tests {
   fix it with one of:
     shimmer workspaces cleanup deep-work          run its cleanup script
     shimmer workspaces force-relaunch deep-work   launch it anyway
-    shimmer workspaces reset deep-work            mark it ready without cleanup"
+    shimmer workspaces reset deep-work            mark it ready without cleanup (what it started keeps running)"
         );
     }
 

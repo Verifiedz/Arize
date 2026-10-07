@@ -22,7 +22,7 @@ shimmer_free_skipped() {
 }
 
 shimmer_free_preview() {
-    [ "${MODE:-clean}" = "preview" ]
+    [ "${MODE:-preview}" != "clean" ]
 }
 
 # Kilobytes in a folder (0 when it's missing).

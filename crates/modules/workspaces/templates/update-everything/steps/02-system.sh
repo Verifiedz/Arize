@@ -4,11 +4,15 @@
 . "$SHIMMER_WORKSPACE_DIR/lib/shimmer-open.sh"
 . "$SHIMMER_WORKSPACE_DIR/lib/shimmer-update.sh"
 
-mode=${SYSTEM_UPDATES:-terminal}
+mode=${SYSTEM_UPDATES:-skip}
 [ "$mode" = "skip" ] && exit 0
 tool=$(shimmer_update_system_tool)
 [ -n "$tool" ] || exit 0
 cmd=$(shimmer_update_system_command "$tool" "$mode")
+if shimmer_update_preview; then
+    shimmer_update_result "would system ($tool, with sudo): $cmd"
+    exit 0
+fi
 
 if [ "$mode" = "passwordless" ]; then
     echo "== system ($tool): $cmd"

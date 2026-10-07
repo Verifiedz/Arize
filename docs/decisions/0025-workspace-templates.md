@@ -382,12 +382,12 @@ can be left out with `SKIP`:
 | Part | Does |
 |---|---|
 | `machine` | Battery (warns under 80% unplugged), disk space (under 5 GB), logins that have expired while there's still network to refresh them (`gh`, `aws`, `gcloud`, `az`). |
-| `repos` | Clone, fetch, fast-forward only when clean (never a merge), submodules, Git LFS; warns on uncommitted or unpushed work. |
-| `deps` | Each project's own tools, from the files at its top: cargo, npm/pnpm/yarn/bun (by lockfile), uv/poetry/pip (pip also downloads a wheelhouse to `OFFLINE_DIR/wheels`), go, maven/gradle (the project's wrapper first), bundler, composer, dotnet, mix, dart/flutter pub, swift, cabal/stack, zig, deno. Rust projects also get `rust-src` and `rust-analyzer`. A missing tool is a warning, not a failure. |
+| `repos` | Clone, fetch; with `UPDATE_REPOS = pull` (a required answer, or `fetch-only`) also fast-forward the current branch when clean (never a merge); submodules, Git LFS; warns on uncommitted or unpushed work. |
+| `deps` | Each project's own tools, from the files at its top: cargo, npm/pnpm/yarn/bun (by lockfile), uv/poetry/pip (pip also downloads a wheelhouse to `OFFLINE_DIR/wheels`), go, maven/gradle (the project's wrapper first), bundler, composer, dotnet, mix, dart/flutter pub, swift, cabal/stack, zig, deno. For Rust projects it says when `rust-src` or `rust-analyzer` (editor support offline) is missing, and never adds it: toolchains are the person's. A missing tool is a warning, not a failure. |
 | `docker` | Each compose file's images (`pull --ignore-buildable`, then `build`) and each Dockerfile's `FROM` images (not its own stages). Not with `DATA_SAVER`. |
 | `build` | With `WARM_BUILD = yes`: compiles once, offline, with tests (compiled languages only; a web build often reaches the network). |
 | `verify` | **Does it really work offline?** Each tool in its own offline mode (`cargo fetch --offline`, `uv sync --offline`, `GOPROXY=off go list`, `pip --dry-run --no-index`, `mvn -o`, `gradle --offline`, `bundle --local`, `pub get --offline`, `deno --cached-only`), or what's on disk (every `package.json` dependency in `node_modules`: `npm ls` fails on harmless peer warnings), and compose images present. A failure says why, in the tool's own last line. Also lists hosts in `.env` files that aren't this machine: those services need the network whatever is downloaded. |
-| `docs` | `cargo doc` per Rust project (docs of the exact versions used), `rust-docs`, `tldr --update`. |
+| `docs` | `cargo doc` per Rust project (docs of the exact versions used), `rustup doc` when `rust-docs` is installed (else how to add it), `tldr --update`. |
 | `pages` | `SAVE_PAGES` as single files: `monolith`, else `wget` with page requisites, else `curl`. |
 | `github` | With `GITHUB_SNAPSHOT` (`projects`: their GitHub remotes; `everything`): issues assigned to you, your open PRs and PRs waiting for your review, each `gh … view --comments` as Markdown and PRs' diffs. |
 | `ai` | `ollama pull AI_MODEL`, starting `ollama serve` for the download if needed. Not with `DATA_SAVER`. |
@@ -457,11 +457,11 @@ all:
   run would make the workspace `dirty` and block the next scheduled run over one bad updater.
 
 **System packages need sudo, and a password is never an answer** (the rule below).
-`SYSTEM_UPDATES`:
+`SYSTEM_UPDATES` (required: no default):
 
 | Answer | What happens |
 |---|---|
-| `terminal` (default) | A terminal opens running the update (`paru`/`yay`, `pacman`, `apt-get`, `dnf`, `zypper`, `apk`, or `softwareupdate` on macOS, plus `snap` and system `flatpak` when present); you type your password into `sudo` there. The `system` step waits for the window's exit code (written to the temp folder), notices a window closed early, and fails only if no window opens within 30 s. |
+| `terminal` | A terminal opens running the update (`paru`/`yay`, `pacman`, `apt-get`, `dnf`, `zypper`, `apk`, or `softwareupdate` on macOS, plus `snap` and system `flatpak` when present); you type your password into `sudo` there. The `system` step waits for the window's exit code (written to the temp folder), notices a window closed early, and fails only if no window opens within 30 s. |
 | `passwordless` | `sudo -n` and the tool's own "yes" flag, for a sudo rule of yours that needs no password, e.g. for a scheduled run. A "password is required" refusal is reported as such, with how to fix it. |
 | `skip` | Tools only. |
 
@@ -490,7 +490,7 @@ terminal inside it. Shimmer runs on the computer that hosts the VM.
 | `SSH_PASSWORD_ITEM` | text: the **name** of a keychain entry | empty |
 | `REMOTE_EDITOR`, `REMOTE_FOLDER` | choice `none`, `cursor`, `vscode`; text | `none`, empty |
 | `TERMINAL_APP` | choice, as `web-project`'s, plus `none` | `none` |
-| `ON_STOP` | choice `suspend`, `shutdown`, `leave-running` | `suspend` |
+| `ON_STOP` | choice `suspend`, `shutdown`, `leave-running`; only ever applied to a VM this workspace started | required |
 
 | # | Step | Mode | Does |
 |---|---|---|---|
@@ -521,6 +521,48 @@ template's header comment and its `wait` step steer people to:
 
 The rule generalises to every template: a question may ask for the **name** of a keychain entry,
 never for the secret itself.
+
+### 6a. Safe to run, from activate to remove
+
+Every template follows these rules, and `crates/app/tests/templates_e2e.rs` checks them for
+every built-in against the real daemon (below).
+
+1. **The person decides anything with consequences.** A question whose answer deletes, updates,
+   changes their code or shuts something down is `required`, with no default: `free-disk`
+   `MODE` (`preview` / `clean`), `update-everything` `MODE` (`preview` / `update`) and
+   `SYSTEM_UPDATES`, `vm` `ON_STOP`, `offline-prep` `UPDATE_REPOS` (`fetch-only` / `pull`).
+   Without a terminal a missing one is an error naming the `--set` to add (§8). Safe,
+   reversible choices keep a default (pull fast-forward-only on open, close windows on stop).
+   A script reading an empty answer (an older workspace) takes the safe side: preview, skip,
+   fetch-only, leave the VM running.
+2. **Preview before doing.** The two templates that change the machine have `MODE = preview`,
+   which runs nothing and lists exactly what the other mode would do.
+3. **`peek` before making one** (§1): what it changes, needs, its steps and what stop does.
+4. **Activating again starts nothing twice.** A dev server, services (`services.started`), a
+   custom VM (`vm.started`), a background step, a terminal or a browser window that the last
+   activate opened and is still running is reused, never duplicated, so nothing is left behind
+   that stop doesn't know about. (Each closable window is recorded with the step that opened it,
+   `pgid step label`; `shimmer_window_open` asks whether it's still up.)
+5. **Stop stops only what the workspace started.** Its dev servers, services, windows it could
+   close, and a VM only if this workspace started it; then it says what it left open and why
+   (the editor, shared terminals, services with no stop command). It never touches the
+   person's own windows or a VM they started themselves.
+6. **No orphans.** After `stop`, after `cleanup` of a failed launch, and after `remove`, no
+   process the workspace started is still running (a supervised step's leftovers are its own
+   process group; detached ones are recorded and stopped). `remove` is refused while a
+   workspace is active or dirty; `reset` (dirty to ready without cleanup) asks first and says
+   that whatever the launch started keeps running.
+7. **Secrets are never answers** (above), and nothing a template writes holds one.
+
+**End-to-end tests.** `templates_e2e.rs` runs every built-in through the real binary and daemon
+in a sandbox: create (after `peek`), activate, activate again, stop, a deliberate failure and its
+cleanup, remove, plus each template's own behaviour (the dev server answers; free-disk keeps a
+`target/` Cargo didn't make; preview runs nothing; back online pushes only when asked…). The
+daemon gets a fake `HOME`, its own `TMPDIR`, and a `PATH` that is an allowlist of basic system
+tools plus stand-ins for every program a template drives (editors, terminals and browsers that
+stay open until closed, sudo, gh, npm, ollama, updaters), so a test can never update, delete,
+prune or open anything real. Orphans are found through `/proc`: any live process with the
+workspace's `SHIMMER_WORKSPACE_ID` and the sandbox's `SHIMMER_HOME` fails the test. Linux only.
 
 ### 7. Two ops
 

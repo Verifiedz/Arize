@@ -7,8 +7,8 @@ needs = [
 ]
 good_to_know = [
     "Downloads a lot on the first run: run it on good Wi-Fi, plugged in. DATA_SAVER skips docker images and the AI model",
-    "Changes your repos only safely: pulls are fast-forward only and only when there are no uncommitted changes; never merges, never pushes on its own",
-    "Installs dependencies into your projects (node_modules, .venv…) and may add rust-src and rust-analyzer with rustup",
+    "Your repos: UPDATE_REPOS decides whether it only fetches or also fast-forwards your current branch (only when clean, never a merge); it never pushes unless PUSH_ON_RETURN = yes",
+    "Installs dependencies into your projects (node_modules, .venv…); it never changes your toolchains, only says what to add (e.g. rust-src for editor support offline)",
     "Each project gets a 'works offline' or 'NOT ready offline (why)' verdict from its tools' own offline modes",
     "Saves pages, your GitHub snapshot and Python packages in OFFLINE_DIR, with an index.html start page",
 ]
@@ -20,6 +20,14 @@ prompt = "Project folders to get ready"
 kind = "text"
 required = true
 help = "Separated by spaces, e.g. ~/code/my-site ~/Developer/Shimmer (~ means your home folder). A path with spaces: put one per line in workspace.toml."
+
+[[question]]
+name = "UPDATE_REPOS"
+prompt = "Your repos' current branches: pull, or only fetch"
+kind = "choice"
+choices = ["fetch-only", "pull"]
+required = true
+help = "Both download every branch's commits, so they're there offline. pull also fast-forwards the branch you're on, only when you have no uncommitted changes, never a merge. fetch-only leaves your working files exactly as they are."
 
 [[question]]
 name = "CLONE_REPOS"

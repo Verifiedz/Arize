@@ -70,6 +70,7 @@ shimmer_vm_start() {
             "$cli" start "$VM_NAME" || return 1
             if ! $headless && shimmer_has virt-viewer; then
                 virt-viewer --attach "$VM_NAME" >/dev/null 2>&1 &
+                shimmer_record_closable "the virt-viewer window"
             fi
             ;;
         multipass) "$cli" start "$VM_NAME" ;;

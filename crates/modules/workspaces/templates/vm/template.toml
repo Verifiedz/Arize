@@ -12,7 +12,7 @@ good_to_know = [
     "Starts the VM only if it isn't running, then waits (up to 5 minutes) until it answers on its SSH port",
     "Run Shimmer on the computer that hosts the VM",
 ]
-on_stop = "Suspends the VM by default (ON_STOP: suspend, shutdown or leave-running) and closes the SSH terminal where it can. Your editor stays open."
+on_stop = "Suspends it, shuts it down or leaves it running, as you chose (ON_STOP), but only if this workspace started it: a VM you started yourself is left running. Closes the SSH terminal (and virt-viewer) where it can. Your editor stays open."
 
 [[question]]
 name = "VM_SOFTWARE"
@@ -107,7 +107,8 @@ name = "ON_STOP"
 prompt = "What workspaces stop does to the VM"
 kind = "choice"
 choices = ["suspend", "shutdown", "leave-running"]
-default = "suspend"
+required = true
+help = "Only a VM this workspace started; one you started yourself is always left running. suspend: saved as it is, quick to resume. shutdown: a clean power-off (unsaved work inside the VM is lost). leave-running: stop never touches the VM."
 
 [[question]]
 name = "CLOSE_ON_STOP"

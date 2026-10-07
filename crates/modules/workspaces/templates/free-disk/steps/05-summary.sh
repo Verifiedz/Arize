@@ -25,6 +25,7 @@ total=$(printf '%s\n' "$lines" | awk '{ s += $2 } END { print s + 0 }')
 before=$(cat "$SHIMMER_STATE_DIR/avail-before" 2>/dev/null)
 if [ "$verb" = would ]; then
     echo "in all, would free $(shimmer_free_human "$total") (MODE = preview: nothing was removed)"
+    echo "to remove them: set MODE = \"clean\" (shimmer workspaces edit $SHIMMER_WORKSPACE_ID), then activate again"
 else
     echo "in all, freed $(shimmer_free_human "$total"); free space now $(shimmer_free_human "$(shimmer_free_avail "$HOME")") (was $(shimmer_free_human "$before"))"
 fi

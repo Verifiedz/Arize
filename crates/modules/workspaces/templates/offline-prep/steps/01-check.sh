@@ -8,7 +8,7 @@ for name in $SKIP; do
         *) shimmer_fail "SKIP: there's no part called '$name' (there are: $SHIMMER_OFFLINE_PARTS)" ;;
     esac
 done
-for pair in "WARM_BUILD:no yes" "DATA_SAVER:no yes" "PULL_ON_RETURN:no yes" "PUSH_ON_RETURN:no yes" \
+for pair in "UPDATE_REPOS:fetch-only pull" "WARM_BUILD:no yes" "DATA_SAVER:no yes" "PULL_ON_RETURN:no yes" "PUSH_ON_RETURN:no yes" \
     "GITHUB_SNAPSHOT:projects everything no"; do
     name=${pair%%:*}
     eval "value=\${$name}"

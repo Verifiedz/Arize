@@ -8,7 +8,7 @@ needs = [
 good_to_know = [
     "It DELETES things, but only things that come back by themselves: Rust target/ and node_modules/ folders of projects you haven't touched in UNTOUCHED_DAYS (a rebuild or reinstall makes them again), and tool download caches",
     "Never your files, git repos, virtualenvs, the trash or docker volumes; a target/ goes only when Cargo's own marker is inside it",
-    "Try MODE = preview first: it shows what it would free and removes nothing",
+    "You choose MODE when you make it: preview shows what it would free and removes nothing; clean removes",
     "System caches (SYSTEM_CLEAN) need sudo and are off by default",
 ]
 on_stop = "Nothing to undo: what it removed comes back when a tool needs it."
@@ -17,9 +17,9 @@ on_stop = "Nothing to undo: what it removed comes back when a tool needs it."
 name = "MODE"
 prompt = "Clean, or only show what it would free"
 kind = "choice"
-choices = ["clean", "preview"]
-default = "clean"
-help = "preview: nothing is removed; the summary lists what clean would free."
+choices = ["preview", "clean"]
+required = true
+help = "preview: nothing is removed; the summary lists what clean would free. Start with preview, then switch to clean with shimmer workspaces edit."
 
 [[question]]
 name = "CODE_DIRS"

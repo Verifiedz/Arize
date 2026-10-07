@@ -6,6 +6,13 @@ if [ ! -s "$SHIMMER_RESULTS" ]; then
     echo "nothing to update"
     exit 0
 fi
+if grep -q '^would ' "$SHIMMER_RESULTS"; then
+    echo "MODE = preview: nothing ran. update would run:"
+    grep '^would ' "$SHIMMER_RESULTS" | sed 's/^would /  /'
+    grep '^skipped ' "$SHIMMER_RESULTS"
+    echo "to run them: set MODE = \"update\" (shimmer workspaces edit $SHIMMER_WORKSPACE_ID), then activate again"
+    exit 0
+fi
 for kind in updated skipped failed; do
     grep "^$kind " "$SHIMMER_RESULTS"
 done

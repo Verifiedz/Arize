@@ -1,5 +1,5 @@
-# Supervised: download every project's dependencies with the tools it already uses. Rust
-# projects also get rust-src and rust-analyzer, which editors need offline.
+# Supervised: download every project's dependencies with the tools it already uses. For Rust
+# projects, says if rust-src or rust-analyzer (editor support offline) is missing; never adds it.
 . "$SHIMMER_WORKSPACE_DIR/lib/shimmer-open.sh"
 . "$SHIMMER_WORKSPACE_DIR/lib/shimmer-offline.sh"
 
@@ -30,12 +30,16 @@ done <<PROJECTS
 $(shimmer_offline_existing)
 PROJECTS
 
+# Editor support for Rust offline needs rust-src and rust-analyzer. Your toolchain is yours:
+# say what's missing, never add it.
 if [ "$rust_parts" = yes ] && shimmer_has rustup; then
-    echo "== rustup component add rust-src rust-analyzer"
-    if rustup component add rust-src rust-analyzer </dev/null; then
-        shimmer_offline_result ok deps "rust-src and rust-analyzer installed (your editor's Rust support works offline)"
-    else
-        shimmer_offline_result warn deps "couldn't add rust-src and rust-analyzer"
+    installed=$(rustup component list --installed 2>/dev/null)
+    missing=""
+    for part in rust-src rust-analyzer; do
+        printf '%s\n' "$installed" | grep -q "^$part" || missing="$missing $part"
+    done
+    if [ -n "$missing" ]; then
+        shimmer_offline_result info deps "for Rust editor support offline, add:$missing (rustup component add$missing)"
     fi
 fi
 exit 0

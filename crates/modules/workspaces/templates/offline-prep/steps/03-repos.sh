@@ -38,6 +38,8 @@ while IFS= read -r p; do
     note=""
     if [ "$dirty" -gt 0 ]; then
         note="fetched only: $(shimmer_offline_count "$dirty" "uncommitted file")"
+    elif [ "${UPDATE_REPOS:-fetch-only}" != "pull" ]; then
+        note="fetched (UPDATE_REPOS = fetch-only: your files are as they were)"
     elif [ -n "$branch" ] && git -C "$p" rev-parse -q --verify '@{u}' >/dev/null; then
         if git -C "$p" merge --ff-only --quiet '@{u}' </dev/null; then
             note="up to date on $branch"

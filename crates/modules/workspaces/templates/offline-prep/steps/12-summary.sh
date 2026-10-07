@@ -76,6 +76,7 @@ for part in repos deps docker build docs pages github ai; do
 done
 [ -z "$done_parts" ] || echo "✓ also done: ${done_parts#, }"
 grep "^info${tab}verify$tab" "$SHIMMER_RESULTS" | cut -f 3- | grep 'need the network' | sed 's/^/· /'
+grep "^info$tab" "$SHIMMER_RESULTS" | cut -f 3- | grep 'rustup component add' | sed 's/^/· /'
 ready=$(grep -c "^ok${tab}verify$tab" "$SHIMMER_RESULTS")
 notready=$(grep -c "^warn${tab}verify$tab" "$SHIMMER_RESULTS")
 warnings=$(grep -c "^warn$tab" "$SHIMMER_RESULTS")

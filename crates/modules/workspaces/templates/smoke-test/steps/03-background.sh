@@ -3,5 +3,9 @@
 . "$SHIMMER_WORKSPACE_DIR/lib/shimmer-open.sh"
 
 mkdir -p "$SHIMMER_STATE_DIR"
-echo $$ > "$SHIMMER_STATE_DIR/background.pid"
+# Already running from an earlier activate: one is enough, and a second would be left behind
+# when stop reads the pid file.
+file="$SHIMMER_STATE_DIR/background.pid"
+[ -f "$file" ] && kill -s 0 "$(cat "$file")" 2>/dev/null && exit 0
+echo $$ > "$file"
 exec sleep 300
