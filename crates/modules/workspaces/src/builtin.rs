@@ -15,6 +15,7 @@ macro_rules! file {
 const HELPER: (&str, &str) = file!("lib/shimmer-open.sh", "lib/shimmer-open.sh");
 const VM_HELPER: (&str, &str) = file!("lib/shimmer-vm.sh", "lib/shimmer-vm.sh");
 const MONOREPO_HELPER: (&str, &str) = file!("lib/shimmer-monorepo.sh", "lib/shimmer-monorepo.sh");
+const SCRATCH_HELPER: (&str, &str) = file!("lib/shimmer-scratch.sh", "lib/shimmer-scratch.sh");
 const UPDATE_HELPER: (&str, &str) = file!("lib/shimmer-update.sh", "lib/shimmer-update.sh");
 
 /// `(id, files)`, sorted by id.
@@ -37,6 +38,21 @@ const BUILTINS: &[(&str, &[(&str, &str)])] = &[
             file!("cleanup.sh", "monorepo/cleanup.sh"),
             HELPER,
             MONOREPO_HELPER,
+        ],
+    ),
+    (
+        "scratch",
+        &[
+            file!("template.toml", "scratch/template.toml"),
+            file!("workspace.toml", "scratch/workspace.toml"),
+            file!("steps/01-check.sh", "scratch/steps/01-check.sh"),
+            file!("steps/02-folder.sh", "scratch/steps/02-folder.sh"),
+            file!("steps/03-editor.sh", "scratch/steps/03-editor.sh"),
+            file!("steps/04-terminal.sh", "scratch/steps/04-terminal.sh"),
+            file!("steps/05-summary.sh", "scratch/steps/05-summary.sh"),
+            file!("cleanup.sh", "scratch/cleanup.sh"),
+            HELPER,
+            SCRATCH_HELPER,
         ],
     ),
     (

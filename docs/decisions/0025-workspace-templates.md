@@ -278,6 +278,27 @@ app's log. A `logs` step opens one terminal following every app's log (`LOGS_TER
 is one root install when the lockfile changed (Cargo and Go skip it). The rest (editor, `OPEN_ON`,
 in-editor terminal, live site, links, browser window, `CLOSE_ON_STOP`) is `web-project`'s.
 
+**`scratch`**: a fresh throwaway folder for trying something out. Each activate makes
+`SCRATCH_DIR/<date>-<language>` (`-2`, `-3`… on the same day; `NEW_FOLDER = once-a-day` reopens
+that day's instead) with a starter file for `LANGUAGE` (python, rust, javascript, typescript, go,
+c, cpp, java, shell, or none), opens the folder in the editor with that file, and a terminal in it
+showing the command that runs it. Its helper is `lib/shimmer-scratch.sh`.
+
+| # | Step | Mode | Does |
+|---|---|---|---|
+| 1 | `check` | supervised, 30 s | The language, editor, terminal, `KEEP_DAYS`; a note (not a failure) when the language's program isn't installed. |
+| 2 | `folder` | supervised, 60 s | Tidies old folders (below), makes the folder and its starter (never over an existing file), `git init` with `GIT_INIT = yes`. Writes the folder's path to the temp folder for the next steps. |
+| 3 | `editor` | detached | The folder with the starter file open (VS Code, Cursor, Zed and Sublime take both at once). |
+| 4 | `terminal` | detached | A terminal in the folder, printing the run command. |
+| 5 | `summary` | supervised, 10 s | The folder and the run command, which `activate --wait` prints. |
+| | `cleanup.sh` | supervised, 15 s | Closes the terminal (`CLOSE_ON_STOP`); the folder is always kept. |
+
+**Nothing is deleted.** With `KEEP_DAYS` set, a folder is moved to the trash (`gio trash`,
+`trash-put`, or macOS `trash`) only if this template made it (it holds a `.shimmer-scratch`
+file) and nothing inside it changed for that many days. With no trash command it is kept and
+listed. Scripts that delete people's files on a timer are how work is lost; the trash keeps a
+way back.
+
 **`update-everything`**: one command that updates every developer tool you have installed and
 your system's packages, then says what updated and what failed. A one-off job rather than a
 session: run it again any time (an `active` workspace may be activated again), or on a schedule.

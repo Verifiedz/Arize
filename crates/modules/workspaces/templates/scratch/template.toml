@@ -1,0 +1,70 @@
+[template]
+label = "Scratch"
+description = "A fresh throwaway folder with a starter file in your language, opened in your editor and a terminal, for trying something out"
+
+[[question]]
+name = "LANGUAGE"
+prompt = "Language"
+kind = "choice"
+choices = ["python", "rust", "javascript", "typescript", "go", "c", "cpp", "java", "shell", "none"]
+default = "python"
+help = "The starter file, and the command that runs it. none: an empty folder."
+
+[[question]]
+name = "SCRATCH_DIR"
+prompt = "Where scratch folders go"
+kind = "text"
+default = "~/scratch"
+help = "A folder; ~ means your home folder. Created if it doesn't exist. Each one is a folder inside it, named by date and language."
+
+[[question]]
+name = "NEW_FOLDER"
+prompt = "A new folder"
+kind = "choice"
+choices = ["every-time", "once-a-day"]
+default = "every-time"
+help = "every-time: each activate starts fresh (2026-10-07-python, then 2026-10-07-python-2…). once-a-day: activating again the same day reopens that day's folder."
+
+[[question]]
+name = "GIT_INIT"
+prompt = "Make it a git repo"
+kind = "choice"
+choices = ["no", "yes"]
+default = "no"
+
+[[question]]
+name = "KEEP_DAYS"
+prompt = "Move old scratch folders to the trash after this many days untouched"
+kind = "text"
+help = "e.g. 30. Only folders this template made, only when nothing inside changed for that long, and only to the trash (gio, trash-put or macOS trash), never deleted. Leave empty to keep them all."
+
+[[question]]
+name = "CODE_EDITOR"
+prompt = "Editor"
+kind = "choice"
+choices = ["vscode", "cursor", "zed", "webstorm", "intellij", "sublime", "neovim", "none"]
+default = "vscode"
+
+[[question]]
+name = "TERMINAL_APP"
+prompt = "Terminal in the folder"
+kind = "choice"
+choices = ["auto", "kitty", "foot", "alacritty", "wezterm", "ghostty", "gnome-terminal", "konsole", "terminal", "iterm", "none"]
+default = "auto"
+help = "auto: Terminal on macOS, the first one found on Linux. It shows the command that runs your code."
+
+[[question]]
+name = "OPEN_ON"
+prompt = "Where windows open"
+kind = "choice"
+choices = ["auto", "this-machine", "connected-computer"]
+default = "auto"
+help = "this-machine: this computer's own screen, even if Shimmer was started from a Cursor/VS Code terminal connected from elsewhere. connected-computer: the computer you're connected from. auto: wherever Shimmer was started."
+
+[[question]]
+name = "CLOSE_ON_STOP"
+prompt = "Close the terminal when you run workspaces stop"
+kind = "choice"
+choices = ["yes", "no"]
+default = "yes"
+help = "Closed: kitty/foot/alacritty/wezterm/ghostty/konsole/xterm terminals. Never closed: the editor (it may hold unsaved work), GNOME Terminal and macOS Terminal/iTerm windows. The folder is always kept."
