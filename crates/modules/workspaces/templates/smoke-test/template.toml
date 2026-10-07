@@ -1,5 +1,6 @@
 [template]
 label = "Smoke test"
+category = "testing"
 description = "Opens nothing: checks that workspaces launch, fail and clean up on this machine"
 
 [[question]]

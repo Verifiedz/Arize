@@ -1,5 +1,6 @@
 [template]
 label = "GitHub inbox"
+category = "daily"
 description = "What GitHub is waiting on you for: PRs to review (and for how long), your open PRs' checks and reviews, issues assigned to you, unread notifications. Through the gh CLI"
 
 [[question]]

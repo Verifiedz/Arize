@@ -1,5 +1,6 @@
 [template]
 label = "Offline prep"
+category = "travel"
 description = "Get your projects ready to work with no internet (a flight, bad Wi-Fi, a trip): pull repos, download every dependency and docker image, check each project really works offline, save docs, pages and your GitHub issues, pull a local AI model. Stop when you're back online to see what to push"
 
 [[question]]

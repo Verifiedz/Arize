@@ -1,5 +1,6 @@
 [template]
 label = "Monorepo"
+category = "code"
 description = "Several apps from one repo at once: Turborepo, Nx, pnpm/npm/yarn/bun workspaces, Cargo or Go workspaces, with their logs side by side"
 
 [[question]]

@@ -1,5 +1,6 @@
 [template]
 label = "Free disk space"
+category = "upkeep"
 description = "Free space safely: build folders of projects you haven't touched in a while, and tool caches (npm, cargo, pip, go, docker…). Only things that come back by themselves"
 
 [[question]]

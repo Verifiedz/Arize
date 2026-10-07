@@ -20,7 +20,7 @@ use crate::builtin;
 use crate::manifest::{self, Workspace};
 use crate::persist::{self, Saved, STATE_FILE};
 use crate::state::{self, WorkspaceState};
-use crate::template::Template;
+use crate::template::{Template, CATEGORIES};
 
 /// Launches touch shared state (a desktop, a terminal multiplexer), so they run one at a time
 /// (CLAUDE.md §6.1).
@@ -157,9 +157,13 @@ struct Create {
 }
 
 /// Every built-in template with its questions, by id (ADR 0025 §7).
+/// Every built-in, by category (in [`CATEGORIES`]' order) then id, and the categories' headings.
 fn templates() -> Result<Value> {
-    let all: Vec<Value> = builtin::all()?.iter().map(Template::to_wire).collect();
-    Ok(json!({"templates": all}))
+    let mut all = builtin::all()?;
+    let rank = |c: &str| CATEGORIES.iter().position(|(id, _)| *id == c).unwrap_or(usize::MAX);
+    all.sort_by(|a, b| (rank(&a.category), &a.id).cmp(&(rank(&b.category), &b.id)));
+    let categories: Vec<Value> = CATEGORIES.iter().map(|(id, label)| json!({"id": id, "label": label})).collect();
+    Ok(json!({"templates": all.iter().map(Template::to_wire).collect::<Vec<_>>(), "categories": categories}))
 }
 
 impl Workspaces {

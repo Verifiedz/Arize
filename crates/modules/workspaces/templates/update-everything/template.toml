@@ -1,5 +1,6 @@
 [template]
 label = "Update everything"
+category = "upkeep"
 description = "Update every developer tool you have installed (rustup, brew, npm, pipx, uv…) and your system's packages, then show what updated and what failed"
 
 [[question]]

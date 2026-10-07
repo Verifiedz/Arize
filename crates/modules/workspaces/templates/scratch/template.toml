@@ -1,5 +1,6 @@
 [template]
 label = "Scratch"
+category = "code"
 description = "A fresh throwaway folder with a starter file in your language, opened in your editor and a terminal, for trying something out"
 
 [[question]]

@@ -32,22 +32,25 @@ async fn templates_lists_the_built_ins_with_their_questions() {
     let env = TestEnv::new("workspaces");
     let data = call(&Workspaces::default(), &env, "workspaces.templates", json!({})).await.unwrap();
     let ids: Vec<&str> = data["templates"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap()).collect();
+    // By category (code, daily, upkeep, travel, testing), then id.
     assert_eq!(
         ids,
         [
-            "free-disk",
-            "github-inbox",
-            "health",
             "monorepo",
-            "offline-prep",
             "scratch",
-            "smoke-test",
-            "update-everything",
             "vm",
-            "web-project"
+            "web-project",
+            "github-inbox",
+            "free-disk",
+            "health",
+            "update-everything",
+            "offline-prep",
+            "smoke-test",
         ]
     );
-    let web = &data["templates"][9];
+    assert_eq!(data["categories"][0], json!({"id": "code", "label": "Coding"}));
+    assert_eq!(data["templates"][0]["category"], "code");
+    let web = &data["templates"][3];
     assert_eq!(
         web["questions"][0],
         json!({"name": "PROJECT_DIR", "prompt": "Project folder", "kind": "folder", "required": true})

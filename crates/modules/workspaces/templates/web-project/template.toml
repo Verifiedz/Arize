@@ -1,5 +1,6 @@
 [template]
 label = "Web project"
+category = "code"
 description = "Editor, dev server, localhost and your links (live site, host, repo) in one go"
 
 [[question]]

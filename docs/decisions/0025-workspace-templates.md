@@ -41,6 +41,7 @@ crates/modules/workspaces/templates/web-project/
 [template]
 label = "Web project"
 description = "Editor, dev server, localhost and your links (live site, host, repo) in one go"
+category = "code"
 
 [[question]]
 name = "PROJECT_DIR"
@@ -78,6 +79,23 @@ The template's id is its folder name, like a workspace's (ADR 0012 §3).
 
 `template.toml` is checked like every other file Shimmer reads: unknown keys rejected, wrong
 types rejected, every problem naming the file and the question.
+
+**Categories.** Every template names one `category`, so the list is grouped rather than one
+long alphabet. The set is fixed in the module (`template::CATEGORIES`), in this order, and
+`workspaces.templates` sends it with each heading, so a client groups them without knowing any
+template:
+
+| Id | Heading | Templates |
+|---|---|---|
+| `code` | Coding | `web-project`, `monorepo`, `scratch`, `vm` |
+| `daily` | Every day | `github-inbox` |
+| `upkeep` | Machine upkeep | `update-everything`, `free-disk`, `health` |
+| `travel` | On the go | `offline-prep` |
+| `testing` | Testing Shimmer | `smoke-test` |
+
+An unknown category is an error naming the known ones, as with any other mistake in a template.
+A new category is one line in `CATEGORIES` and this table; user templates in `$SHIMMER_HOME`
+(not done here) may need their own, which would be decided then.
 
 ### 2. Answers go into `[env]`; scripts are never rewritten
 
@@ -522,9 +540,20 @@ never for the secret itself.
 
 ```
 $ shimmer workspaces templates
-ID           LABEL         DESCRIPTION
-smoke-test   Smoke test    Opens nothing: checks that workspaces launch, fail and clean up
-web-project  Web project   Editor, dev server, localhost and your links (live site, host, repo) in one go
+Coding (code)
+  monorepo           Several apps from one repo at once: Turborepo, Nx…
+  scratch            A fresh throwaway folder with a starter file in your language…
+  …
+Machine upkeep (upkeep)
+  free-disk          Free space safely: build folders of projects you haven't…
+  …
+
+one in full, with its questions: shimmer workspaces templates TEMPLATE
+make a workspace from one:       shimmer workspaces new NAME --from TEMPLATE
+
+$ shimmer workspaces templates upkeep          # one category
+$ shimmer workspaces templates free-disk       # one template: its whole description, and each
+                                               # question with its choices, default and help
 
 $ shimmer workspaces new site --from web-project
 Project folder: ~/code/site

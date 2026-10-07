@@ -30,14 +30,15 @@ commands:
   force-relaunch NAME [--yes] [--wait]  launch a dirty workspace anyway (asks first)
   reset NAME [--yes]                    clear dirty without running cleanup (asks first)
   stop NAME [--wait]                    stop what an active workspace started (its dev server,
-                                        services); windows stay open
+                                        services, the windows it can close) and say what it left
   remove NAME                           remove a workspace that isn't running
   edit NAME [FILE] [--path]             open its workspace.toml (or FILE in its folder, e.g.
                                         steps/01-check.sh) in $VISUAL/$EDITOR, then check it;
                                         --path only prints where the file is
   restore NAME                          bring a removed workspace back
 
-  templates                             list ready-made workspaces to start from
+  templates [CATEGORY]                  list ready-made workspaces to start from, by category
+  templates TEMPLATE                    one template in full: what it does and every question
   new NAME --from TEMPLATE              create a workspace from a template; asks its questions,
       [--set QUESTION=ANSWER]…          e.g. shimmer workspaces new site --from web-project
       [--label TEXT]                    --set answers one without asking (needed in scripts)
@@ -90,7 +91,10 @@ pub enum WorkspacesCmd {
     Restore {
         id: String,
     },
-    Templates,
+    /// `which`: a category (only its templates) or a template (it in full).
+    Templates {
+        which: Option<String>,
+    },
     /// `set`: `--set NAME=VALUE` answers, in order (ADR 0025 §8).
     New {
         id: String,
@@ -161,10 +165,13 @@ pub fn parse(words: Vec<String>) -> std::result::Result<WorkspacesCmd, String> {
             }
         }
         "restore" => Ok(WorkspacesCmd::Restore { id: name(positional)? }),
-        "templates" => match positional.is_empty() {
-            true => Ok(WorkspacesCmd::Templates),
-            false => Err("'workspaces templates' takes no arguments".into()),
-        },
+        "templates" => {
+            let mut words = positional.into_iter();
+            match (words.next(), words.next()) {
+                (which, None) => Ok(WorkspacesCmd::Templates { which }),
+                _ => Err("usage: shimmer workspaces templates [CATEGORY | TEMPLATE]".into()),
+            }
+        }
         other => Err(format!("unknown workspaces command '{other}'; see 'shimmer workspaces --help'")),
     }
 }
@@ -335,9 +342,10 @@ pub async fn run(client: &mut Client, cmd: &WorkspacesCmd, json: bool, prompt: &
             }
             queued(client, Queued::ForceRelaunch, id, *wait, json).await
         }
-        WorkspacesCmd::Templates => {
+        WorkspacesCmd::Templates { which } => {
             let data = client.call("workspaces.templates", json!({})).await?;
-            Ok(out(&data, templates(&data)))
+            let text = templates(&data, which.as_deref())?;
+            Ok(out(&data, text))
         }
         WorkspacesCmd::New { id, template, label, set } => {
             let all = client.call("workspaces.templates", json!({})).await?;
@@ -689,14 +697,122 @@ fn how_to_answer(e: Error, prompt: &dyn Prompt) -> Error {
     e
 }
 
-fn templates(data: &Value) -> String {
-    let rows: Vec<Vec<String>> = data["templates"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|t| vec![cell(&t["id"]), cell(&t["label"]), cell(&t["description"])])
-        .collect();
-    table(&["ID".into(), "LABEL".into(), "DESCRIPTION".into()], &rows)
+/// The longest description shown in the list; `templates TEMPLATE` shows it whole.
+const LISTED_DESCRIPTION: usize = 64;
+
+/// `workspaces.templates`, grouped under the categories' headings in the daemon's order. With
+/// `which`: only that category's templates, or that one template in full.
+fn templates(data: &Value, which: Option<&str>) -> Result<String> {
+    let all = data["templates"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let categories = data["categories"].as_array().map(Vec::as_slice).unwrap_or_default();
+    if let Some(which) = which {
+        if let Some(t) = all.iter().find(|t| t["id"] == which) {
+            return Ok(template_in_full(t, categories));
+        }
+        if !categories.iter().any(|c| c["id"] == which) {
+            let names: Vec<String> = categories.iter().map(|c| cell(&c["id"])).collect();
+            return Err(Error::not_found(format!(
+                "no template or category '{which}' (categories: {}; templates: shimmer workspaces templates)",
+                names.join(", ")
+            )));
+        }
+    }
+    let id_width = all.iter().map(|t| cell(&t["id"]).chars().count()).max().unwrap_or(0);
+    let mut groups: Vec<(String, Vec<&Value>)> = Vec::new();
+    for t in all {
+        // "Machine upkeep (upkeep)": the short name is what `templates CATEGORY` takes.
+        let heading = categories
+            .iter()
+            .find(|c| c["id"] == t["category"])
+            .map_or_else(|| "Other".to_owned(), |c| format!("{} ({})", cell(&c["label"]), cell(&c["id"])));
+        if which.is_some_and(|w| t["category"] != w) {
+            continue;
+        }
+        match groups.iter_mut().find(|(h, _)| *h == heading) {
+            Some((_, ts)) => ts.push(t),
+            None => groups.push((heading, vec![t])),
+        }
+    }
+    let mut out = String::new();
+    for (heading, ts) in &groups {
+        let _ = writeln!(out, "{heading}");
+        for t in ts {
+            let id = t["id"].as_str().unwrap_or_default();
+            let _ = writeln!(out, "  {id:<id_width$}  {}", shorten(t["description"].as_str().unwrap_or_default()));
+        }
+        out.push('\n');
+    }
+    out.push_str("one in full, with its questions: shimmer workspaces templates TEMPLATE\n");
+    out.push_str("make a workspace from one:       shimmer workspaces new NAME --from TEMPLATE");
+    Ok(out)
+}
+
+/// A description cut at [`LISTED_DESCRIPTION`] characters, at a word.
+fn shorten(text: &str) -> String {
+    if text.chars().count() <= LISTED_DESCRIPTION {
+        return text.to_owned();
+    }
+    let cut: String = text.chars().take(LISTED_DESCRIPTION).collect();
+    let cut = cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head);
+    format!("{}…", cut.trim_end_matches([',', ':', ';', ' ']))
+}
+
+/// Words wrapped to `width`, each line after the first indented by `indent`.
+fn wrap(text: &str, width: usize, indent: &str) -> String {
+    let mut lines: Vec<String> = vec![String::new()];
+    for word in text.split_whitespace() {
+        let line = lines.last_mut().expect("never empty");
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > width {
+            lines.push(word.to_owned());
+        } else {
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+    }
+    lines.join(&format!("\n{indent}"))
+}
+
+/// One template: what it does, and each question with its choices, default and help.
+fn template_in_full(t: &Value, categories: &[Value]) -> String {
+    let id = t["id"].as_str().unwrap_or_default();
+    let category = categories.iter().find(|c| c["id"] == t["category"]).map(|c| cell(&c["label"]));
+    let mut out = format!("{id}: {}", cell(&t["label"]));
+    if let Some(category) = category {
+        let _ = write!(out, "  ({category})");
+    }
+    let _ = write!(out, "\n  {}\n", wrap(t["description"].as_str().unwrap_or_default(), 88, "  "));
+    let questions = t["questions"].as_array().map(Vec::as_slice).unwrap_or_default();
+    if questions.is_empty() {
+        out.push_str("\nno questions\n");
+    } else {
+        out.push_str("\nquestions (asked when you make one; or answer with --set NAME=ANSWER):\n");
+        let width = questions.iter().map(|q| cell(&q["name"]).chars().count()).max().unwrap_or(0);
+        let pad = " ".repeat(width + 4);
+        for q in questions {
+            let name = q["name"].as_str().unwrap_or_default();
+            let _ = writeln!(out, "  {name:<width$}  {}", q["prompt"].as_str().unwrap_or_default());
+            let mut facts = Vec::new();
+            if let Some(choices) = q["choices"].as_array() {
+                facts.push(choices.iter().map(|c| c.as_str().unwrap_or_default()).collect::<Vec<_>>().join(" | "));
+            } else {
+                facts.push(q["kind"].as_str().unwrap_or_default().to_owned());
+            }
+            if q["required"] == true {
+                facts.push("required".into());
+            }
+            if let Some(d) = q["default"].as_str() {
+                facts.push(format!("default: {d}"));
+            }
+            let _ = writeln!(out, "{pad}{}", facts.join("   "));
+            if let Some(help) = q["help"].as_str() {
+                let _ = writeln!(out, "{pad}{}", wrap(help, 84, &pad));
+            }
+        }
+    }
+    let _ = write!(out, "\nmake one: shimmer workspaces new NAME --from {id}");
+    out
 }
 
 fn created(id: &str, template: &str) -> String {
@@ -1165,7 +1281,12 @@ mod tests {
         assert!(bad(&["new", "--from", "x"]).contains("usage"));
         assert!(bad(&["new", "site", "--from", "x", "--set", "nope"]).contains("QUESTION=ANSWER"));
         assert!(bad(&["new", "site", "--from", "x", "--yes"]).contains("not '--yes'"));
-        assert_eq!(parse(vec!["templates".into()]).unwrap(), WorkspacesCmd::Templates);
+        assert_eq!(parse(vec!["templates".into()]).unwrap(), WorkspacesCmd::Templates { which: None });
+        assert_eq!(
+            parse(vec!["templates".into(), "upkeep".into()]).unwrap(),
+            WorkspacesCmd::Templates { which: Some("upkeep".into()) }
+        );
+        assert!(parse(vec!["templates".into(), "a".into(), "b".into()]).is_err());
     }
 
     #[test]
@@ -1214,8 +1335,42 @@ mod tests {
 
     #[test]
     fn templates_and_created_output() {
-        let data = json!({"templates": [{"id": "smoke-test", "label": "Smoke test", "description": "Opens nothing"}]});
-        assert_eq!(templates(&data), "ID          LABEL       DESCRIPTION\nsmoke-test  Smoke test  Opens nothing");
+        let data = json!({
+        "categories": [{"id": "code", "label": "Coding"}, {"id": "testing", "label": "Testing Shimmer"}],
+        "templates": [
+            {"id": "web-project", "label": "Web project", "category": "code", "description": "Editor and dev server",
+             "questions": [{"name": "PROJECT_DIR", "prompt": "Project folder", "kind": "folder", "required": true},
+                           {"name": "MODE", "prompt": "Mode", "kind": "choice", "choices": ["a", "b"], "default": "a",
+                            "required": false, "help": "a: one way."}]},
+            {"id": "smoke-test", "label": "Smoke test", "category": "testing", "description": "Opens nothing",
+             "questions": []},
+        ]});
+        let list = templates(&data, None).unwrap();
+        assert!(
+            list.starts_with(
+                "Coding (code)\n  web-project  Editor and dev server\n\nTesting Shimmer (testing)\n  smoke-test   Opens nothing\n\n"
+            ),
+            "{list}"
+        );
+        assert!(list.contains("shimmer workspaces templates TEMPLATE"), "{list}");
+        let only = templates(&data, Some("testing")).unwrap();
+        assert!(only.starts_with("Testing Shimmer (testing)\n  smoke-test   Opens nothing\n"), "{only}");
+        assert!(!only.contains("web-project"), "{only}");
+        let full = templates(&data, Some("web-project")).unwrap();
+        assert!(full.starts_with("web-project: Web project  (Coding)\n  Editor and dev server\n"), "{full}");
+        assert!(full.contains("  PROJECT_DIR  Project folder\n               folder   required\n"), "{full}");
+        assert!(
+            full.contains("  MODE         Mode\n               a | b   default: a\n               a: one way.\n"),
+            "{full}"
+        );
+        assert!(full.ends_with("make one: shimmer workspaces new NAME --from web-project"), "{full}");
+        let e = templates(&data, Some("games")).unwrap_err();
+        assert!(e.message.contains("no template or category 'games' (categories: code, testing"), "{}", e.message);
+        assert_eq!(shorten("short"), "short");
+        assert_eq!(
+            shorten("Free space safely: build folders of projects you haven't touched in a while, and tool caches"),
+            "Free space safely: build folders of projects you haven't…"
+        );
         assert!(created("site", "web-project")
             .starts_with("✓ created workspace site from web-project\n  start it: shimmer workspaces activate site"));
     }

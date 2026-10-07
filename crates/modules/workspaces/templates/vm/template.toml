@@ -1,5 +1,6 @@
 [template]
 label = "Virtual machine"
+category = "code"
 description = "Start a VM (UTM, Parallels, VirtualBox, VMware, libvirt, Multipass or your own commands), wait for SSH, then open an editor and a terminal inside it"
 
 [[question]]

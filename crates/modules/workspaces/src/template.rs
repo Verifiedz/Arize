@@ -77,7 +77,18 @@ struct File {
 struct Header {
     label: String,
     description: String,
+    category: String,
 }
+
+/// The categories a template belongs to, in the order `workspaces.templates` lists them:
+/// `(id, heading)`. Data the daemon sends, so clients show them without knowing any template.
+pub const CATEGORIES: &[(&str, &str)] = &[
+    ("code", "Coding"),
+    ("daily", "Every day"),
+    ("upkeep", "Machine upkeep"),
+    ("travel", "On the go"),
+    ("testing", "Testing Shimmer"),
+];
 
 /// A checked template: its questions, and the workspace files it creates.
 #[derive(Clone, Debug)]
@@ -85,6 +96,8 @@ pub struct Template {
     pub id: String,
     pub label: String,
     pub description: String,
+    /// One of [`CATEGORIES`]' ids.
+    pub category: String,
     pub questions: Vec<Question>,
     /// Every file but `template.toml`, by path inside the workspace folder.
     pub files: Vec<(String, String)>,
@@ -101,6 +114,10 @@ impl Template {
             .map(|(_, t)| *t)
             .ok_or_else(|| bad(format!("has no {TEMPLATE_FILE}")))?;
         let file: File = toml::from_str(text).map_err(|e| bad(format!("{TEMPLATE_FILE}: {e}")))?;
+        if !CATEGORIES.iter().any(|(c, _)| *c == file.template.category) {
+            let ids: Vec<&str> = CATEGORIES.iter().map(|(c, _)| *c).collect();
+            return Err(bad(format!("category '{}' isn't one of: {}", file.template.category, ids.join(", "))));
+        }
 
         let mut seen = BTreeSet::new();
         for q in &file.question {
@@ -151,6 +168,7 @@ impl Template {
             id: id.to_owned(),
             label: file.template.label,
             description: file.template.description,
+            category: file.template.category,
             questions: file.question,
             files,
         })
@@ -176,7 +194,8 @@ impl Template {
                 out
             })
             .collect();
-        json!({"id": self.id, "label": self.label, "description": self.description, "questions": questions})
+        json!({"id": self.id, "label": self.label, "description": self.description, "category": self.category,
+               "questions": questions})
     }
 
     /// Every question's answer, in question order: the given value, else the default, else
@@ -299,11 +318,26 @@ mod tests {
     const WORKSPACE: &str = "# Hi\n[workspace]\nlabel = \"Site\"\n\n[[step]]\nname = \"editor\"\nmode = \"detached\"\n";
 
     fn template(questions: &str) -> Result<Template> {
-        let text = format!("[template]\nlabel = \"Site\"\ndescription = \"A site\"\n{questions}");
+        let text = format!("[template]\nlabel = \"Site\"\ndescription = \"A site\"\ncategory = \"code\"\n{questions}");
         Template::parse(
             "site",
             &[("template.toml", text.as_str()), ("workspace.toml", WORKSPACE), ("steps/01-editor.sh", "true\n")],
         )
+    }
+
+    #[test]
+    fn a_template_names_a_known_category() {
+        let text = "[template]\nlabel = \"Site\"\ndescription = \"A site\"\ncategory = \"games\"\n";
+        let e = Template::parse("site", &[("template.toml", text), ("workspace.toml", WORKSPACE)]).unwrap_err();
+        assert!(
+            e.message.contains("category 'games' isn't one of: code, daily, upkeep, travel, testing"),
+            "{}",
+            e.message
+        );
+        let no_category = "[template]\nlabel = \"Site\"\ndescription = \"A site\"\n";
+        let e = Template::parse("site", &[("template.toml", no_category), ("workspace.toml", WORKSPACE)]).unwrap_err();
+        assert!(e.message.contains("category"), "{}", e.message);
+        assert_eq!(template("").unwrap().to_wire()["category"], "code");
     }
 
     const QUESTIONS: &str = r#"
@@ -408,7 +442,10 @@ kind = "urls"
         let with_env = format!("{WORKSPACE}[env]\nA = \"b\"\n");
         let e = Template::parse(
             "site",
-            &[("template.toml", "[template]\nlabel = \"S\"\ndescription = \"d\""), ("workspace.toml", &with_env)],
+            &[
+                ("template.toml", "[template]\nlabel = \"S\"\ndescription = \"d\"\ncategory = \"code\""),
+                ("workspace.toml", &with_env),
+            ],
         )
         .unwrap_err();
         assert!(e.message.contains("must not have [env]"));
