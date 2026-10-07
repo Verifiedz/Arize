@@ -1,7 +1,15 @@
 [template]
 label = "Smoke test"
-category = "testing"
 description = "Opens nothing: checks that workspaces launch, fail and clean up on this machine"
+category = "testing"
+needs = [
+    "Nothing",
+]
+good_to_know = [
+    "Opens nothing and changes nothing: it only checks that workspaces launch, fail and clean up on this machine",
+    "FAIL_AT makes it fail on purpose, to see what a dirty workspace looks like",
+]
+on_stop = "Stops its background step."
 
 [[question]]
 name = "FAIL_AT"

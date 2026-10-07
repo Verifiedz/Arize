@@ -1,7 +1,20 @@
 [template]
 label = "Monorepo"
-category = "code"
 description = "Several apps from one repo at once: Turborepo, Nx, pnpm/npm/yarn/bun workspaces, Cargo or Go workspaces, with their logs side by side"
+category = "code"
+needs = [
+    "Your editor",
+    "The monorepo's tool: Turborepo, Nx, pnpm, npm, yarn, bun, Cargo or Go",
+    "A terminal app, for the window that follows every app's log",
+]
+good_to_know = [
+    "Runs several apps' dev servers at once, each logging to its own file in a temp folder, and opens one terminal following all the logs",
+    "If any app crashes while starting, the launch stops right away with that app's log",
+    "Pulls the latest code each time it opens, only when it's clean and a fast-forward; never merges",
+    "Installs packages at the root when the lockfile changed (Cargo and Go skip this)",
+    "Same editor, browser window and in-editor terminal options as web-project",
+]
+on_stop = "Stops every app's dev server together (freeing their ports) and the services it started, closes the log and other terminals and the browser window where it can, and lists what it left open. Your editor always stays open."
 
 [[question]]
 name = "PROJECT_DIR"

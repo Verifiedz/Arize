@@ -1,7 +1,17 @@
 [template]
 label = "Update everything"
-category = "upkeep"
 description = "Update every developer tool you have installed (rustup, brew, npm, pipx, uv…) and your system's packages, then show what updated and what failed"
+category = "upkeep"
+needs = [
+    "Nothing beyond what you want updated: it runs only the updaters that are installed (or topgrade, if you have it)",
+]
+good_to_know = [
+    "It really updates things: rustup, cargo-installed tools, brew, npm/pnpm globals, pipx, uv, flatpak, gh extensions and more",
+    "System packages need sudo. SYSTEM_UPDATES = terminal opens a window where you type your password (Shimmer never sees it); passwordless needs a sudo rule of yours; skip leaves them",
+    "One updater failing never stops the others; the summary says what updated, was skipped and failed",
+    "On a schedule, use passwordless or skip: with terminal, a window waits for your password",
+]
+on_stop = "Nothing to undo: updates stay installed. Closes the system update's terminal if it's still open."
 
 [[question]]
 name = "SYSTEM_UPDATES"

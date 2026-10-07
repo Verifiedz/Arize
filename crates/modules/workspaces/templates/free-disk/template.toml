@@ -1,7 +1,17 @@
 [template]
 label = "Free disk space"
-category = "upkeep"
 description = "Free space safely: build folders of projects you haven't touched in a while, and tool caches (npm, cargo, pip, go, docker…). Only things that come back by themselves"
+category = "upkeep"
+needs = [
+    "Nothing: it cleans only what's installed",
+]
+good_to_know = [
+    "It DELETES things, but only things that come back by themselves: Rust target/ and node_modules/ folders of projects you haven't touched in UNTOUCHED_DAYS (a rebuild or reinstall makes them again), and tool download caches",
+    "Never your files, git repos, virtualenvs, the trash or docker volumes; a target/ goes only when Cargo's own marker is inside it",
+    "Try MODE = preview first: it shows what it would free and removes nothing",
+    "System caches (SYSTEM_CLEAN) need sudo and are off by default",
+]
+on_stop = "Nothing to undo: what it removed comes back when a tool needs it."
 
 [[question]]
 name = "MODE"

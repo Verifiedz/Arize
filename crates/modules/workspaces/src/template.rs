@@ -78,6 +78,13 @@ struct Header {
     label: String,
     description: String,
     category: String,
+    /// What it relies on being installed or set up, e.g. "gh (the GitHub CLI), logged in".
+    #[serde(default)]
+    needs: Vec<String>,
+    /// What someone must know before making one: what it changes, deletes, asks for, never does.
+    good_to_know: Vec<String>,
+    /// What `workspaces stop` does to it.
+    on_stop: String,
 }
 
 /// The categories a template belongs to, in the order `workspaces.templates` lists them:
@@ -90,6 +97,17 @@ pub const CATEGORIES: &[(&str, &str)] = &[
     ("testing", "Testing Shimmer"),
 ];
 
+/// One launch step, for `workspaces peek`: read from the template's `workspace.toml`, so what
+/// someone is shown is what runs.
+#[derive(Clone, Debug)]
+pub struct StepInfo {
+    pub name: String,
+    /// `supervised` (waited on, with `timeout_s`) or `detached` (started and left running).
+    pub mode: String,
+    pub timeout_s: Option<i64>,
+    pub description: Option<String>,
+}
+
 /// A checked template: its questions, and the workspace files it creates.
 #[derive(Clone, Debug)]
 pub struct Template {
@@ -98,6 +116,11 @@ pub struct Template {
     pub description: String,
     /// One of [`CATEGORIES`]' ids.
     pub category: String,
+    pub needs: Vec<String>,
+    pub good_to_know: Vec<String>,
+    pub on_stop: String,
+    /// Its launch steps, in order, as its `workspace.toml` declares them.
+    pub steps: Vec<StepInfo>,
     pub questions: Vec<Question>,
     /// Every file but `template.toml`, by path inside the workspace folder.
     pub files: Vec<(String, String)>,
@@ -163,12 +186,33 @@ impl Template {
         if workspace.1.lines().filter(|l| l.starts_with("label = ")).count() != 1 {
             return Err(bad("workspace.toml must have exactly one line starting 'label = '".into()));
         }
+        if file.template.good_to_know.is_empty() || file.template.on_stop.trim().is_empty() {
+            return Err(bad("good_to_know and on_stop must say something: they're what peek shows".into()));
+        }
+        // The full check of the steps is the manifest's, when the workspace is created; here
+        // only what peek shows.
+        let steps = doc
+            .get("step")
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|step| StepInfo {
+                name: step.get("name").and_then(toml::Value::as_str).unwrap_or_default().to_owned(),
+                mode: step.get("mode").and_then(toml::Value::as_str).unwrap_or_default().to_owned(),
+                timeout_s: step.get("timeout_s").and_then(toml::Value::as_integer),
+                description: step.get("description").and_then(toml::Value::as_str).map(str::to_owned),
+            })
+            .collect();
 
         Ok(Self {
             id: id.to_owned(),
             label: file.template.label,
             description: file.template.description,
             category: file.template.category,
+            needs: file.template.needs,
+            good_to_know: file.template.good_to_know,
+            on_stop: file.template.on_stop,
+            steps,
             questions: file.question,
             files,
         })
@@ -194,7 +238,22 @@ impl Template {
                 out
             })
             .collect();
+        let steps: Vec<Value> = self
+            .steps
+            .iter()
+            .map(|s| {
+                let mut out = json!({"name": s.name, "mode": s.mode});
+                if let Some(t) = s.timeout_s {
+                    out["timeout_s"] = json!(t);
+                }
+                if let Some(d) = &s.description {
+                    out["description"] = json!(d);
+                }
+                out
+            })
+            .collect();
         json!({"id": self.id, "label": self.label, "description": self.description, "category": self.category,
+               "needs": self.needs, "good_to_know": self.good_to_know, "on_stop": self.on_stop, "steps": steps,
                "questions": questions})
     }
 
@@ -318,7 +377,7 @@ mod tests {
     const WORKSPACE: &str = "# Hi\n[workspace]\nlabel = \"Site\"\n\n[[step]]\nname = \"editor\"\nmode = \"detached\"\n";
 
     fn template(questions: &str) -> Result<Template> {
-        let text = format!("[template]\nlabel = \"Site\"\ndescription = \"A site\"\ncategory = \"code\"\n{questions}");
+        let text = format!("[template]\nlabel = \"Site\"\ndescription = \"A site\"\ncategory = \"code\"\ngood_to_know = [\"x\"]\non_stop = \"y\"\n{questions}");
         Template::parse(
             "site",
             &[("template.toml", text.as_str()), ("workspace.toml", WORKSPACE), ("steps/01-editor.sh", "true\n")],
@@ -327,7 +386,7 @@ mod tests {
 
     #[test]
     fn a_template_names_a_known_category() {
-        let text = "[template]\nlabel = \"Site\"\ndescription = \"A site\"\ncategory = \"games\"\n";
+        let text = "[template]\nlabel = \"Site\"\ndescription = \"A site\"\ncategory = \"games\"\ngood_to_know = [\"x\"]\non_stop = \"y\"\n";
         let e = Template::parse("site", &[("template.toml", text), ("workspace.toml", WORKSPACE)]).unwrap_err();
         assert!(
             e.message.contains("category 'games' isn't one of: code, daily, upkeep, travel, testing"),
@@ -443,7 +502,7 @@ kind = "urls"
         let e = Template::parse(
             "site",
             &[
-                ("template.toml", "[template]\nlabel = \"S\"\ndescription = \"d\"\ncategory = \"code\""),
+                ("template.toml", "[template]\nlabel = \"S\"\ndescription = \"d\"\ncategory = \"code\"\ngood_to_know = [\"x\"]\non_stop = \"y\""),
                 ("workspace.toml", &with_env),
             ],
         )

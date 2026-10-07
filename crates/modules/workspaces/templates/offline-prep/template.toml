@@ -1,7 +1,18 @@
 [template]
 label = "Offline prep"
-category = "travel"
 description = "Get your projects ready to work with no internet (a flight, bad Wi-Fi, a trip): pull repos, download every dependency and docker image, check each project really works offline, save docs, pages and your GitHub issues, pull a local AI model. Stop when you're back online to see what to push"
+category = "travel"
+needs = [
+    "git, and each project's own tools (cargo, npm, uv, go…); docker, gh and ollama only for those parts",
+]
+good_to_know = [
+    "Downloads a lot on the first run: run it on good Wi-Fi, plugged in. DATA_SAVER skips docker images and the AI model",
+    "Changes your repos only safely: pulls are fast-forward only and only when there are no uncommitted changes; never merges, never pushes on its own",
+    "Installs dependencies into your projects (node_modules, .venv…) and may add rust-src and rust-analyzer with rustup",
+    "Each project gets a 'works offline' or 'NOT ready offline (why)' verdict from its tools' own offline modes",
+    "Saves pages, your GitHub snapshot and Python packages in OFFLINE_DIR, with an index.html start page",
+]
+on_stop = "When you're back online: says what each repo has to pull or push. Pulling (PULL_ON_RETURN) and pushing (PUSH_ON_RETURN) happen only if you turned them on, never forced. Nothing downloaded is removed."
 
 [[question]]
 name = "PROJECTS"

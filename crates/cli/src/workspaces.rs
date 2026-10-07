@@ -38,7 +38,9 @@ commands:
   restore NAME                          bring a removed workspace back
 
   templates [CATEGORY]                  list ready-made workspaces to start from, by category
-  templates TEMPLATE                    one template in full: what it does and every question
+  peek TEMPLATE                         everything about a template before you use it: what it
+                                        does and changes, what it needs, its steps, what stop
+                                        does, and its questions
   new NAME --from TEMPLATE              create a workspace from a template; asks its questions,
       [--set QUESTION=ANSWER]…          e.g. shimmer workspaces new site --from web-project
       [--label TEXT]                    --set answers one without asking (needed in scripts)
@@ -91,9 +93,12 @@ pub enum WorkspacesCmd {
     Restore {
         id: String,
     },
-    /// `which`: a category (only its templates) or a template (it in full).
+    /// `which`: a category (only its templates) or a template (as `peek` shows it).
     Templates {
         which: Option<String>,
+    },
+    Peek {
+        template: String,
     },
     /// `set`: `--set NAME=VALUE` answers, in order (ADR 0025 §8).
     New {
@@ -165,6 +170,10 @@ pub fn parse(words: Vec<String>) -> std::result::Result<WorkspacesCmd, String> {
             }
         }
         "restore" => Ok(WorkspacesCmd::Restore { id: name(positional)? }),
+        "peek" => match positional.as_slice() {
+            [template] => Ok(WorkspacesCmd::Peek { template: template.clone() }),
+            _ => Err("usage: shimmer workspaces peek TEMPLATE (see 'shimmer workspaces templates')".into()),
+        },
         "templates" => {
             let mut words = positional.into_iter();
             match (words.next(), words.next()) {
@@ -346,6 +355,12 @@ pub async fn run(client: &mut Client, cmd: &WorkspacesCmd, json: bool, prompt: &
             let data = client.call("workspaces.templates", json!({})).await?;
             let text = templates(&data, which.as_deref())?;
             Ok(out(&data, text))
+        }
+        WorkspacesCmd::Peek { template } => {
+            let data = client.call("workspaces.templates", json!({})).await?;
+            let text = peek(&data, template)?;
+            let one = data["templates"].as_array().and_then(|ts| ts.iter().find(|t| t["id"] == template.as_str()));
+            Ok(out(one.unwrap_or(&Value::Null), text))
         }
         WorkspacesCmd::New { id, template, label, set } => {
             let all = client.call("workspaces.templates", json!({})).await?;
@@ -706,8 +721,8 @@ fn templates(data: &Value, which: Option<&str>) -> Result<String> {
     let all = data["templates"].as_array().map(Vec::as_slice).unwrap_or_default();
     let categories = data["categories"].as_array().map(Vec::as_slice).unwrap_or_default();
     if let Some(which) = which {
-        if let Some(t) = all.iter().find(|t| t["id"] == which) {
-            return Ok(template_in_full(t, categories));
+        if all.iter().any(|t| t["id"] == which) {
+            return peek(data, which);
         }
         if !categories.iter().any(|c| c["id"] == which) {
             let names: Vec<String> = categories.iter().map(|c| cell(&c["id"])).collect();
@@ -742,8 +757,8 @@ fn templates(data: &Value, which: Option<&str>) -> Result<String> {
         }
         out.push('\n');
     }
-    out.push_str("one in full, with its questions: shimmer workspaces templates TEMPLATE\n");
-    out.push_str("make a workspace from one:       shimmer workspaces new NAME --from TEMPLATE");
+    out.push_str("everything about one:     shimmer workspaces peek TEMPLATE\n");
+    out.push_str("make a workspace from it: shimmer workspaces new NAME --from TEMPLATE");
     Ok(out)
 }
 
@@ -774,23 +789,90 @@ fn wrap(text: &str, width: usize, indent: &str) -> String {
     lines.join(&format!("\n{indent}"))
 }
 
-/// One template: what it does, and each question with its choices, default and help.
+/// `peek TEMPLATE`: everything about one template before making a workspace from it. A
+/// category's name gets a pointer to `templates CATEGORY`; anything else is `not_found`.
+fn peek(data: &Value, id: &str) -> Result<String> {
+    let all = data["templates"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let categories = data["categories"].as_array().map(Vec::as_slice).unwrap_or_default();
+    match all.iter().find(|t| t["id"] == id) {
+        Some(t) => Ok(template_in_full(t, categories)),
+        None if categories.iter().any(|c| c["id"] == id) => Err(Error::not_found(format!(
+            "'{id}' is a category, not a template: see its templates with shimmer workspaces templates {id}"
+        ))),
+        None => {
+            let names: Vec<String> = all.iter().map(|t| cell(&t["id"])).collect();
+            Err(Error::not_found(format!("no template '{id}' (there are: {})", names.join(", "))))
+        }
+    }
+}
+
+/// "30 s", "3 min", "1 h": a step's time limit as people say it.
+fn duration(seconds: i64) -> String {
+    match seconds {
+        s if s >= 3600 && s % 3600 == 0 => format!("{} h", s / 3600),
+        s if s >= 60 && s % 60 == 0 => format!("{} min", s / 60),
+        s => format!("{s} s"),
+    }
+}
+
+/// How a step runs, in words: a supervised step is waited on, a detached one left running.
+fn how_it_runs(step: &Value) -> String {
+    match (step["mode"].as_str(), step["timeout_s"].as_i64()) {
+        (Some("supervised"), Some(t)) => format!("waits, up to {}", duration(t)),
+        (Some("supervised"), None) => "waits".to_owned(),
+        _ => "starts, keeps running".to_owned(),
+    }
+}
+
+/// One template: what it does, what to know, what it needs, its steps in order, what stop does,
+/// and each question with its choices, default and help.
 fn template_in_full(t: &Value, categories: &[Value]) -> String {
     let id = t["id"].as_str().unwrap_or_default();
+    let list = |key: &str| t[key].as_array().cloned().unwrap_or_default();
     let category = categories.iter().find(|c| c["id"] == t["category"]).map(|c| cell(&c["label"]));
     let mut out = format!("{id}: {}", cell(&t["label"]));
     if let Some(category) = category {
         let _ = write!(out, "  ({category})");
     }
-    let _ = write!(out, "\n  {}\n", wrap(t["description"].as_str().unwrap_or_default(), 88, "  "));
-    let questions = t["questions"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let _ = writeln!(out, "\n  {}", wrap(t["description"].as_str().unwrap_or_default(), 88, "  "));
+
+    for (heading, key) in [("Good to know", "good_to_know"), ("Needs", "needs")] {
+        let items = list(key);
+        if items.is_empty() {
+            continue;
+        }
+        let _ = writeln!(out, "\n{heading}");
+        for item in &items {
+            let _ = writeln!(out, "  • {}", wrap(item.as_str().unwrap_or_default(), 86, "    "));
+        }
+    }
+
+    let steps = list("steps");
+    if !steps.is_empty() {
+        let _ = writeln!(out, "\nWhen you activate it ({} steps, one after another)", steps.len());
+        let name_width = steps.iter().map(|s| cell(&s["name"]).chars().count()).max().unwrap_or(0);
+        let how_width = steps.iter().map(|s| how_it_runs(s).chars().count()).max().unwrap_or(0);
+        for (i, step) in steps.iter().enumerate() {
+            let name = step["name"].as_str().unwrap_or_default();
+            let line = format!("  {:>2}. {name:<name_width$}  {:<how_width$}  ", i + 1, how_it_runs(step));
+            let indent = " ".repeat(line.chars().count());
+            let width = 100usize.saturating_sub(indent.len()).max(30);
+            let what = wrap(step["description"].as_str().unwrap_or_default(), width, &indent);
+            let _ = writeln!(out, "{}", format!("{line}{what}").trim_end());
+        }
+    }
+    if let Some(stop) = t["on_stop"].as_str() {
+        let _ = writeln!(out, "\nWhen you stop it\n  {}", wrap(stop, 88, "  "));
+    }
+
+    let questions = list("questions");
     if questions.is_empty() {
-        out.push_str("\nno questions\n");
+        out.push_str("\nNo questions\n");
     } else {
-        out.push_str("\nquestions (asked when you make one; or answer with --set NAME=ANSWER):\n");
+        out.push_str("\nQuestions (asked when you make one; or answer with --set NAME=ANSWER)\n");
         let width = questions.iter().map(|q| cell(&q["name"]).chars().count()).max().unwrap_or(0);
         let pad = " ".repeat(width + 4);
-        for q in questions {
+        for q in &questions {
             let name = q["name"].as_str().unwrap_or_default();
             let _ = writeln!(out, "  {name:<width$}  {}", q["prompt"].as_str().unwrap_or_default());
             let mut facts = Vec::new();
@@ -1287,6 +1369,11 @@ mod tests {
             WorkspacesCmd::Templates { which: Some("upkeep".into()) }
         );
         assert!(parse(vec!["templates".into(), "a".into(), "b".into()]).is_err());
+        assert_eq!(
+            parse(vec!["peek".into(), "free-disk".into()]).unwrap(),
+            WorkspacesCmd::Peek { template: "free-disk".into() }
+        );
+        assert!(parse(vec!["peek".into()]).is_err());
     }
 
     #[test]
@@ -1339,6 +1426,9 @@ mod tests {
         "categories": [{"id": "code", "label": "Coding"}, {"id": "testing", "label": "Testing Shimmer"}],
         "templates": [
             {"id": "web-project", "label": "Web project", "category": "code", "description": "Editor and dev server",
+             "good_to_know": ["Pulls on open"], "needs": ["An editor"], "on_stop": "Stops the dev server.",
+             "steps": [{"name": "check", "mode": "supervised", "timeout_s": 30, "description": "Checks"},
+                       {"name": "editor", "mode": "detached", "description": "Opens the editor"}],
              "questions": [{"name": "PROJECT_DIR", "prompt": "Project folder", "kind": "folder", "required": true},
                            {"name": "MODE", "prompt": "Mode", "kind": "choice", "choices": ["a", "b"], "default": "a",
                             "required": false, "help": "a: one way."}]},
@@ -1352,11 +1442,25 @@ mod tests {
             ),
             "{list}"
         );
-        assert!(list.contains("shimmer workspaces templates TEMPLATE"), "{list}");
+        assert!(list.contains("shimmer workspaces peek TEMPLATE"), "{list}");
         let only = templates(&data, Some("testing")).unwrap();
         assert!(only.starts_with("Testing Shimmer (testing)\n  smoke-test   Opens nothing\n"), "{only}");
         assert!(!only.contains("web-project"), "{only}");
-        let full = templates(&data, Some("web-project")).unwrap();
+        let full = peek(&data, "web-project").unwrap();
+        assert_eq!(templates(&data, Some("web-project")).unwrap(), full, "templates TEMPLATE is peek");
+        assert!(full.contains("\nGood to know\n  • Pulls on open\n\nNeeds\n  • An editor\n"), "{full}");
+        assert!(
+            full.contains(
+                "\nWhen you activate it (2 steps, one after another)\n   1. check   waits, up to 30 s      Checks\n   2. editor  starts, keeps running  Opens the editor\n"
+            ),
+            "{full}"
+        );
+        assert!(full.contains("\nWhen you stop it\n  Stops the dev server.\n"), "{full}");
+        let e = peek(&data, "testing").unwrap_err();
+        assert!(e.message.contains("'testing' is a category"), "{}", e.message);
+        let e = peek(&data, "nope").unwrap_err();
+        assert!(e.message.contains("no template 'nope' (there are: web-project, smoke-test)"), "{}", e.message);
+        assert_eq!([duration(30), duration(180), duration(3600), duration(90)], ["30 s", "3 min", "1 h", "90 s"]);
         assert!(full.starts_with("web-project: Web project  (Coding)\n  Editor and dev server\n"), "{full}");
         assert!(full.contains("  PROJECT_DIR  Project folder\n               folder   required\n"), "{full}");
         assert!(

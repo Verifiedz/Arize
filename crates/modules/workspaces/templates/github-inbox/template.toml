@@ -1,7 +1,17 @@
 [template]
 label = "GitHub inbox"
-category = "daily"
 description = "What GitHub is waiting on you for: PRs to review (and for how long), your open PRs' checks and reviews, issues assigned to you, unread notifications. Through the gh CLI"
+category = "daily"
+needs = [
+    "gh (the GitHub CLI), logged in with gh auth login",
+]
+good_to_know = [
+    "Read-only: it never comments, approves, merges or changes anything on GitHub",
+    "Shimmer never sees your GitHub token: gh keeps it",
+    "One query lists PRs waiting for your review, your open PRs with their checks and reviews, and issues assigned to you; SCOPE limits it to some orgs or repos",
+    "With OPEN it opens them in your browser (at most 10 tabs)",
+]
+on_stop = "Nothing to undo: it only reads. Browser tabs it opened stay open."
 
 [[question]]
 name = "SCOPE"

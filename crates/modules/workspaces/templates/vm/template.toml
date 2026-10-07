@@ -1,7 +1,18 @@
 [template]
 label = "Virtual machine"
-category = "code"
 description = "Start a VM (UTM, Parallels, VirtualBox, VMware, libvirt, Multipass or your own commands), wait for SSH, then open an editor and a terminal inside it"
+category = "code"
+needs = [
+    "The VM program's command-line tool (utmctl, prlctl, VBoxManage, vmrun, virsh or multipass), or your own start and stop commands",
+    "ssh, to open an editor or terminal inside the VM",
+    "Cursor or VS Code with Remote-SSH, for an editor inside the VM",
+]
+good_to_know = [
+    "Never stores a password. Best: an SSH key (ssh-copy-id once). Otherwise ssh asks you itself, or SSH_PASSWORD_ITEM names a macOS Keychain or Linux keyring entry that ssh reads when it connects",
+    "Starts the VM only if it isn't running, then waits (up to 5 minutes) until it answers on its SSH port",
+    "Run Shimmer on the computer that hosts the VM",
+]
+on_stop = "Suspends the VM by default (ON_STOP: suspend, shutdown or leave-running) and closes the SSH terminal where it can. Your editor stays open."
 
 [[question]]
 name = "VM_SOFTWARE"

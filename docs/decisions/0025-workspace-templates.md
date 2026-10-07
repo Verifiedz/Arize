@@ -42,6 +42,9 @@ crates/modules/workspaces/templates/web-project/
 label = "Web project"
 description = "Editor, dev server, localhost and your links (live site, host, repo) in one go"
 category = "code"
+needs = ["Your editor (VS Code, Cursor, Zed, WebStorm, IntelliJ, Sublime or Neovim)", "…"]
+good_to_know = ["Pulls the latest code each time it opens, only when … never merges", "…"]
+on_stop = "Stops the dev server (freeing its port) and the services it started, …"
 
 [[question]]
 name = "PROJECT_DIR"
@@ -79,6 +82,13 @@ The template's id is its folder name, like a workspace's (ADR 0012 §3).
 
 `template.toml` is checked like every other file Shimmer reads: unknown keys rejected, wrong
 types rejected, every problem naming the file and the question.
+
+**What someone must know before using one.** `good_to_know` (required, at least one line)
+says what it changes, deletes, asks for and never does; `needs` what must be installed or set
+up; `on_stop` what `workspaces stop` does. With the steps, read from the template's own
+`workspace.toml` (name, `supervised` with its time limit or `detached`, description) so they can't
+drift from what runs, they are what `shimmer workspaces peek TEMPLATE` shows before anything is
+created.
 
 **Categories.** Every template names one `category`, so the list is grouped rather than one
 long alphabet. The set is fixed in the module (`template::CATEGORIES`), in this order, and
@@ -552,8 +562,9 @@ one in full, with its questions: shimmer workspaces templates TEMPLATE
 make a workspace from one:       shimmer workspaces new NAME --from TEMPLATE
 
 $ shimmer workspaces templates upkeep          # one category
-$ shimmer workspaces templates free-disk       # one template: its whole description, and each
-                                               # question with its choices, default and help
+$ shimmer workspaces peek free-disk            # everything before using one: description, good
+                                               # to know, needs, each step and how it runs, what
+                                               # stop does, and every question
 
 $ shimmer workspaces new site --from web-project
 Project folder: ~/code/site

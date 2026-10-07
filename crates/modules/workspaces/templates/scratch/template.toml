@@ -1,7 +1,16 @@
 [template]
 label = "Scratch"
-category = "code"
 description = "A fresh throwaway folder with a starter file in your language, opened in your editor and a terminal, for trying something out"
+category = "code"
+needs = [
+    "Your editor, and the language's tools if you want to run the code (python3, cargo, node…)",
+]
+good_to_know = [
+    "Each activate makes a NEW folder (2026-10-07-python, -2, -3…) unless NEW_FOLDER = once-a-day",
+    "Never deletes anything. With KEEP_DAYS, old scratch folders it made go to the trash (you can get them back), and only ones untouched that long",
+    "Any language works: about 30 have a starter file; for others give a file name like main.odin and a RUN_COMMAND",
+]
+on_stop = "Closes the terminal it opened where it can. The folder is always kept, and your editor stays open."
 
 [[question]]
 name = "LANGUAGE"

@@ -1,7 +1,20 @@
 [template]
 label = "Web project"
-category = "code"
 description = "Editor, dev server, localhost and your links (live site, host, repo) in one go"
+category = "code"
+needs = [
+    "Your editor (VS Code, Cursor, Zed, WebStorm, IntelliJ, Sublime or Neovim)",
+    "For a JavaScript project: Node and its package manager (npm, pnpm, yarn or bun)",
+    "A terminal app, if you want a terminal window opened",
+]
+good_to_know = [
+    "Pulls the latest code each time it opens, only when you have no uncommitted changes and it's a fast-forward; never merges (GIT_ON_OPEN = none turns it off)",
+    "Installs packages when the lockfile changed, and runs your dev server in the background, logging to a temp folder",
+    "With a terminal inside the editor (IDE_TERMINAL_COMMAND), it writes .vscode/tasks.json in your project, hidden from git through .git/info/exclude",
+    "A separate browser window (BROWSER_WINDOW) uses its own browser profile under ~/.local/state/shimmer/browser-profiles/, so it's not logged in to your usual sites",
+    "Everything is set by your answers; the scripts stay the template's own and you can edit them in the workspace's folder",
+]
+on_stop = "Stops the dev server (freeing its port) and the services it started, closes the terminals and browser window it opened where it can, and lists what it left open. Your editor always stays open."
 
 [[question]]
 name = "PROJECT_DIR"
