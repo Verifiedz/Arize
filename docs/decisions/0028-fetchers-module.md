@@ -107,6 +107,13 @@ too, not discovered lazily on first fetch.
    rejected at load time, same as an unknown interval preset) to construct a `Source` with
    this entry's id and params.
 
+**Id collision is rejected, not shadowed.** A config entry whose `kind` is set and whose id
+equals one of the fixed, compiled-in ids (e.g. `[modules.fetchers.sources.hn-whoishiring]`
+with `kind = "rss"`) is a load-time error, the same `invalid_params` path as an unknown
+`kind` or a missing required field — never a silent shadow of the built-in. The two layers
+share one id namespace; a `kind`-bearing entry only ever *adds* an id, it never overrides
+one the fixed layer already owns. (Validation code lands in the sibling PR, #131, not here.)
+
 This needs no `core` change — the registry is built where `fetch()` already holds a `Ctx`,
 not inside `Module::triggers()` (§5's finding about `triggers()` having no config access is
 unaffected and unrelated to this).
@@ -115,7 +122,11 @@ unaffected and unrelated to this).
 decided here):**
 
 - Settings beyond `enabled`/`interval`/`kind`: one required field, `url` — the feed's URL,
-  RSS or Atom.
+  RSS or Atom. Checked at load time per the same "a kind's own required fields are checked
+  at load time" rule stated above, and checked as more than "non-empty": `url` must parse
+  as a well-formed `http://` or `https://` URL. Empty, malformed, or a non-`http(s)` scheme
+  (`ftp://`, `file://`, etc.) is a load-time `invalid_params` error, same as a missing
+  `url` entirely. (Validation code lands in #131, not here.)
 - Parsing via **`feed-rs` 3.0.0** (MIT, pure Rust — no `-sys` dependency in its tree
   (`chrono`, `mediatype`, `quick-xml`, `regex`, `serde`, `serde_json`, `siphasher`, `url`,
   `uuid`, `ammonia`) — handles RSS 0.x/1.0/2.0 and Atom from one parse call, 2.4M downloads,
@@ -126,8 +137,28 @@ decided here):**
   sense, so no robots.txt check applies.
 - Dedup key (`RawItem::source_id`): the entry's own `id`/`guid` field when the feed sets one,
   else its `link` URL. Stated now so this isn't invented differently mid-implementation.
+  **Caveat found during #131's implementation:** `feed-rs` does not leave an entry's `id`
+  empty when the underlying feed omits one — it synthesizes a non-empty id itself (a hash
+  of link+title, or, when an entry has neither, a **random UUID that changes on every
+  parse**). Taking `feed-rs`'s id at face value would make such an entry look "new" on
+  every single run, defeating the entire point of dedup. So the `rss` kind must not use
+  `feed-rs`'s default id generation: it overrides it with its own `id_generator`
+  (`feed_rs::parser::Builder` supports supplying one) so the fallback is deterministic —
+  always the entry's own first `link` when there is no feed-supplied id, never a random
+  value — and an entry that still has neither a usable id nor a link is skipped rather than
+  ever emitted with an unstable key. (Implemented in #131, not here.)
 - Pagination: out of scope for a feed. `fetch_page` returns every entry the feed has in one
   `Page` with `next_cursor: None`, always a single page.
+
+**Orphaned per-source state on removal is fine, left as-is.** When a configured `kind`
+entry is later deleted from `config.toml`, its `data/fetchers/<id>/seen.toml` and its entry
+in `last_run.toml` are left behind on disk, unreferenced by anything. This is expected and
+acceptable, not a leak to fix: CLAUDE.md's "SQLite is disposable" philosophy (§1.4) doesn't
+apply to these — they're files, not the derived index — but the underlying principle does:
+unreferenced state just sits unused, it does not corrupt anything or affect a source that
+is still configured. No automatic cleanup is done, and none is proposed here; a user who
+cares can delete the directory/entry by hand, consistent with "files the user could edit by
+hand" (CLAUDE.md §1.4).
 
 **Not done in this amendment:**
 
