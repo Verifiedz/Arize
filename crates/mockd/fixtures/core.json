@@ -253,13 +253,78 @@
                 "summary": "Clear dirty without cleanup",
                 "params_schema": {},
                 "execution": "inline"
+              },
+              {
+                "op": "workspaces.stop",
+                "summary": "Stop an active workspace by running its cleanup script",
+                "params_schema": {},
+                "execution": {
+                  "queued": {
+                    "lane": "workspaces"
+                  }
+                }
+              },
+              {
+                "op": "workspaces.remove",
+                "summary": "Remove a workspace that isn't running (restore brings it back)",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "workspaces.restore",
+                "summary": "Bring a removed workspace back",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "workspaces.copy",
+                "summary": "Make a new workspace from an existing one, optionally with some answers changed",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "workspaces.rename",
+                "summary": "Give a workspace that isn't running a new id",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "workspaces.templates",
+                "summary": "List the built-in workspace templates and their questions",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "workspaces.create",
+                "summary": "Create a workspace from a template and your answers",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "workspaces.answers",
+                "summary": "A workspace's template, its questions and the current answers",
+                "params_schema": {},
+                "execution": "inline"
+              },
+              {
+                "op": "workspaces.reconfigure",
+                "summary": "Change a workspace's answers (only while it's ready)",
+                "params_schema": {},
+                "execution": "inline"
               }
             ],
             "topics": [
               "workspaces.session.launched",
               "workspaces.session.dirty",
               "workspaces.session.forced",
-              "workspaces.session.cleaned"
+              "workspaces.session.cleaned",
+              "workspaces.workspace.created",
+              "workspaces.session.stopped",
+              "workspaces.workspace.removed",
+              "workspaces.workspace.restored",
+              "workspaces.workspace.reconfigured",
+              "workspaces.workspace.renamed",
+              "workspaces.workspace.copied"
             ]
           }
         ]

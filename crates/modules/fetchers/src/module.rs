@@ -13,6 +13,10 @@ use crate::source::{self, RawItem, Source};
 /// Network-bound and slow, same reasoning as every other fetch-shaped lane (CLAUDE.md §6.1).
 pub const LANE: &str = "fetchers";
 
+pub const LIST_OP: &str = "fetchers.list";
+pub const STATUS_OP: &str = "fetchers.status";
+pub const TEST_OP: &str = "fetchers.test";
+
 /// Caps `fetchers.item.found`'s `raw_data` (ADR 0028 §3) -- big enough for a job posting's
 /// text, small enough that one large item can't become the next cache-bloat problem.
 const MAX_RAW_DATA_CHARS: usize = 8 * 1024;
@@ -75,6 +79,29 @@ impl Module for Fetchers {
                 }),
                 execution: Execution::Queued { lane: LANE.into() },
             },
+            CommandSpec {
+                op: LIST_OP.into(),
+                summary: "List every known source and its configured state".into(),
+                params_schema: json!({"type": "null"}),
+                execution: Execution::Inline,
+            },
+            CommandSpec {
+                op: STATUS_OP.into(),
+                summary: "Per-source last-run time and whether it is currently running".into(),
+                params_schema: json!({"type": "null"}),
+                execution: Execution::Inline,
+            },
+            CommandSpec {
+                op: TEST_OP.into(),
+                summary:
+                    "Fetch one page from a source and show its parsed items, without saving or marking anything seen"
+                        .into(),
+                params_schema: json!({
+                    "type": "object", "required": ["source"],
+                    "properties": {"source": {"type": "string"}},
+                }),
+                execution: Execution::Queued { lane: LANE.into() },
+            },
         ]
     }
 
@@ -82,6 +109,9 @@ impl Module for Fetchers {
         match op {
             TICK_OP => self.tick(ctx).await,
             FETCH_OP => self.fetch(ctx, decode::<FetchParams>(params)?.source).await,
+            LIST_OP => self.list(ctx).await,
+            STATUS_OP => self.status(ctx).await,
+            TEST_OP => self.test(ctx, decode::<FetchParams>(params)?.source).await,
             _ => Err(Error::unknown_op(format!("fetchers has no op '{op}'"))),
         }
     }
@@ -152,6 +182,57 @@ impl Fetchers {
                 Err(e)
             }
         }
+    }
+
+    /// Every source the daemon knows about (the fixed registry plus every configured `kind`
+    /// instance, ADR 0028 §2a) cross-referenced with its own `config.toml` entry, if any.
+    async fn list(&self, ctx: &Ctx) -> Result<Value> {
+        let config = FetchersConfig::load(ctx)?;
+        let sources: Vec<Value> = source::known(ctx)?
+            .iter()
+            .map(|s| {
+                let id = s.id();
+                let cfg = config.sources.get(id);
+                json!({
+                    "id": id,
+                    "method": match s.method() { source::Method::Api => "api", source::Method::Scrape => "scrape" },
+                    "kind": cfg.and_then(|c| c.kind.clone()),
+                    "enabled": cfg.is_some_and(|c| c.enabled),
+                    "interval_s": cfg.and_then(|c| c.interval.resolve().ok()),
+                })
+            })
+            .collect();
+        Ok(json!({"sources": sources}))
+    }
+
+    /// Per-source last-run time and whether it is currently mid-fetch (ADR 0028 §5's
+    /// `RunGuard`) -- the same source universe [`Fetchers::list`] enumerates.
+    async fn status(&self, ctx: &Ctx) -> Result<Value> {
+        let last_run = schedule::load_last_run(ctx)?;
+        let sources: Vec<Value> = source::known(ctx)?
+            .iter()
+            .map(|s| {
+                let id = s.id();
+                json!({"id": id, "last_run_at": last_run.get(id), "running": self.running.is_running(id)})
+            })
+            .collect();
+        Ok(json!({"sources": sources}))
+    }
+
+    /// Fetches exactly one page from a source and returns its parsed items -- never the
+    /// `SeenSet`, `last_run.toml`, or any event (issue #128: "without saving or marking
+    /// anything seen"). Deliberately simpler than [`Fetchers::run_source`]: a dry run has no
+    /// state of its own to protect, so it skips the overlap guard too -- a `test` can run
+    /// alongside a real `fetch` of the same source without conflict.
+    async fn test(&self, ctx: &Ctx, source_id: String) -> Result<Value> {
+        if source_id.trim().is_empty() {
+            return Err(Error::invalid_params("source must not be empty"));
+        }
+        let source =
+            source::resolve(ctx, &source_id)?.ok_or_else(|| Error::not_found(format!("no source '{source_id}'")))?;
+        let page = source.fetch_page(ctx, None).await?;
+        let items: Vec<Value> = page.items.iter().map(|item| item_payload(&source_id, item)).collect();
+        Ok(json!({"source": source_id, "items": items}))
     }
 
     /// Runs one `Source` to completion: pages through it (capped, ADR 0028 §1), dedupes
@@ -484,6 +565,89 @@ mod tests {
         let env = TestEnv::new("fetchers");
         let err = Fetchers::default().fetch(&env.ctx, "not-a-real-source".into()).await.unwrap_err();
         assert_eq!(err.code, ErrorCode::NotFound);
+    }
+
+    #[tokio::test]
+    async fn list_shows_the_fixed_sources_disabled_by_default_and_a_configured_kind_enabled() {
+        let mut env = TestEnv::new("fetchers");
+        env.ctx.config = ModuleConfig::new(json!({
+            "sources": {
+                "hn-whoishiring": {"enabled": true, "interval": "daily"},
+                "my-team-blog": {"enabled": true, "interval": "hourly", "kind": "rss", "url": "https://example.test/feed.xml"},
+            }
+        }));
+
+        let out = Fetchers::default().list(&env.ctx).await.unwrap();
+        let sources = out["sources"].as_array().unwrap();
+        assert_eq!(sources.len(), 3, "{sources:?}");
+
+        let hn = sources.iter().find(|s| s["id"] == "hn-whoishiring").unwrap();
+        assert_eq!(
+            (hn["method"].as_str(), hn["enabled"].as_bool(), hn["kind"].as_str()),
+            (Some("api"), Some(true), None)
+        );
+        assert_eq!(hn["interval_s"], 86_400);
+
+        let wwr = sources.iter().find(|s| s["id"] == "weworkremotely").unwrap();
+        assert_eq!(
+            (wwr["method"].as_str(), wwr["enabled"].as_bool(), wwr["interval_s"].is_null()),
+            (Some("scrape"), Some(false), true),
+            "never configured -- disabled by default, no interval (ADR 0028 §5)"
+        );
+
+        let blog = sources.iter().find(|s| s["id"] == "my-team-blog").unwrap();
+        assert_eq!(
+            (blog["method"].as_str(), blog["enabled"].as_bool(), blog["kind"].as_str()),
+            (Some("api"), Some(true), Some("rss"))
+        );
+    }
+
+    #[tokio::test]
+    async fn status_reports_last_run_and_whether_a_source_is_mid_fetch() {
+        let env = TestEnv::new("fetchers");
+        let fetchers = Fetchers::default();
+        stub_one_hn_comment(&env, 10, "<p>Acme | Remote<p>Hiring.");
+        fetchers.fetch(&env.ctx, "hn-whoishiring".into()).await.unwrap();
+
+        let out = fetchers.status(&env.ctx).await.unwrap();
+        let sources = out["sources"].as_array().unwrap();
+        let hn = sources.iter().find(|s| s["id"] == "hn-whoishiring").unwrap();
+        assert_eq!(hn["last_run_at"], json!(env.ctx.clock.now()));
+        assert_eq!(hn["running"], false);
+
+        let wwr = sources.iter().find(|s| s["id"] == "weworkremotely").unwrap();
+        assert!(wwr["last_run_at"].is_null(), "never fetched -- no last run");
+    }
+
+    #[tokio::test]
+    async fn test_shows_parsed_items_without_touching_dedup_last_run_or_events() {
+        let env = TestEnv::new("fetchers");
+        stub_one_hn_comment(&env, 10, "<p>Acme | Remote<p>Hiring Rust engineers.");
+
+        let out = Fetchers::default().test(&env.ctx, "hn-whoishiring".into()).await.unwrap();
+        assert_eq!(out["source"], "hn-whoishiring");
+        let items = out["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["source_id"], "10");
+
+        assert!(schedule::load_last_run(&env.ctx).unwrap().is_empty(), "test must never record a run");
+        assert!(env.backend.events().iter().all(|e| e.topic != "fetchers.item.found"), "test must never emit");
+        let seen = dedup::load(&env.ctx, "hn-whoishiring").unwrap();
+        assert!(seen.is_new("10"), "test must never touch the seen set");
+    }
+
+    #[tokio::test]
+    async fn test_does_not_conflict_with_a_concurrent_real_fetch_of_the_same_source() {
+        let env = TestEnv::new("fetchers");
+        stub_one_hn_comment(&env, 10, "<p>Acme | Remote<p>Hiring.");
+        let fetchers = Fetchers::default();
+        let _permit = fetchers.running.try_acquire("hn-whoishiring").unwrap();
+
+        // A real fetch would be refused right now (see
+        // `a_source_already_fetching_is_refused_not_double_run`); `test` must not be, since
+        // it never touches the state the overlap guard protects.
+        let out = fetchers.test(&env.ctx, "hn-whoishiring".into()).await.unwrap();
+        assert_eq!(out["items"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]

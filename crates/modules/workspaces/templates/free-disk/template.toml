@@ -1,0 +1,66 @@
+[template]
+label = "Free disk space"
+description = "Free disk space safely: only what comes back by itself"
+category = "upkeep"
+needs = [
+    "Nothing: it cleans only what's installed",
+]
+good_to_know = [
+    "It DELETES things, but only things that come back by themselves: Rust target/ and node_modules/ folders of projects you haven't touched in UNTOUCHED_DAYS (a rebuild or reinstall makes them again), and tool download caches",
+    "Never your files, git repos, virtualenvs, the trash or docker volumes; a target/ goes only when Cargo's own marker is inside it",
+    "You choose MODE when you make it: preview shows what it would free and removes nothing; clean removes",
+    "System caches (SYSTEM_CLEAN) need sudo and are off by default",
+]
+on_stop = "Nothing to undo: what it removed comes back when a tool needs it."
+
+[[question]]
+name = "MODE"
+prompt = "Clean, or only show what it would free"
+kind = "choice"
+choices = ["preview", "clean"]
+required = true
+help = "preview: nothing is removed; the summary lists what clean would free. Start with preview, then: shimmer workspaces reconfigure NAME --set MODE=clean."
+
+[[question]]
+name = "CODE_DIRS"
+prompt = "Folders your projects are in"
+kind = "text"
+default = "~/code ~/Developer ~/projects ~/src ~/scratch"
+help = "Separated by spaces; ~ means your home folder. Ones that don't exist are skipped. Searched up to 6 levels deep, never inside hidden folders."
+
+[[question]]
+name = "UNTOUCHED_DAYS"
+prompt = "Clean a project's build folders after how many days untouched"
+kind = "text"
+default = "30"
+help = "A project counts as untouched when none of its own files changed for that long. Its Rust target/ and node_modules/ go; a rebuild or reinstall makes them again."
+
+[[question]]
+name = "SKIP"
+prompt = "Things to never clean"
+kind = "text"
+help = "Names separated by spaces: rust-targets node-modules npm pnpm yarn bun pip uv go cargo brew docker thumbnails. Leave empty to clean all that are here."
+
+[[question]]
+name = "SYSTEM_CLEAN"
+prompt = "Also clean the system's package cache and old logs (needs sudo)"
+kind = "choice"
+choices = ["skip", "terminal", "passwordless"]
+default = "skip"
+help = "pacman (paccache), apt, dnf or zypper's downloaded packages, and journal logs older than 2 weeks. terminal: a window opens and you type your password there (Shimmer never sees it). passwordless: a sudo rule of yours, for a schedule."
+
+[[question]]
+name = "TERMINAL_APP"
+prompt = "Terminal for the system clean"
+kind = "choice"
+choices = ["auto", "kitty", "foot", "alacritty", "wezterm", "ghostty", "gnome-terminal", "konsole", "terminal", "iterm"]
+default = "auto"
+help = "auto: Terminal on macOS, the first one found on Linux. terminal and iterm are macOS only. Only with SYSTEM_CLEAN = terminal."
+
+[[question]]
+name = "OPEN_ON"
+prompt = "Where the terminal opens"
+kind = "choice"
+choices = ["auto", "this-machine", "connected-computer"]
+default = "auto"
+help = "this-machine: this computer's own screen, even if Shimmer was started from a Cursor/VS Code terminal connected from elsewhere. connected-computer: the computer you're connected from. auto: wherever Shimmer was started."

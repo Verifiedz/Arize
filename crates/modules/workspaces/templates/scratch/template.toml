@@ -1,0 +1,86 @@
+[template]
+label = "Scratch"
+description = "A fresh throwaway folder with a starter file in any language"
+category = "code"
+needs = [
+    "Your editor, and the language's tools if you want to run the code (python3, cargo, node…)",
+]
+good_to_know = [
+    "Each activate makes a NEW folder (2026-10-07-python, -2, -3…) unless NEW_FOLDER = once-a-day",
+    "Never deletes anything. With KEEP_DAYS, old scratch folders it made go to the trash (you can get them back), and only ones untouched that long",
+    "Any language works: about 30 have a starter file; for others give a file name like main.odin and a RUN_COMMAND",
+]
+on_stop = "Closes the terminal it opened where it can. The folder is always kept, and your editor stays open."
+
+[[question]]
+name = "LANGUAGE"
+prompt = "Language (or a file name like main.odin)"
+kind = "text"
+default = "python"
+help = "python, rust, javascript, typescript, go, c, cpp, java, kotlin, swift, csharp, ruby, php, lua, perl, r, julia, haskell, ocaml, elixir, clojure, dart, scala, zig, nim, crystal, fortran, sql, html, shell, or none for an empty folder. Any other language: a file name, e.g. main.odin, which is made and opened (say how to run it below)."
+
+[[question]]
+name = "RUN_COMMAND"
+prompt = "Command that runs it (optional)"
+kind = "command"
+help = "Run inside the folder. Leave empty for the language's usual one (e.g. python3 main.py); needed only for a file name of your own, e.g. odin run main.odin -file."
+
+[[question]]
+name = "SCRATCH_DIR"
+prompt = "Where scratch folders go"
+kind = "text"
+default = "~/scratch"
+help = "A folder; ~ means your home folder. Created if it doesn't exist. Each one is a folder inside it, named by date and language."
+
+[[question]]
+name = "NEW_FOLDER"
+prompt = "A new folder"
+kind = "choice"
+choices = ["every-time", "once-a-day"]
+default = "every-time"
+help = "every-time: each activate starts fresh (2026-10-07-python, then 2026-10-07-python-2…). once-a-day: activating again the same day reopens that day's folder."
+
+[[question]]
+name = "GIT_INIT"
+prompt = "Make it a git repo"
+kind = "choice"
+choices = ["no", "yes"]
+default = "no"
+
+[[question]]
+name = "KEEP_DAYS"
+prompt = "Move old scratch folders to the trash after this many days untouched"
+kind = "text"
+help = "e.g. 30. Only folders this template made, only when nothing inside changed for that long, and only to the trash (gio, trash-put or macOS trash), never deleted. Leave empty to keep them all."
+
+[[question]]
+name = "CODE_EDITOR"
+prompt = "Editor"
+kind = "choice"
+choices = ["vscode", "cursor", "zed", "webstorm", "intellij", "sublime", "neovim", "none"]
+default = "vscode"
+help = "The project opens in it. neovim opens in a terminal (TERMINAL_APP). none: no editor."
+
+[[question]]
+name = "TERMINAL_APP"
+prompt = "Terminal in the folder"
+kind = "choice"
+choices = ["auto", "kitty", "foot", "alacritty", "wezterm", "ghostty", "gnome-terminal", "konsole", "terminal", "iterm", "none"]
+default = "auto"
+help = "auto: Terminal on macOS, the first one found on Linux. terminal and iterm are macOS only. It shows the command that runs your code."
+
+[[question]]
+name = "OPEN_ON"
+prompt = "Where windows open"
+kind = "choice"
+choices = ["auto", "this-machine", "connected-computer"]
+default = "auto"
+help = "this-machine: this computer's own screen, even if Shimmer was started from a Cursor/VS Code terminal connected from elsewhere. connected-computer: the computer you're connected from. auto: wherever Shimmer was started."
+
+[[question]]
+name = "CLOSE_ON_STOP"
+prompt = "Close what it opened when you run workspaces stop"
+kind = "choice"
+choices = ["yes", "no"]
+default = "yes"
+help = "Closed: kitty/foot/alacritty/wezterm/ghostty/konsole/xterm terminals. Never closed: the editor (it may hold unsaved work), GNOME Terminal and macOS Terminal/iTerm windows. The folder is always kept."
