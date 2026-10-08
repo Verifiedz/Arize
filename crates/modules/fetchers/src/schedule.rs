@@ -56,6 +56,15 @@ pub struct SourceConfig {
     #[serde(default)]
     pub enabled: bool,
     pub interval: IntervalSpec,
+    /// Absent: `id` must already be one of the fixed, compiled-in sources
+    /// (`crate::source::registry`) -- today's behavior, unchanged. Present: build a new
+    /// instance of this *kind* instead (ADR 0028 §2a) -- currently only `"rss"`.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// The `rss` kind's one required setting (ADR 0028 §2a): the feed's url. Meaningless,
+    /// and left unvalidated, when `kind` is absent or any other value.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -103,12 +112,25 @@ impl FetchersConfig {
             .map_err(|e| Error::invalid_params(format!("[modules.fetchers]: {e}")))?;
         for (id, source) in &cfg.sources {
             source.interval.resolve().map_err(|e| Error::invalid_params(format!("sources.{id}.interval: {e}")))?;
-            if crate::source::find(id).is_none() {
-                let known: Vec<&str> = crate::source::registry().iter().map(|s| s.id()).collect();
-                return Err(Error::invalid_params(format!(
-                    "sources.{id}: unknown source id (known: {})",
-                    known.join(", ")
-                )));
+            match source.kind.as_deref() {
+                None => {
+                    if crate::source::find(id).is_none() {
+                        let known_sources = crate::source::registry();
+                        let known: Vec<&str> = known_sources.iter().map(|s| s.id()).collect();
+                        return Err(Error::invalid_params(format!(
+                            "sources.{id}: unknown source id (known: {})",
+                            known.join(", ")
+                        )));
+                    }
+                }
+                Some("rss") => {
+                    if source.url.as_deref().is_none_or(|u| u.trim().is_empty()) {
+                        return Err(Error::invalid_params(format!("sources.{id}: kind \"rss\" needs a non-empty url")));
+                    }
+                }
+                Some(other) => {
+                    return Err(Error::invalid_params(format!("sources.{id}: unknown kind \"{other}\" (known: rss)")));
+                }
             }
         }
         Ok(cfg)
@@ -252,8 +274,40 @@ mod tests {
         assert!(err.message.contains("hn-whoishiring"), "{}", err.message);
     }
 
+    #[test]
+    fn a_configured_rss_kind_with_a_url_parses() {
+        let cfg = FetchersConfig::from_value(&json!({
+            "sources": {
+                "my-team-blog": {"enabled": true, "interval": "hourly", "kind": "rss", "url": "https://example.test/feed.xml"},
+            }
+        }))
+        .unwrap();
+        assert_eq!(cfg.sources["my-team-blog"].kind.as_deref(), Some("rss"));
+    }
+
+    #[test]
+    fn an_rss_kind_with_no_url_fails_at_load_time() {
+        let err = FetchersConfig::from_value(&json!({
+            "sources": {"my-team-blog": {"enabled": true, "interval": "hourly", "kind": "rss"}}
+        }))
+        .unwrap_err();
+        assert_eq!(err.code, shimmer_core::ErrorCode::InvalidParams);
+        assert!(err.message.contains("my-team-blog"), "{}", err.message);
+        assert!(err.message.contains("url"), "{}", err.message);
+    }
+
+    #[test]
+    fn an_unknown_kind_is_rejected() {
+        let err = FetchersConfig::from_value(&json!({
+            "sources": {"my-team-blog": {"enabled": true, "interval": "hourly", "kind": "carrier-pigeon"}}
+        }))
+        .unwrap_err();
+        assert_eq!(err.code, shimmer_core::ErrorCode::InvalidParams);
+        assert!(err.message.contains("carrier-pigeon"), "{}", err.message);
+    }
+
     fn source(enabled: bool, interval_s: u64) -> SourceConfig {
-        SourceConfig { enabled, interval: IntervalSpec::Seconds(interval_s) }
+        SourceConfig { enabled, interval: IntervalSpec::Seconds(interval_s), kind: None, url: None }
     }
 
     #[test]

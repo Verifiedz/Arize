@@ -30,7 +30,7 @@ pub struct WeWorkRemotely;
 
 #[async_trait]
 impl Source for WeWorkRemotely {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "weworkremotely"
     }
 
