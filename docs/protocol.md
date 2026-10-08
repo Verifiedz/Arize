@@ -446,6 +446,17 @@ record only (`conflict` on `records.add`, `records.update`, or `records.complete
 `docs/decisions/0016-records-completion-lifecycle.md` and
 `docs/decisions/0017-records-integration-metadata.md`.
 
+## Fetchers ops
+
+| Op | Execution | Params | Returns |
+|---|---|---|---|
+| `fetchers.tick` | queued (`fetchers`) | `{}` | `{"enqueued":[…],"already_running":[…]}`, each a source id. The scheduler heartbeat trigger (every 5 minutes, ADR 0028 §5) — not meant to be called by hand, but not refused either. Enqueues `fetchers.fetch` for every configured, enabled source whose interval has elapsed since its last run, skipping (into `already_running`) a source already mid-fetch. |
+| `fetchers.fetch` | queued (`fetchers`) | `{"source"}` | `{"source","new_items"}`. Fetches one source now — the fixed, compiled-in registry or a configured `kind` (e.g. `"rss"`), ADR 0028 §2a — through to completion: pages (capped at 10), dedupes against that source's own seen-id set, and emits one `fetchers.item.found` per genuinely new item. `not_found` for an unknown source id; `module_error` ("already fetching") if a run for the same source is already in flight. Always records the attempt (even on failure) so a broken source waits a full interval before being retried, rather than being hammered every tick. |
+
+A fetch's failure reaches the client as `queue.task.failed` like any other queued op, and
+additionally as `fetchers.fetch.failed` on the bus (see the topic catalogue below) — the
+latter is what a dashboard or a configured `notify.*` fallback actually watches.
+
 Module ops are namespaced `<module>.<verb>`. The daemon routes on the prefix; a collision
 between two modules is a startup failure, not a runtime surprise.
 
@@ -487,8 +498,9 @@ tolerate unknown topics.
 | `records.field.renamed` | `{collection, from, to}`. |
 | `records.collection.renamed` / `.removed` / `.restored` | `{collection, new_id}` / `{collection, records}` / `{collection}`. |
 | `records.trash.purged` | `records.purge` deleted trashed records for good. `{collection, records}`, plus `id` when one record was purged. ADR 0024 §5. |
-| `fetchers.item.found` | A source returned a new, deduplicated item. |
-| `fetchers.fetch.finished` / `.failed` | A fetch run ended. |
+| `fetchers.item.found` | A source returned a new, deduplicated item (one per item, inside the same transaction that updates that source's seen-id set). Payload `{source_name, source_id, title, url, raw_data}`; `raw_data` past 8KiB is replaced with `{"truncated":true,"preview":…}`. |
+| `fetchers.fetch.finished` | A fetch run completed without error. Payload `{source, new_items}`. |
+| `fetchers.fetch.failed` | A fetch run failed. Payload `{source, error, reason}`. `reason` is one of `"network"` (a transport-level failure), `"http_error"` (a non-2xx, non-cooldown response), `"blocked"` (a `Method::Scrape` source's own robots.txt refused the fetch — the page was never requested), `"cancelled"`, or `"parse_empty"` (anything else: a malformed or unexpectedly-shaped response body, no matching "who is hiring" thread, or a corrupt local `seen.toml` — the last of these is a deliberate, already-tested tradeoff: a corrupt dedup file is a loud, reported error forever, never silently reset to an empty set). |
 | `calendar.date.registered` | A dated entry was stored. |
 | `notify.sent` | Delivery succeeded, naming the sink used. |
 | `notify.fallback_used` | Primary sink failed; the fallback delivered. |
