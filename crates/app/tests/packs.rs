@@ -15,9 +15,15 @@ fn bin(home: &Home) -> PathBuf {
     home.dir.path().join("fakehome/.local/bin")
 }
 
+/// The system folders a test's `PATH` gets after its own link folder. Never the real `PATH`:
+/// a developer who has used a pack has its aliases linked in `~/.local/bin`, and the linker
+/// rightly refuses to shadow a command that's already on `PATH`, so the counts below would
+/// depend on the machine (#97). CI passed only because its `PATH` is clean.
+const SYSTEM_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
+
 /// Run `program args…` with the test's environment, `PATH` starting with the link folder.
 fn run(home: &Home, program: &Path, args: &[&str]) -> Output {
-    let path = format!("{}:{}", bin(home).display(), std::env::var("PATH").unwrap_or_default());
+    let path = format!("{}:{SYSTEM_PATH}", bin(home).display());
     Command::new(program)
         .args(args)
         .env("SHIMMER_HOME", home.dir.path().join("home"))
