@@ -55,6 +55,7 @@ impl Module for Records {
                 "records.collection.restored",
                 "records.item.removed",
                 "records.collection.created",
+                "records.collection.copied",
                 "records.trash.purged",
             ]
             .map(String::from)
@@ -152,6 +153,13 @@ impl Module for Records {
                     "id": {"type": "string"}, "new_id": {"type": "string"}}}),
             ),
             (
+                "records.copy_collection",
+                "Copy a collection under a new id, empty or with its records",
+                json!({"type": "object", "required": ["id", "to"], "properties": {
+                    "id": {"type": "string"}, "to": {"type": "string"}, "label": {"type": "string"},
+                    "with_records": {"type": "boolean"}}}),
+            ),
+            (
                 "records.remove_collection",
                 "Remove a collection and its records (they can be restored); needs confirmation",
                 json!({"type": "object", "required": ["id"], "properties": {
@@ -209,6 +217,7 @@ impl Module for Records {
             "records.create_collection" => self.create_collection(ctx, decode(params)?),
             "records.rename_field" => self.rename_field(ctx, decode(params)?),
             "records.rename_collection" => self.rename_collection(ctx, decode(params)?),
+            "records.copy_collection" => self.copy_collection(ctx, decode(params)?),
             "records.remove_collection" => self.remove_collection(ctx, decode(params)?),
             "records.restore_collection" => self.restore_collection(ctx, decode(params)?),
             "records.import" => self.import(ctx, decode(params)?),
@@ -344,6 +353,16 @@ struct CollectionId {
 struct RenameCollection {
     id: String,
     new_id: String,
+}
+
+#[derive(Deserialize)]
+struct CopyCollection {
+    id: String,
+    to: String,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    with_records: bool,
 }
 
 #[derive(Deserialize)]
@@ -732,6 +751,63 @@ impl Records {
             tx.emit("records.collection.renamed", json!({"collection": c.id, "new_id": p.new_id}))
         })?;
         Ok(serde_json::to_value(new).unwrap_or_default())
+    }
+
+    /// Copy a collection under a new id (ADR 0030 §3): its file with only the id (and label)
+    /// changed, comments kept, and refs into itself pointed at the copy; with `with_records`, every
+    /// live record too, as written. One transaction, one `records.item.created` per record.
+    fn copy_collection(&self, ctx: &Ctx, p: CopyCollection) -> Result<Value> {
+        let c = load_collection(ctx, &p.id)?;
+        if !is_valid_name(&p.to) {
+            return Err(Error::invalid_params(format!(
+                "'{}' is not a valid collection id: lowercase letters, digits, '-' or '_', starting with a letter",
+                p.to
+            )));
+        }
+        let mut text = collections::set_id(&c.id, &collection_text(ctx, &c.id)?, &p.to)?;
+        let (retargeted, _) = collections::retarget_refs(&p.to, &text, &c.id, &p.to)?;
+        text = retargeted;
+        if let Some(label) = &p.label {
+            if label.trim().is_empty() {
+                return Err(Error::invalid_params("label must not be empty"));
+            }
+            text = collections::set_label(&p.to, &text, label)?;
+        }
+        let copy = Collection::parse(&p.to, &text)?;
+
+        let _g = self.write.lock();
+        if ctx.store.read_string(&collection_path(&p.to))?.is_some() {
+            return Err(Error::conflict(format!("there is already a collection '{}'", p.to)));
+        }
+        // Every record file as written, so nothing about a record changes but where it lives. One
+        // that doesn't parse is copied too (`records check` reports it in both), with no event.
+        let mut records = Vec::new();
+        if p.with_records {
+            let dir = format!("items/{}", c.id);
+            for path in ctx.store.list(&dir)? {
+                let Some(id) = path.strip_prefix(&format!("{dir}/")).and_then(|p| p.strip_suffix(".toml")) else {
+                    continue;
+                };
+                let Some(text) = ctx.store.read_string(&path)? else { continue };
+                let item = Item::from_toml(id, &text).ok();
+                records.push((id.to_owned(), text, item));
+            }
+        }
+        let count = records.len();
+        ctx.store.transaction(|tx| {
+            tx.put(&collection_path(&p.to), text)?;
+            tx.emit("records.collection.copied", json!({"collection": p.to, "from": c.id, "records": count}))?;
+            for (id, text, item) in &records {
+                tx.put(&item_path(&p.to, id), text.as_str())?;
+                if let Some(item) = item {
+                    tx.emit("records.item.created", payload(&copy, item, &item.to_wire(&copy)))?;
+                }
+            }
+            Ok(())
+        })?;
+        let mut out = serde_json::to_value(copy).unwrap_or_default();
+        out["records"] = json!(count);
+        Ok(out)
     }
 
     /// Move a collection and everything in it to `removed-collections/<id>/`, after the caller
