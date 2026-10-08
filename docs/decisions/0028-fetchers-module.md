@@ -2,7 +2,9 @@
 
 Status: proposed · Raised by Dev A (taking over the `fetchers` module from Dev B's territory
 per handoff) · Needs sign-off: Dev A · Dev C notified (protocol change: a new op, two payload
-shapes — see §9) · No `core` change
+shapes — see §9) · No `core` change · Amended (issue #127, source kinds): §2's `Source::id()`
+signature and the registry's construction model change — see §2a. Still no `core` change and
+no `docs/protocol.md` change — `fetchers.item.found`'s payload shape (§3) is unaffected.
 
 ## Context
 
@@ -51,6 +53,123 @@ The host loops `fetch_page` up to a fixed max-pages cap, following `next_cursor`
 `None` or the cap is hit. One trait, no API-then-scrape fallback inside a single `Source` —
 a source that genuinely wants both is two `Source` impls, each ~40 lines, matching CLAUDE.md
 §8's "one `impl Source` of about forty lines."
+
+### 2a. Amendment (#127): source kinds and a config-driven registry
+
+**Why.** §2's own answer to wanting a variant — "two `Source` impls" — is fine for "API vs.
+scrape of the same site," but doesn't scale to "watch five RSS feeds" or "two job-board
+searches for two companies." Raised in review of the fetchers PR stack (#116–#126); full
+reasoning in issue #127.
+
+**Trait change.** `Source::id` stops returning a `'static` string:
+
+```rust
+pub trait Source: Send + Sync {
+    fn id(&self) -> &str;    // was: &'static str
+    fn method(&self) -> Method;
+    async fn fetch_page(&self, ctx: &Ctx, cursor: Option<&str>) -> Result<Page>;
+}
+```
+
+A runtime-built instance can't hand back a `&'static str` for an id it only learns from
+`config.toml`. `hn-whoishiring`/`weworkremotely` need only this mechanical signature change
+— each still returns its existing literal, which borrows fine as `&str` — nothing else about
+either one moves. No `core` change: `Source` lives entirely in `crates/modules/fetchers`.
+
+**Config change.** `SourceConfig` (§5) gains an optional `kind`:
+
+```toml
+[modules.fetchers.sources.hn-whoishiring]
+enabled = true
+interval = "daily"            # no `kind` -- this id must already exist in the fixed,
+                               # compiled-in registry (unchanged, today's behavior)
+
+[modules.fetchers.sources.my-team-blog]
+kind = "rss"                  # `kind` present -- the registry builds a brand-new
+enabled = true                # instance of this kind, with this id and this entry's
+interval = "hourly"           # own settings, instead of looking up a built-in
+url = "https://example.com/feed.xml"
+```
+
+`kind` absent means today's path exactly: the id must resolve against the fixed, compiled-in
+list (`hn-whoishiring`, `weworkremotely`), checked at load time (already shipped: a
+misspelled or unknown id with no `kind` is rejected at `FetchersConfig::from_value`, not left
+to fail `not_found` on the first tick). `kind` present means a new instance, validated the
+same way — a kind's own required fields (e.g. `rss`'s `url`) must be checked at load time
+too, not discovered lazily on first fetch.
+
+**Registry becomes two-layered**, not a single flat list:
+
+1. The fixed, compiled-in sources (`hn-whoishiring`, `weworkremotely`) — unchanged, always
+   present, no `kind` needed, exactly as §2/§10 describe them today.
+2. A config-driven layer: for every `[modules.fetchers.sources.<id>]` entry that has a
+   `kind`, dispatch on that string (`"rss"` → build an `Rss` instance; any other value is
+   rejected at load time, same as an unknown interval preset) to construct a `Source` with
+   this entry's id and params.
+
+**Id collision is rejected, not shadowed.** A config entry whose `kind` is set and whose id
+equals one of the fixed, compiled-in ids (e.g. `[modules.fetchers.sources.hn-whoishiring]`
+with `kind = "rss"`) is a load-time error, the same `invalid_params` path as an unknown
+`kind` or a missing required field — never a silent shadow of the built-in. The two layers
+share one id namespace; a `kind`-bearing entry only ever *adds* an id, it never overrides
+one the fixed layer already owns. (Validation code lands in the sibling PR, #131, not here.)
+
+This needs no `core` change — the registry is built where `fetch()` already holds a `Ctx`,
+not inside `Module::triggers()` (§5's finding about `triggers()` having no config access is
+unaffected and unrelated to this).
+
+**The `rss` kind (issue #127, first batch — `json-api`/`html-list` are a later batch, not
+decided here):**
+
+- Settings beyond `enabled`/`interval`/`kind`: one required field, `url` — the feed's URL,
+  RSS or Atom. Checked at load time per the same "a kind's own required fields are checked
+  at load time" rule stated above, and checked as more than "non-empty": `url` must parse
+  as a well-formed `http://` or `https://` URL. Empty, malformed, or a non-`http(s)` scheme
+  (`ftp://`, `file://`, etc.) is a load-time `invalid_params` error, same as a missing
+  `url` entirely. (Validation code lands in #131, not here.)
+- Parsing via **`feed-rs` 3.0.0** (MIT, pure Rust — no `-sys` dependency in its tree
+  (`chrono`, `mediatype`, `quick-xml`, `regex`, `serde`, `serde_json`, `siphasher`, `url`,
+  `uuid`, `ammonia`) — handles RSS 0.x/1.0/2.0 and Atom from one parse call, 2.4M downloads,
+  last published 2026-09-27 — verified live against crates.io on 2026-10-07, same bar §7
+  already held `scraper`/`texting_robots` to.
+- `Method::Api`, not `Scrape` — a feed URL is a known, fetcher-maintained endpoint the same
+  way `hn-whoishiring`'s Firebase API is (§10); it is not a crawled site in the robots.txt
+  sense, so no robots.txt check applies.
+- Dedup key (`RawItem::source_id`): the entry's own `id`/`guid` field when the feed sets one,
+  else its `link` URL. Stated now so this isn't invented differently mid-implementation.
+  **Caveat found during #131's implementation:** `feed-rs` does not leave an entry's `id`
+  empty when the underlying feed omits one — it synthesizes a non-empty id itself (a hash
+  of link+title, or, when an entry has neither, a **random UUID that changes on every
+  parse**). Taking `feed-rs`'s id at face value would make such an entry look "new" on
+  every single run, defeating the entire point of dedup. So the `rss` kind must not use
+  `feed-rs`'s default id generation: it overrides it with its own `id_generator`
+  (`feed_rs::parser::Builder` supports supplying one) so the fallback is deterministic —
+  always the entry's own first `link` when there is no feed-supplied id, never a random
+  value — and an entry that still has neither a usable id nor a link is skipped rather than
+  ever emitted with an unstable key. (Implemented in #131, not here.)
+- Pagination: out of scope for a feed. `fetch_page` returns every entry the feed has in one
+  `Page` with `next_cursor: None`, always a single page.
+
+**Orphaned per-source state on removal is fine, left as-is.** When a configured `kind`
+entry is later deleted from `config.toml`, its `data/fetchers/<id>/seen.toml` and its entry
+in `last_run.toml` are left behind on disk, unreferenced by anything. This is expected and
+acceptable, not a leak to fix: CLAUDE.md's "SQLite is disposable" philosophy (§1.4) doesn't
+apply to these — they're files, not the derived index — but the underlying principle does:
+unreferenced state just sits unused, it does not corrupt anything or affect a source that
+is still configured. No automatic cleanup is done, and none is proposed here; a user who
+cares can delete the directory/entry by hand, consistent with "files the user could edit by
+hand" (CLAUDE.md §1.4).
+
+**Not done in this amendment:**
+
+- The `json-api` and `html-list` kinds — a later batch (issue #127, umbrella PR's own
+  done-when).
+- Migrating `hn-whoishiring`/`weworkremotely` onto the new kind system — they stay hand-written
+  `Source` impls exactly as today; only `id()`'s return type changes.
+- §7's per-method rate-limit floor (currently a uniform, provisional 900s) — a kind-aware
+  registry could eventually expose each instance's `Method` to the scheduling layer and make
+  this precise, but that's not decided or built here.
+- CLI/TUI surface — already out of scope per this ADR's "Not done here"; unchanged.
 
 ### 3. Item event
 
