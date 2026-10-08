@@ -1,0 +1,58 @@
+[template]
+label = "Health check"
+description = "One read-only report: disks, memory, battery, failed services and more"
+category = "upkeep"
+needs = [
+    "Nothing (uses what the system has: df, /proc or sysctl, systemctl, ss or lsof)",
+]
+good_to_know = [
+    "Read-only: it changes nothing and never needs sudo",
+    "Things that need attention come first; every threshold is an answer you can change",
+    "With NOTIFY = on-warning it sends a desktop notification only when something's wrong, for running it on a schedule",
+]
+on_stop = "Nothing to undo: it only reads."
+
+[[question]]
+name = "SKIP"
+prompt = "Checks to leave out"
+kind = "text"
+help = "Names separated by spaces: disk memory load uptime battery temperature services workspaces updates ports docker folders. Leave empty for all of them."
+
+[[question]]
+name = "NOTIFY"
+prompt = "Desktop notification when something needs attention"
+kind = "choice"
+choices = ["never", "on-warning"]
+default = "never"
+help = "on-warning: for running it on a schedule, so you hear about a full disk without looking."
+
+[[question]]
+name = "DISK_WARN_PERCENT"
+prompt = "Warn when a disk is this full (%)"
+kind = "text"
+default = "90"
+
+[[question]]
+name = "MEMORY_WARN_PERCENT"
+prompt = "Warn when memory is this full (%)"
+kind = "text"
+default = "90"
+
+[[question]]
+name = "BATTERY_WARN_PERCENT"
+prompt = "Warn when battery health drops below (% of new)"
+kind = "text"
+default = "80"
+
+[[question]]
+name = "UPTIME_WARN_DAYS"
+prompt = "Suggest a restart after this many days up"
+kind = "text"
+default = "30"
+
+[[question]]
+name = "BIGGEST_FOLDERS"
+prompt = "How many of the biggest folders in your home to list"
+kind = "text"
+default = "5"
+help = "0 to leave it out: on a very large home folder it takes a while."

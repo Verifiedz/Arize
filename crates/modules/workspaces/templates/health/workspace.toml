@@ -1,0 +1,36 @@
+# Health check: one read-only report on this computer. Created from Shimmer's health template.
+# It's your folder now: edit it freely.
+#
+#   shimmer workspaces activate <id> --wait     check, then print the report
+#   shimmer workspaces reconfigure <id>         change your answers (thresholds, SKIP, NOTIFY)
+#
+# Nothing is changed and nothing needs sudo. Things that need attention come first (!), then
+# what's fine (✓), then information (·). Add a check of your own in lib/shimmer-health.sh.
+#
+# On a schedule (e.g. every morning), set NOTIFY to "on-warning" to get a desktop notification
+# only when something needs attention.
+
+[workspace]
+label = "Health check"
+description = "Disks, memory, battery, failed services and more, in one report"
+
+[[step]]
+name = "check"
+description = "The thresholds are numbers, and which checks run"
+mode = "supervised"
+timeout_s = 30
+
+[[step]]
+name = "report"
+description = "Run every check (read-only)"
+mode = "supervised"
+timeout_s = 600
+
+[[step]]
+name = "summary"
+description = "Needs attention first, then what's fine; a notification with NOTIFY"
+mode = "supervised"
+timeout_s = 30
+
+[cleanup]
+timeout_s = 15

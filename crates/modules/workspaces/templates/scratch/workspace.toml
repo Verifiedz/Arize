@@ -1,0 +1,53 @@
+# Scratch: a fresh throwaway folder for trying something out, with a starter file in your
+# language, opened in your editor and a terminal. Created from Shimmer's scratch template. It's
+# your folder now: edit it freely.
+#
+#   shimmer workspaces activate <id> --wait     make the folder, open it, print where it is
+#   shimmer workspaces stop <id> --wait         close the terminal (the folder is kept)
+#   shimmer workspaces reconfigure <id>         change your answers, e.g. LANGUAGE
+#
+# Each activate makes a new folder in SCRATCH_DIR (or reopens today's, with NEW_FOLDER =
+# "once-a-day"). One scratch workspace per language works well:
+#   shimmer workspaces copy <id> scratch-rust --set LANGUAGE=rust
+# A language the template doesn't know: give a file name and how to run it, e.g.
+#   LANGUAGE = "main.odin", RUN_COMMAND = "odin run main.odin -file"
+# Its starters and run commands are in lib/shimmer-scratch.sh: add your own languages there.
+#
+# Nothing is ever deleted. With KEEP_DAYS set, folders this template made (they hold a
+# .shimmer-scratch file) that haven't changed in that many days go to the trash, where you can
+# still get them back. Found something worth keeping? Move it out of SCRATCH_DIR.
+
+[workspace]
+label = "Scratch"
+description = "A fresh throwaway folder with a starter file, opened in your editor"
+
+[[step]]
+name = "check"
+description = "The language, the editor and the terminal"
+mode = "supervised"
+timeout_s = 30
+
+[[step]]
+name = "folder"
+description = "Make the folder and its starter file; move old ones to the trash (KEEP_DAYS)"
+mode = "supervised"
+timeout_s = 60
+
+[[step]]
+name = "editor"
+description = "Open the folder and its starter file in the editor"
+mode = "detached"
+
+[[step]]
+name = "terminal"
+description = "A terminal in the folder, showing how to run the code"
+mode = "detached"
+
+[[step]]
+name = "summary"
+description = "Where the folder is and how to run it"
+mode = "supervised"
+timeout_s = 10
+
+[cleanup]
+timeout_s = 15

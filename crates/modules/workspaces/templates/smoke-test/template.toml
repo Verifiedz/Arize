@@ -1,0 +1,20 @@
+[template]
+label = "Smoke test"
+description = "Opens nothing: checks that workspaces work on this machine"
+category = "testing"
+needs = [
+    "Nothing",
+]
+good_to_know = [
+    "Opens nothing and changes nothing: it only checks that workspaces launch, fail and clean up on this machine",
+    "FAIL_AT makes it fail on purpose, to see what a dirty workspace looks like",
+]
+on_stop = "Stops its background step."
+
+[[question]]
+name = "FAIL_AT"
+prompt = "Fail on purpose at"
+kind = "choice"
+choices = ["none", "check", "cleanup"]
+default = "none"
+help = "none: launches cleanly. check: goes dirty at step 1. cleanup: cleanup fails and it stays dirty."

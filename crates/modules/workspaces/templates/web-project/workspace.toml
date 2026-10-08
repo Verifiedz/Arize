@@ -1,0 +1,73 @@
+# Web project: everything you need to work on a website or web app, opened in one go.
+# Created from Shimmer's web-project template. It's your folder now: edit it freely.
+#
+#   shimmer workspaces activate <id> --wait     open it all
+#   shimmer workspaces stop <id> --wait         stop the dev server and services, close what it can,
+#                                               and list what it closed and what it left open
+#   shimmer workspaces reconfigure <id>         change your answers (the [env] table at the bottom)
+#
+# "auto" is worked out each time it opens, from the project itself (package.json, the lockfile,
+# the git remote). A step whose answer is empty does nothing.
+#
+# Never put API keys or passwords in [env]: this file lives in your Shimmer folder, which is
+# meant to be copied between machines and committed to git. Secrets stay in the project's own
+# .env.local.
+#
+# The dev server's output goes to $TMPDIR/shimmer-<id>/dev-server.log (or /tmp/…).
+
+[workspace]
+label = "Web project"
+description = "Editor, dev server, localhost and your links"
+
+[[step]]
+name = "check"
+description = "The folder, editor and tools exist, and the local port is free"
+mode = "supervised"
+timeout_s = 15
+
+[[step]]
+name = "git"
+description = "Pull the latest code when there are no local changes"
+mode = "supervised"
+timeout_s = 60
+
+[[step]]
+name = "install"
+description = "Install packages when the lockfile changed"
+mode = "supervised"
+timeout_s = 600
+
+[[step]]
+name = "services"
+description = "Start services the project needs (SERVICES_COMMAND)"
+mode = "supervised"
+timeout_s = 120
+
+[[step]]
+name = "editor"
+description = "Open the editor"
+mode = "detached"
+
+[[step]]
+name = "dev-server"
+description = "Start the dev server"
+mode = "detached"
+
+[[step]]
+name = "wait"
+description = "Wait until the local URL answers"
+mode = "supervised"
+timeout_s = 120
+
+[[step]]
+name = "browser"
+description = "Open localhost, the repository and your links"
+mode = "detached"
+
+[[step]]
+name = "terminal"
+description = "Open a terminal in the project"
+mode = "detached"
+
+[cleanup]
+timeout_s = 30
