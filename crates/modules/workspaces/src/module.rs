@@ -540,9 +540,21 @@ impl Workspaces {
         if to == id {
             return Err(Error::invalid_params(format!("'{id}' is already called that")));
         }
-        // A state file that can't be read doesn't stop renaming a broken workspace.
-        if let Some(Ok(saved)) = f.saved(ctx, id) {
-            state::start_rename(&saved.state).map_err(|e| Error::new(e.code, format!("{id}: {}", e.message)))?;
+        // Fail closed: unlike remove (which restore undoes), a rename moves everything stop and
+        // cleanup find by the id, so an unreadable state file -- which may hide a running or
+        // dirty workspace -- refuses it (ADR 0026 §2a).
+        match f.saved(ctx, id) {
+            Some(Ok(saved)) => {
+                state::start_rename(&saved.state).map_err(|e| Error::new(e.code, format!("{id}: {}", e.message)))?
+            }
+            Some(Err(e)) => {
+                return Err(Error::conflict(format!(
+                    "{id}: its state file can't be read ({}), so it may still be running: \
+                     fix or reset it first (workspaces.reset)",
+                    e.message
+                )))
+            }
+            None => {}
         }
         if !ctx.store.list(to)?.is_empty() {
             return Err(Error::conflict(format!("there is already a workspace '{to}'")));

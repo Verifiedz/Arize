@@ -213,19 +213,36 @@ async fn run_supervised(
 /// (setup steps, cleanup) and nothing ever removed one before this, so it grew without bound.
 const KEEP_STEP_LOGS: usize = 10;
 
-/// Deletes every step log for `workspace_dir` beyond the newest [`KEEP_STEP_LOGS`], except
-/// the one a `dirty` state currently points at (read straight from `state.toml`, below) —
-/// run right after each supervised step's own log is written, so `logs/` stays bounded
-/// continuously rather than needing a sweep at daemon start. Best-effort: a failure to list
-/// or remove a file is swallowed, since missing a prune is harmless and must never fail the
-/// launch step that just succeeded or failed on its own merits.
+/// Deletes every step log for `workspace_dir` beyond the newest [`KEEP_STEP_LOGS`]
+/// *launches*, except the one a `dirty` state currently points at (read straight from
+/// `state.toml`, below) — run right after each supervised step's own log is written, so
+/// `logs/` stays bounded continuously rather than needing a sweep at daemon start.
+/// Best-effort: a failure to list or remove a file is swallowed, since missing a prune is
+/// harmless and must never fail the launch step that just succeeded or failed on its own
+/// merits.
+///
+/// Counts distinct *sessions*, not files (#105): a workspace with several supervised steps
+/// (a setup step plus a cleanup script, say) writes one log per step but one session id per
+/// launch, so counting files alone kept only `KEEP_STEP_LOGS` divided by however many
+/// supervised steps a launch happens to have, not `KEEP_STEP_LOGS` launches. Entries are
+/// already grouped by session, since `workspace_log_files` sorts by filename and every file
+/// from one session shares the identical `<workspace_dir>-<session_id>-` prefix.
 fn prune_step_logs(home: &Path, workspace_dir: &str) {
     let mut files = workspace_log_files(home, workspace_dir);
     // Newest first (filenames sort lexically by session id, and session ids are ULIDs, so
     // this is also chronological order — ADR 0010 §3 "Logs").
     files.reverse();
     let protected = dirty_log_pointer(home, workspace_dir).map(|rel| home.join(rel));
-    for path in files.into_iter().skip(KEEP_STEP_LOGS) {
+    let mut sessions_seen = 0;
+    let mut last_session: Option<String> = None;
+    for (session, path) in files {
+        if last_session.as_ref() != Some(&session) {
+            sessions_seen += 1;
+            last_session = Some(session);
+        }
+        if sessions_seen <= KEEP_STEP_LOGS {
+            continue;
+        }
         if protected.as_deref() == Some(path.as_path()) {
             continue;
         }
@@ -233,20 +250,24 @@ fn prune_step_logs(home: &Path, workspace_dir: &str) {
     }
 }
 
-/// Every `logs/<workspace_dir>-<session_id>-<label>.log` file for this workspace, oldest
-/// first. Matches on an exact `<workspace_dir>-` prefix followed by a 26-character ULID, not
-/// a plain substring prefix, so a workspace named `foo` never matches another one's logs
-/// named `foo-bar-<session>-<label>.log`.
-fn workspace_log_files(home: &Path, workspace_dir: &str) -> Vec<PathBuf> {
+/// Every `logs/<workspace_dir>-<session_id>-<label>.log` file for this workspace, with its
+/// session id, oldest first. Matches on an exact `<workspace_dir>-` prefix followed by a
+/// 26-character ULID, not a plain substring prefix, so a workspace named `foo` never matches
+/// another one's logs named `foo-bar-<session>-<label>.log`. A ULID is Crockford base32 —
+/// uppercase letters and digits only (#105: `is_ascii_alphanumeric` also accepted lowercase,
+/// so e.g. `site-abcdefghijklmnopqrstuvwxyz-setup.log`, a 26-lowercase-letter *label* on a
+/// workspace named `site`, was wrongly counted and pruned as one of `site`'s own sessions).
+fn workspace_log_files(home: &Path, workspace_dir: &str) -> Vec<(String, PathBuf)> {
     let Ok(entries) = std::fs::read_dir(home.join("logs")) else { return Vec::new() };
     let prefix = format!("{workspace_dir}-");
-    let mut files: Vec<PathBuf> = entries
+    let mut files: Vec<(String, PathBuf)> = entries
         .filter_map(|e| e.ok())
         .filter_map(|e| {
             let name = e.file_name().into_string().ok()?;
             let rest = name.strip_prefix(&prefix)?.strip_suffix(".log")?;
             let (session, _label) = rest.split_once('-')?;
-            (session.len() == 26 && session.chars().all(|c| c.is_ascii_alphanumeric())).then(|| e.path())
+            let is_ulid = session.len() == 26 && session.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
+            is_ulid.then(|| (session.to_owned(), e.path()))
         })
         .collect();
     files.sort();
@@ -758,6 +779,64 @@ mod tests {
         for fresh in &outcomes[3..] {
             assert!(home.path().join(&fresh.log_path).exists(), "one of the newest {KEEP_STEP_LOGS} must survive");
         }
+    }
+
+    /// Two supervised steps of ONE launch attempt sharing a session id, the way the
+    /// workspaces module threads `session_id` from the first step's outcome onto the rest of
+    /// that same attempt (ADR 0010 §9) -- e.g. a setup step plus a second supervised step.
+    async fn launch_once_with_two_steps(backend: &RealLaunchBackend) -> (StepOutcome, StepOutcome) {
+        let first = backend
+            .run(&supervised_step("deep-work", "setup", Duration::from_secs(5)), &CancellationToken::new())
+            .await
+            .unwrap();
+        let mut second_step = supervised_step("deep-work", "second", Duration::from_secs(5));
+        second_step.session_id = Some(first.session_id.clone());
+        let second = backend.run(&second_step, &CancellationToken::new()).await.unwrap();
+        (first, second)
+    }
+
+    #[tokio::test]
+    async fn the_cap_counts_launches_not_files_when_one_launch_has_several_logs() {
+        // #105: before this fix, a workspace whose launches write more than one supervised
+        // step's log (a setup step plus a second one here) only kept KEEP_STEP_LOGS files --
+        // half as many *launches* as a single-step workspace, since pruning counted files.
+        let home = TempDir::new().unwrap();
+        write_step_script(home.path(), "deep-work", "setup", "true\n");
+        write_step_script(home.path(), "deep-work", "second", "true\n");
+        let backend = backend(&home);
+
+        let mut launches = Vec::new();
+        for _ in 0..KEEP_STEP_LOGS + 1 {
+            launches.push(launch_once_with_two_steps(&backend).await);
+        }
+
+        let remaining = workspace_log_files(home.path(), "deep-work");
+        assert_eq!(
+            remaining.len(),
+            KEEP_STEP_LOGS * 2,
+            "kept both logs of each of the newest {KEEP_STEP_LOGS} launches"
+        );
+        let (oldest_first, oldest_second) = &launches[0];
+        assert!(!home.path().join(&oldest_first.log_path).exists(), "the oldest launch's first log must be pruned");
+        assert!(
+            !home.path().join(&oldest_second.log_path).exists(),
+            "the oldest launch's second log must be pruned too"
+        );
+        let (newest_first, newest_second) = &launches[KEEP_STEP_LOGS];
+        assert!(home.path().join(&newest_first.log_path).exists());
+        assert!(home.path().join(&newest_second.log_path).exists());
+    }
+
+    #[test]
+    fn a_26_lowercase_label_is_never_mistaken_for_a_ulid_session_id() {
+        // #105: `is_ascii_alphanumeric` also accepts lowercase, so a workspace named `site`
+        // used to count (and could prune) a file like this one as if it were one of its own
+        // sessions, even though it has nothing to do with `site` at all -- a ULID is
+        // Crockford base32, uppercase letters and digits only.
+        let home = TempDir::new().unwrap();
+        std::fs::create_dir_all(home.path().join("logs")).unwrap();
+        std::fs::write(home.path().join("logs/site-abcdefghijklmnopqrstuvwxyz-setup.log"), "x").unwrap();
+        assert!(workspace_log_files(home.path(), "site").is_empty());
     }
 
     #[tokio::test]

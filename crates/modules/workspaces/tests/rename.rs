@@ -74,3 +74,17 @@ async fn rename_refuses_anything_unsafe_and_changes_nothing() {
     let e = call(&w, &env, "workspaces.rename", json!({"id": "nope", "to": "x"})).await.unwrap_err();
     assert_eq!(e.code, ErrorCode::NotFound);
 }
+
+#[tokio::test]
+async fn rename_refuses_when_the_state_file_cant_be_read() {
+    // Fail closed (ADR 0026 §2a): an unreadable state may hide a running workspace.
+    let (env, w) = (TestEnv::new("workspaces"), Workspaces::default());
+    site(&w, &env, json!({"PROJECT_DIR": "/home/me/code/site"})).await;
+    env.ctx.store.write("site/state.toml", "this is not toml [").unwrap();
+    let e = call(&w, &env, "workspaces.rename", json!({"id": "site", "to": "portfolio"})).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::Conflict);
+    assert!(e.message.contains("state file can't be read"), "{}", e.message);
+    assert!(env.ctx.store.list("portfolio").unwrap().is_empty(), "nothing moved");
+    // remove still works on a broken workspace: restore can undo it (ADR 0026 §2).
+    call(&w, &env, "workspaces.remove", json!({"id": "site"})).await.unwrap();
+}
