@@ -327,6 +327,24 @@ fn templates_of(which: WhichTemplates) -> Result<Value> {
     Ok(json!({"templates": all.iter().map(wire).collect::<Result<Vec<_>>>()?, "categories": categories}))
 }
 
+/// `invalid_params` unless `id` can name a new collection (it becomes a file name).
+fn new_collection_id(id: &str) -> Result<()> {
+    match is_valid_name(id) {
+        true => Ok(()),
+        false => Err(Error::invalid_params(format!(
+            "'{id}' is not a valid collection id: lowercase letters, digits, '-' or '_', starting with a letter"
+        ))),
+    }
+}
+
+/// Collection file `text` with its label set to `label`, which must not be blank.
+fn relabel(id: &str, text: &str, label: &str) -> Result<String> {
+    if label.trim().is_empty() {
+        return Err(Error::invalid_params("label must not be empty"));
+    }
+    collections::set_label(id, text, label)
+}
+
 /// `not_found` for a template that isn't built in, naming the ones that are.
 fn no_template(id: &str) -> Error {
     Error::not_found(format!("no template '{id}' (there are: {})", templates::names().join(", ")))
@@ -609,21 +627,13 @@ impl Records {
     }
 
     fn create_collection(&self, ctx: &Ctx, p: CreateCollection) -> Result<Value> {
-        if !is_valid_name(&p.id) {
-            return Err(Error::invalid_params(format!(
-                "'{}' is not a valid collection id: lowercase letters, digits, '-' or '_', starting with a letter",
-                p.id
-            )));
-        }
+        new_collection_id(&p.id)?;
         let Some(text) = templates::find(&p.template) else {
             return Err(no_template(&p.template));
         };
         let mut text = collections::set_id(&p.template, text, &p.id)?;
         if let Some(label) = &p.label {
-            if label.trim().is_empty() {
-                return Err(Error::invalid_params("label must not be empty"));
-            }
-            text = collections::set_label(&p.id, &text, label)?;
+            text = relabel(&p.id, &text, label)?;
         }
         // A template that can't produce a valid collection is a bug: fail, don't write it.
         let c = Collection::parse(&p.id, &text)?;
@@ -717,9 +727,7 @@ impl Records {
     /// Move a collection, its records and its trash to a new id (ADR 0021 §4).
     fn rename_collection(&self, ctx: &Ctx, p: RenameCollection) -> Result<Value> {
         let c = load_collection(ctx, &p.id)?;
-        if !is_valid_name(&p.new_id) {
-            return Err(Error::invalid_params(format!("'{}' is not a valid collection id", p.new_id)));
-        }
+        new_collection_id(&p.new_id)?;
         let _g = self.write.lock();
         if ctx.store.read_string(&collection_path(&p.new_id))?.is_some() {
             return Err(Error::conflict(format!("there is already a collection '{}'", p.new_id)));
@@ -758,20 +766,12 @@ impl Records {
     /// live record too, as written. One transaction, one `records.item.created` per record.
     fn copy_collection(&self, ctx: &Ctx, p: CopyCollection) -> Result<Value> {
         let c = load_collection(ctx, &p.id)?;
-        if !is_valid_name(&p.to) {
-            return Err(Error::invalid_params(format!(
-                "'{}' is not a valid collection id: lowercase letters, digits, '-' or '_', starting with a letter",
-                p.to
-            )));
-        }
+        new_collection_id(&p.to)?;
         let mut text = collections::set_id(&c.id, &collection_text(ctx, &c.id)?, &p.to)?;
         let (retargeted, _) = collections::retarget_refs(&p.to, &text, &c.id, &p.to)?;
         text = retargeted;
         if let Some(label) = &p.label {
-            if label.trim().is_empty() {
-                return Err(Error::invalid_params("label must not be empty"));
-            }
-            text = collections::set_label(&p.to, &text, label)?;
+            text = relabel(&p.to, &text, label)?;
         }
         let copy = Collection::parse(&p.to, &text)?;
 
