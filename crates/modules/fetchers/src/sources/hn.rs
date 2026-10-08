@@ -48,7 +48,7 @@ struct HnItem {
 
 #[async_trait]
 impl Source for HnWhoIsHiring {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "hn-whoishiring"
     }
 

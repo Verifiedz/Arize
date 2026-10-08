@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
-use shimmer_core::{Ctx, Result};
+use shimmer_core::{Ctx, Error, Result};
 
 /// The host loops [`Source::fetch_page`] at most this many times per run, following
 /// `next_cursor` -- a `Source` never loops itself.
@@ -46,15 +46,19 @@ pub struct Page {
 #[async_trait]
 pub trait Source: Send + Sync {
     /// Also `fetchers.item.found`'s `source_name` and `data/fetchers/<id>/...`'s directory
-    /// name.
-    fn id(&self) -> &'static str;
+    /// name. Borrowed from `&self`, not `&'static` (ADR 0028 §2a) -- a configured-kind
+    /// instance's id comes from `config.toml`, not a compile-time literal.
+    fn id(&self) -> &str;
     fn method(&self) -> Method;
     /// One page, given the previous page's `next_cursor` (`None` for the first page).
     async fn fetch_page(&self, ctx: &Ctx, cursor: Option<&str>) -> Result<Page>;
 }
 
-/// Every `Source` this build knows about (ADR 0028 §10). A compiled-in list, not a plugin
-/// registry -- adding a source is adding a line here.
+/// The fixed, compiled-in sources (ADR 0028 §10). Not a plugin registry -- adding one of
+/// these is adding a line here. Unrelated to, and unaffected by, `config.toml`: each is
+/// always present whether or not it has a `[modules.fetchers.sources.*]` entry at all
+/// (ADR 0028 §2a -- a `kind`-less config entry only ever adjusts one of these by id, never
+/// replaces or disables its presence here).
 pub fn registry() -> Vec<std::sync::Arc<dyn Source>> {
     vec![
         std::sync::Arc::new(crate::sources::hn::HnWhoIsHiring),
@@ -64,6 +68,29 @@ pub fn registry() -> Vec<std::sync::Arc<dyn Source>> {
 
 pub fn find(id: &str) -> Option<std::sync::Arc<dyn Source>> {
     registry().into_iter().find(|s| s.id() == id)
+}
+
+/// The two-layered lookup ADR 0028 §2a describes: a configured `kind` builds a brand-new
+/// instance from that config entry's own settings; no `kind` (or no config entry at all)
+/// falls back to the fixed [`registry`]. `FetchersConfig::from_value` has already validated
+/// every entry's `kind` and its required fields at load time, so a config-shape error here
+/// would mean that validation has a gap, not that this run should report one -- hence
+/// `Error::internal`, not `invalid_params`, on the "known kind but missing its own field"
+/// branches.
+pub fn resolve(ctx: &Ctx, id: &str) -> Result<Option<std::sync::Arc<dyn Source>>> {
+    let config = crate::schedule::FetchersConfig::load(ctx)?;
+    match config.sources.get(id).and_then(|c| c.kind.as_deref()) {
+        Some("rss") => {
+            let url = config.sources.get(id).and_then(|c| c.url.as_deref()).ok_or_else(|| {
+                Error::internal(format!("sources.{id}: kind \"rss\" has no url despite passing load-time validation"))
+            })?;
+            Ok(Some(std::sync::Arc::new(crate::sources::rss::Rss::new(id.to_string(), url.to_string()))))
+        }
+        Some(other) => {
+            Err(Error::internal(format!("sources.{id}: unknown kind \"{other}\" despite passing load-time validation")))
+        }
+        None => Ok(find(id)),
+    }
 }
 
 #[cfg(test)]

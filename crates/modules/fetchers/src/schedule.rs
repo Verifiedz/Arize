@@ -56,6 +56,15 @@ pub struct SourceConfig {
     #[serde(default)]
     pub enabled: bool,
     pub interval: IntervalSpec,
+    /// Absent: `id` must already be one of the fixed, compiled-in sources
+    /// (`crate::source::registry`) -- today's behavior, unchanged. Present: build a new
+    /// instance of this *kind* instead (ADR 0028 §2a) -- currently only `"rss"`.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// The `rss` kind's one required setting (ADR 0028 §2a): the feed's url. Meaningless,
+    /// and left unvalidated, when `kind` is absent or any other value.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -103,12 +112,52 @@ impl FetchersConfig {
             .map_err(|e| Error::invalid_params(format!("[modules.fetchers]: {e}")))?;
         for (id, source) in &cfg.sources {
             source.interval.resolve().map_err(|e| Error::invalid_params(format!("sources.{id}.interval: {e}")))?;
-            if crate::source::find(id).is_none() {
-                let known: Vec<&str> = crate::source::registry().iter().map(|s| s.id()).collect();
-                return Err(Error::invalid_params(format!(
-                    "sources.{id}: unknown source id (known: {})",
-                    known.join(", ")
-                )));
+            match source.kind.as_deref() {
+                None => {
+                    if crate::source::find(id).is_none() {
+                        let known_sources = crate::source::registry();
+                        let known: Vec<&str> = known_sources.iter().map(|s| s.id()).collect();
+                        return Err(Error::invalid_params(format!(
+                            "sources.{id}: unknown source id (known: {})",
+                            known.join(", ")
+                        )));
+                    }
+                }
+                Some(kind) => {
+                    // A `kind` entry builds a brand-new instance (`crate::source::resolve`)
+                    // rather than adjusting a fixed, compiled-in one -- so an id that
+                    // already belongs to the fixed registry would either sit alongside it
+                    // as a silent duplicate (`crate::source::known`) or shadow it outright
+                    // (`crate::source::resolve` always prefers the `kind` branch). Neither
+                    // is a real "this source is both configured and reconfigured" case we
+                    // want to allow; reject it at load time rather than let one silently
+                    // win.
+                    if crate::source::find(id).is_some() {
+                        return Err(Error::invalid_params(format!(
+                            "sources.{id}: kind \"{kind}\" collides with a fixed, compiled-in source of the same id"
+                        )));
+                    }
+                    match kind {
+                        "rss" => {
+                            let url = source.url.as_deref().unwrap_or_default().trim();
+                            if url.is_empty() {
+                                return Err(Error::invalid_params(format!(
+                                    "sources.{id}: kind \"rss\" needs a non-empty url"
+                                )));
+                            }
+                            if !is_http_url(url) {
+                                return Err(Error::invalid_params(format!(
+                                    "sources.{id}: kind \"rss\" url must be a well-formed http:// or https:// url, got '{url}'"
+                                )));
+                            }
+                        }
+                        other => {
+                            return Err(Error::invalid_params(format!(
+                                "sources.{id}: unknown kind \"{other}\" (known: rss)"
+                            )));
+                        }
+                    }
+                }
             }
         }
         Ok(cfg)
@@ -117,6 +166,13 @@ impl FetchersConfig {
     pub fn load(ctx: &Ctx) -> Result<Self> {
         Self::from_value(ctx.config.raw())
     }
+}
+
+/// `url` is deliberately not a free-text field: an `rss` source feeds straight into
+/// `http::get` (ADR 0028 §2a), so a malformed value would otherwise surface as a cryptic
+/// connection error deep in the first tick rather than a clear one at load time.
+fn is_http_url(candidate: &str) -> bool {
+    matches!(url::Url::parse(candidate), Ok(u) if u.scheme() == "http" || u.scheme() == "https")
 }
 
 /// Every enabled, configured source whose interval has elapsed since its last run (or that
@@ -252,8 +308,81 @@ mod tests {
         assert!(err.message.contains("hn-whoishiring"), "{}", err.message);
     }
 
+    #[test]
+    fn a_configured_rss_kind_with_a_url_parses() {
+        let cfg = FetchersConfig::from_value(&json!({
+            "sources": {
+                "my-team-blog": {"enabled": true, "interval": "hourly", "kind": "rss", "url": "https://example.test/feed.xml"},
+            }
+        }))
+        .unwrap();
+        assert_eq!(cfg.sources["my-team-blog"].kind.as_deref(), Some("rss"));
+    }
+
+    #[test]
+    fn an_rss_kind_with_no_url_fails_at_load_time() {
+        let err = FetchersConfig::from_value(&json!({
+            "sources": {"my-team-blog": {"enabled": true, "interval": "hourly", "kind": "rss"}}
+        }))
+        .unwrap_err();
+        assert_eq!(err.code, shimmer_core::ErrorCode::InvalidParams);
+        assert!(err.message.contains("my-team-blog"), "{}", err.message);
+        assert!(err.message.contains("url"), "{}", err.message);
+    }
+
+    #[test]
+    fn an_rss_kind_with_a_non_http_url_fails_at_load_time() {
+        let err = FetchersConfig::from_value(&json!({
+            "sources": {"my-team-blog": {"enabled": true, "interval": "hourly", "kind": "rss", "url": "not-a-url"}}
+        }))
+        .unwrap_err();
+        assert_eq!(err.code, shimmer_core::ErrorCode::InvalidParams);
+        assert!(err.message.contains("my-team-blog"), "{}", err.message);
+    }
+
+    #[test]
+    fn an_rss_kind_with_a_non_http_scheme_url_fails_at_load_time() {
+        let err = FetchersConfig::from_value(&json!({
+            "sources": {"my-team-blog": {"enabled": true, "interval": "hourly", "kind": "rss", "url": "ftp://example.test/feed.xml"}}
+        }))
+        .unwrap_err();
+        assert_eq!(err.code, shimmer_core::ErrorCode::InvalidParams);
+        assert!(err.message.contains("my-team-blog"), "{}", err.message);
+    }
+
+    #[test]
+    fn an_rss_kind_with_an_https_url_parses() {
+        let cfg = FetchersConfig::from_value(&json!({
+            "sources": {"my-team-blog": {"enabled": true, "interval": "hourly", "kind": "rss", "url": "https://example.test/feed.xml"}}
+        }))
+        .unwrap();
+        assert_eq!(cfg.sources["my-team-blog"].url.as_deref(), Some("https://example.test/feed.xml"));
+    }
+
+    #[test]
+    fn a_kind_entry_whose_id_collides_with_a_fixed_source_fails_at_load_time() {
+        for id in ["hn-whoishiring", "weworkremotely"] {
+            let err = FetchersConfig::from_value(&json!({
+                "sources": {id: {"enabled": true, "interval": "hourly", "kind": "rss", "url": "https://example.test/feed.xml"}}
+            }))
+            .unwrap_err();
+            assert_eq!(err.code, shimmer_core::ErrorCode::InvalidParams, "id: {id}");
+            assert!(err.message.contains(id), "{}", err.message);
+        }
+    }
+
+    #[test]
+    fn an_unknown_kind_is_rejected() {
+        let err = FetchersConfig::from_value(&json!({
+            "sources": {"my-team-blog": {"enabled": true, "interval": "hourly", "kind": "carrier-pigeon"}}
+        }))
+        .unwrap_err();
+        assert_eq!(err.code, shimmer_core::ErrorCode::InvalidParams);
+        assert!(err.message.contains("carrier-pigeon"), "{}", err.message);
+    }
+
     fn source(enabled: bool, interval_s: u64) -> SourceConfig {
-        SourceConfig { enabled, interval: IntervalSpec::Seconds(interval_s) }
+        SourceConfig { enabled, interval: IntervalSpec::Seconds(interval_s), kind: None, url: None }
     }
 
     #[test]

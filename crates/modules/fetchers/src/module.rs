@@ -112,7 +112,8 @@ impl Fetchers {
         if source_id.trim().is_empty() {
             return Err(Error::invalid_params("source must not be empty"));
         }
-        let source = source::find(&source_id).ok_or_else(|| Error::not_found(format!("no source '{source_id}'")))?;
+        let source =
+            source::resolve(ctx, &source_id)?.ok_or_else(|| Error::not_found(format!("no source '{source_id}'")))?;
         let _permit = self
             .running
             .try_acquire(&source_id)
@@ -230,7 +231,7 @@ fn cap_raw_data(v: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use shimmer_core::testing::TestEnv;
-    use shimmer_core::HttpResponse;
+    use shimmer_core::{HttpResponse, ModuleConfig};
 
     use super::*;
     use crate::schedule::IntervalSpec;
@@ -277,7 +278,7 @@ mod tests {
     }
 
     fn source_config(enabled: bool, interval_s: u64) -> schedule::SourceConfig {
-        schedule::SourceConfig { enabled, interval: IntervalSpec::Seconds(interval_s) }
+        schedule::SourceConfig { enabled, interval: IntervalSpec::Seconds(interval_s), kind: None, url: None }
     }
 
     #[tokio::test]
@@ -393,6 +394,60 @@ mod tests {
         assert_eq!(second["new_items"].as_u64(), Some(0));
         let found_after_second = env.backend.events().iter().filter(|e| e.topic == "fetchers.item.found").count();
         assert_eq!(found_after_second, 1, "an already-seen item must never be emitted twice");
+    }
+
+    #[tokio::test]
+    async fn a_configured_rss_kind_fetches_through_the_same_pipeline_as_a_fixed_source() {
+        const FEED: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Example Blog</title>
+  <id>urn:uuid:feed-1</id>
+  <updated>2026-10-01T00:00:00Z</updated>
+  <entry>
+    <id>urn:uuid:entry-1</id>
+    <title>First post</title>
+    <link href="https://example.test/posts/1"/>
+    <updated>2026-10-01T00:00:00Z</updated>
+  </entry>
+</feed>"#;
+
+        let mut env = TestEnv::new("fetchers");
+        env.ctx.config = ModuleConfig::new(json!({
+            "sources": {
+                "my-team-blog": {
+                    "enabled": true,
+                    "interval": "hourly",
+                    "kind": "rss",
+                    "url": "https://example.test/feed.xml",
+                },
+            }
+        }));
+        env.http.responses.lock().unwrap().insert(
+            "https://example.test/feed.xml".to_string(),
+            HttpResponse {
+                status: 200,
+                body: FEED.as_bytes().to_vec(),
+                from_cache: false,
+                stale: false,
+                retry_after_secs: None,
+            },
+        );
+
+        let fetchers = Fetchers::default();
+        let out = fetchers.fetch(&env.ctx, "my-team-blog".into()).await.unwrap();
+        assert_eq!((out["source"].as_str(), out["new_items"].as_u64()), (Some("my-team-blog"), Some(1)));
+
+        let found: Vec<_> = env.backend.events().into_iter().filter(|e| e.topic == "fetchers.item.found").collect();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].payload["source_name"], "my-team-blog");
+        assert_eq!(found[0].payload["source_id"], "urn:uuid:entry-1");
+    }
+
+    #[tokio::test]
+    async fn an_id_that_is_neither_a_fixed_source_nor_a_configured_kind_is_not_found() {
+        let env = TestEnv::new("fetchers");
+        let err = Fetchers::default().fetch(&env.ctx, "not-a-real-source".into()).await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::NotFound);
     }
 
     #[tokio::test]
