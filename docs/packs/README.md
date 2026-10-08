@@ -87,6 +87,9 @@ belongs to this machine, so copying your Shimmer folder elsewhere doesn't bring 
 | workspaces peek | `hontou` | `code-review` | `long-range-scan` | `wpeek` |
 | workspaces new | `yoroshiku` | `scaffold` | `maiden-voyage` | `wnew` |
 | scheduler show | `itsu` | `eta` | `countdown` | `sget` |
+| records peek | `hora` | `preview` | `probe` | `rpeek` |
+| records copy-collection | `futago` | `copy-pasta` | `twin-fleet` | `rcpcol` |
+| records edit | `kaizou` | `tweak-schema` | `drydock` | `redit` |
 
 ## Writing your own
 
@@ -120,7 +123,7 @@ On the right of each alias goes the command it runs, by its op name:
 | `scheduler.list`, `.add`, `.pause`, `.resume`, `.remove` | `shimmer scheduler <verb>` |
 
 The queue and scheduler commands are optional for your own packs: name them if you like. The
-built-in packs name all 28.
+built-in packs name every command.
 
 Then check it, and turn it on:
 
