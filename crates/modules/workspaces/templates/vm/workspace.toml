@@ -1,0 +1,53 @@
+# Virtual machine: start a VM, wait until it answers over SSH, then open an editor and a terminal
+# inside it. Created from Shimmer's vm template. It's your folder now: edit it freely.
+#
+#   shimmer workspaces activate <id> --wait     start it all
+#   shimmer workspaces stop <id> --wait         suspend or shut down the VM (ON_STOP), only if this
+#                                               workspace started it; close the SSH terminal
+#   shimmer workspaces reconfigure <id>         change your answers (the [env] table at the bottom)
+#
+# Passwords: never put one in [env]. This file lives in your Shimmer folder, which is meant to be
+# copied between machines and committed to git. In order of preference:
+#   1. An SSH key, set up once:   ssh-copy-id -p <port> <user>@<host>
+#      (you type the password into ssh one last time; after that nothing asks)
+#   2. A key with a passphrase, unlocked by your login keychain (ssh-add --apple-use-keychain)
+#   3. Nothing: ssh asks you itself, in the terminal window this workspace opens
+#   4. SSH_PASSWORD_ITEM: the NAME of a keychain entry; ssh reads it through SSH_ASKPASS.
+#      Save it once with (macOS)  security add-generic-password -s <name> -a "$USER" -w
+#                         (Linux) secret-tool store --label=<name> shimmer <name>
+# An editor opened inside the VM (Remote-SSH) asks for a password itself when there's no key.
+
+[workspace]
+label = "Virtual machine"
+description = "Start a VM, then open an editor and a terminal inside it"
+
+[[step]]
+name = "check"
+description = "The VM software, the VM, the editor and terminal exist"
+mode = "supervised"
+timeout_s = 30
+
+[[step]]
+name = "start"
+description = "Start the VM, unless it's already running"
+mode = "supervised"
+timeout_s = 180
+
+[[step]]
+name = "wait"
+description = "Wait until the VM answers on its SSH port"
+mode = "supervised"
+timeout_s = 300
+
+[[step]]
+name = "editor"
+description = "Open the editor inside the VM (Remote-SSH)"
+mode = "detached"
+
+[[step]]
+name = "terminal"
+description = "Open an SSH terminal into the VM"
+mode = "detached"
+
+[cleanup]
+timeout_s = 180

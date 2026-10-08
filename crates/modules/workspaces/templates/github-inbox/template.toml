@@ -1,0 +1,50 @@
+[template]
+label = "GitHub inbox"
+description = "What GitHub is waiting on you for: reviews, your PRs, your issues"
+category = "daily"
+needs = [
+    "gh (the GitHub CLI), logged in with gh auth login",
+]
+good_to_know = [
+    "Read-only: it never comments, approves, merges or changes anything on GitHub",
+    "Shimmer never sees your GitHub token: gh keeps it",
+    "One query lists PRs waiting for your review, your open PRs with their checks and reviews, and issues assigned to you; SCOPE limits it to some orgs or repos",
+    "With OPEN it opens them in your browser (at most 10 tabs)",
+]
+on_stop = "Nothing to undo: it only reads. Browser tabs it opened stay open."
+
+[[question]]
+name = "SCOPE"
+prompt = "Only these orgs or repos (optional)"
+kind = "text"
+help = "Separated by spaces, e.g. Verifiedz/Shimmer my-company. Leave empty for everything on your account."
+
+[[question]]
+name = "STALE_DAYS"
+prompt = "Flag a review request after it has waited this many days"
+kind = "text"
+default = "2"
+
+[[question]]
+name = "OPEN"
+prompt = "Open in the browser"
+kind = "choice"
+choices = ["nothing", "reviews", "everything", "inbox-pages"]
+default = "nothing"
+help = "reviews: each PR waiting for your review. everything: every PR and issue listed (at most 10). inbox-pages: GitHub's own review-requested and notifications pages."
+
+[[question]]
+name = "NOTIFY"
+prompt = "Desktop notification when reviews are waiting"
+kind = "choice"
+choices = ["never", "when-reviews"]
+default = "never"
+help = "when-reviews: for running it on a schedule."
+
+[[question]]
+name = "OPEN_ON"
+prompt = "Where the browser opens"
+kind = "choice"
+choices = ["auto", "this-machine", "connected-computer"]
+default = "auto"
+help = "this-machine: this computer's own screen, even if Shimmer was started from a Cursor/VS Code terminal connected from elsewhere. connected-computer: the computer you're connected from. auto: wherever Shimmer was started."

@@ -1,0 +1,51 @@
+# Update everything: every developer tool you have installed, and your system's packages, in one
+# go. Created from Shimmer's update-everything template. It's your folder now: edit it freely.
+#
+#   shimmer workspaces activate <id> --wait     update (or preview), then print what updated
+#   shimmer workspaces reconfigure <id>         change your answers, e.g. MODE preview → update
+#
+# Run it again any time: it starts over each time. One updater failing never stops the others;
+# the summary lists it, and the full output of every updater is in the steps' logs.
+#
+# On a schedule (e.g. every Sunday at 10:00), use SYSTEM_UPDATES = "passwordless" or "skip":
+# with "terminal" a window waits for your password, and with nobody there it gives up after an
+# hour. "passwordless" needs a sudo rule of yours, e.g. for Arch in /etc/sudoers.d/updates:
+#   yourname ALL=(root) NOPASSWD: /usr/bin/pacman -Syu --noconfirm
+#
+# More updaters: add your own lines to EXTRA_COMMANDS below, one per line, like
+#   EXTRA_COMMANDS = '''
+#   git -C ~/dotfiles pull
+#   nvim --headless "+Lazy! sync" +qa
+#   '''
+# or add them to the list in lib/shimmer-update.sh.
+
+[workspace]
+label = "Update everything"
+description = "Update your tools and your system, then show what updated"
+
+[[step]]
+name = "check"
+description = "Say what will be updated, and check the terminal or sudo rule it needs"
+mode = "supervised"
+timeout_s = 30
+
+[[step]]
+name = "system"
+description = "Update the system's packages, in a terminal where you type your password"
+mode = "supervised"
+timeout_s = 3600
+
+[[step]]
+name = "tools"
+description = "Update every installed developer tool, then your own commands"
+mode = "supervised"
+timeout_s = 3600
+
+[[step]]
+name = "summary"
+description = "What updated, what was skipped and what failed"
+mode = "supervised"
+timeout_s = 30
+
+[cleanup]
+timeout_s = 30

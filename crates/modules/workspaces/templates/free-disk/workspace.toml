@@ -1,0 +1,54 @@
+# Free disk space: removes only what comes back by itself. Created from Shimmer's free-disk
+# template. It's your folder now: edit it freely.
+#
+#   shimmer workspaces activate <id> --wait     clean (or preview), then print what was freed
+#   shimmer workspaces reconfigure <id>         change your answers, e.g. MODE preview → clean
+#
+# What goes:
+#   - Build folders of projects in CODE_DIRS that you haven't touched in UNTOUCHED_DAYS days:
+#     Rust target/ (only when Cargo's own CACHEDIR.TAG marker is inside) and node_modules/
+#     (only next to a package.json). `cargo build` or `npm install` makes them again.
+#   - Download caches, through each tool's own clean command: npm, pnpm, yarn, bun, pip, uv,
+#     go, cargo (with cargo-cache installed), brew, docker (`docker system prune`: stopped
+#     containers, unused networks, dangling images and build cache; never volumes), thumbnails.
+#   - With SYSTEM_CLEAN: the system's downloaded packages, and journal logs over 2 weeks old.
+# What never goes: your files, git repos, virtualenvs, the trash, docker volumes.
+#
+# Good on a schedule (e.g. the 1st of each month), with SYSTEM_CLEAN = "skip" or "passwordless".
+
+[workspace]
+label = "Free disk space"
+description = "Clean old build folders and tool caches, then show what was freed"
+
+[[step]]
+name = "check"
+description = "What will be cleaned, and the free space now"
+mode = "supervised"
+timeout_s = 120
+
+[[step]]
+name = "projects"
+description = "Build folders of projects untouched for UNTOUCHED_DAYS days"
+mode = "supervised"
+timeout_s = 3600
+
+[[step]]
+name = "caches"
+description = "Each installed tool's download cache"
+mode = "supervised"
+timeout_s = 3600
+
+[[step]]
+name = "system"
+description = "The system's package cache and old logs (SYSTEM_CLEAN)"
+mode = "supervised"
+timeout_s = 3600
+
+[[step]]
+name = "summary"
+description = "What was freed, and the free space now"
+mode = "supervised"
+timeout_s = 30
+
+[cleanup]
+timeout_s = 30

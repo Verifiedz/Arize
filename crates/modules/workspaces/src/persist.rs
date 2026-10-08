@@ -215,6 +215,10 @@ struct DirtyTable {
     reason: String,
     step: StepTable,
     failed_at: String,
+    /// Keep this name and place (`[dirty] log`): the daemon's launcher reads it straight from
+    /// the file, so step-log pruning never deletes the log a dirty workspace points at (#100,
+    /// `crates/daemon/src/launcher.rs`'s `dirty_log_pointer`). Renaming it would silently let
+    /// that log be pruned.
     log: String,
 }
 

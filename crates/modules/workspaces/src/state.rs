@@ -158,6 +158,71 @@ pub fn reset(state: &WorkspaceState) -> Result<WorkspaceState> {
     }
 }
 
+/// Check before stopping (ADR 0026 §1): only an `active` workspace is running anything to stop.
+pub fn start_stop(state: &WorkspaceState) -> Result<()> {
+    match state {
+        WorkspaceState::Active => Ok(()),
+        WorkspaceState::Ready => Err(Error::invalid_params("the workspace isn't running, so there is nothing to stop")),
+        WorkspaceState::Launching => {
+            Err(Error::conflict("the workspace is still launching; stop it once it is active"))
+        }
+        WorkspaceState::Dirty { .. } => {
+            Err(Error::invalid_params("the workspace is dirty: run workspaces.cleanup (or reset) instead of stop"))
+        }
+    }
+}
+
+/// `active -> ready`: the cleanup script stopped what the launch started (ADR 0026 §1).
+/// Refused if the workspace stopped being active meanwhile.
+pub fn stop_succeeded(state: &WorkspaceState) -> Result<WorkspaceState> {
+    match state {
+        WorkspaceState::Active => Ok(WorkspaceState::Ready),
+        other => Err(Error::conflict(format!("the workspace changed while stopping (now {other:?})"))),
+    }
+}
+
+/// Check before changing a workspace's answers (ADR 0025 §9): only when nothing of it runs. A
+/// running or dirty workspace's cleanup reads the answers, and would then stop what the new ones
+/// name rather than what the old ones started (another folder, another stop command).
+pub fn start_reconfigure(state: &WorkspaceState) -> Result<()> {
+    match state {
+        WorkspaceState::Ready => Ok(()),
+        WorkspaceState::Active | WorkspaceState::Launching => Err(Error::conflict(
+            "the workspace is running: stop it first (workspaces.stop), so stop uses the answers it started with",
+        )),
+        WorkspaceState::Dirty { .. } => Err(Error::conflict(
+            "the workspace is dirty: clean it up first (workspaces.cleanup), so cleanup uses the answers it started with",
+        )),
+    }
+}
+
+/// Check before renaming (ADR 0026 §2a): only when nothing of it runs. Stop and cleanup find what
+/// a launch started by the workspace's id (its temp folder, its process groups' records), so a
+/// running or dirty workspace keeps its name until it's stopped or cleaned up.
+pub fn start_rename(state: &WorkspaceState) -> Result<()> {
+    match state {
+        WorkspaceState::Ready => Ok(()),
+        WorkspaceState::Active | WorkspaceState::Launching => Err(Error::conflict(
+            "the workspace is running: stop it first (workspaces.stop), so stop finds what it started",
+        )),
+        WorkspaceState::Dirty { .. } => Err(Error::conflict(
+            "the workspace is dirty: clean it up first (workspaces.cleanup), so cleanup finds what it started",
+        )),
+    }
+}
+
+/// Check before removing (ADR 0026 §2): never while it may have processes running, so nothing
+/// is left behind with no workspace to stop it.
+pub fn start_remove(state: &WorkspaceState) -> Result<()> {
+    match state {
+        WorkspaceState::Ready => Ok(()),
+        WorkspaceState::Active | WorkspaceState::Launching => {
+            Err(Error::conflict("the workspace is running: stop it first (workspaces.stop)"))
+        }
+        WorkspaceState::Dirty { .. } => Err(Error::conflict("the workspace is dirty: clean it up or reset it first")),
+    }
+}
+
 fn not_dirty(action: &str) -> Error {
     Error::invalid_params(format!("the workspace is not dirty, so there is nothing to {action}"))
 }
@@ -292,5 +357,46 @@ mod tests {
         let s = cleanup_succeeded(&s).unwrap();
         let s = activate(&s, "deep-work", true).unwrap();
         assert_eq!(launch_succeeded(&s).unwrap(), WorkspaceState::Active);
+    }
+
+    #[test]
+    fn only_an_active_workspace_can_be_stopped() {
+        assert!(start_stop(&WorkspaceState::Active).is_ok());
+        assert_eq!(stop_succeeded(&WorkspaceState::Active).unwrap(), WorkspaceState::Ready);
+        assert_eq!(start_stop(&WorkspaceState::Ready).unwrap_err().code, ErrorCode::InvalidParams);
+        assert_eq!(start_stop(&WorkspaceState::Launching).unwrap_err().code, ErrorCode::Conflict);
+        assert!(start_stop(&dirty()).unwrap_err().message.contains("cleanup"));
+        assert_eq!(stop_succeeded(&WorkspaceState::Ready).unwrap_err().code, ErrorCode::Conflict);
+    }
+
+    #[test]
+    fn only_a_workspace_that_isnt_running_can_be_removed() {
+        assert!(start_remove(&WorkspaceState::Ready).is_ok());
+        for s in [WorkspaceState::Active, WorkspaceState::Launching, dirty()] {
+            assert_eq!(start_remove(&s).unwrap_err().code, ErrorCode::Conflict, "{s:?}");
+        }
+        assert!(start_remove(&WorkspaceState::Active).unwrap_err().message.contains("stop it first"));
+    }
+
+    #[test]
+    fn answers_change_only_while_nothing_runs() {
+        assert!(start_reconfigure(&WorkspaceState::Ready).is_ok());
+        let e = start_reconfigure(&WorkspaceState::Active).unwrap_err();
+        assert!(e.message.contains("stop it first"), "{}", e.message);
+        assert!(start_reconfigure(&WorkspaceState::Launching).is_err());
+        let dirty = WorkspaceState::Dirty {
+            reason: "x".into(),
+            failed_step: FailedStep { index: 1, count: 1, name: "s".into() },
+            failed_at: "2026-10-07T00:00:00Z".parse().unwrap(),
+            log: String::new(),
+        };
+        assert!(start_reconfigure(&dirty).unwrap_err().message.contains("clean it up first"));
+    }
+
+    #[test]
+    fn a_name_changes_only_while_nothing_runs() {
+        assert!(start_rename(&WorkspaceState::Ready).is_ok());
+        assert!(start_rename(&WorkspaceState::Active).unwrap_err().message.contains("stop it first"));
+        assert!(start_rename(&WorkspaceState::Launching).is_err());
     }
 }
