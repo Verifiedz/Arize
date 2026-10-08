@@ -89,14 +89,45 @@ locally to get around this; write the ADR.
 
 ## Branch workflow
 
-- **Larger work** gets a long-lived feature branch with a **draft PR into `master`**, opened
-  early so everyone can see where it's heading.
-- Build it in **small child branches**, each with its own PR **into the feature branch**. Small
+- **Larger work** gets a long-lived umbrella branch with a **draft PR into `master`**, opened
+  early so everyone can see where it's heading. **Name it `integration/<name>`** (e.g.
+  `integration/fetchers`; `post-<name>` works too).
+- Build it in **small child branches**, each with its own PR **into the umbrella branch**. Small
   PRs are quick to review.
-- When the feature is done, mark the draft PR ready. **`master` needs 2 approvals** to merge.
+- When the feature is done, mark the draft PR ready. **`master` needs 1 approval** to merge.
+
+The prefix is what protects the umbrella. GitHub's rulesets (`.github/rulesets/`) give
+`integration/*` and `post-*` branches the same rules as `master`: every PR into them needs an
+approval and green CI, and nothing can be pushed to them directly. An umbrella with any other name
+has **no protection at all**, so PRs merged into it skip review and only get looked at as one big
+PR at the end, which is exactly when problems are hardest to spot. Rename one with the wrong name
+(GitHub retargets its open PRs automatically) rather than working around it.
+
+Ordinary feature branches have no rules on purpose, so you can push to them freely.
 
 A small, self-contained change (a doc fix, one bug) can be a single branch with a PR straight
-into `master`. It still needs 2 approvals.
+into `master`. It still needs 1 approval.
+
+### Merging a PR
+
+The rulesets enforce most of this; knowing why saves a greyed-out merge button.
+
+- **Bring it up to date first.** On `master`, GitHub requires it: click **Update branch**, then
+  wait for both CI checks (`ubuntu-latest`, `macos-latest`) to go green. If **Update branch**
+  shows a conflict, don't force anything; ask the author of the other change.
+- **Approvals cover the reviewed code only.** Pushing a commit (including **Update branch**)
+  dismisses earlier approvals, and the last person to push can't approve their own push. Ask for
+  a quick re-approval; it's a formality when only `master` came in.
+- **Resolve every review conversation** before merging (also enforced).
+- **Merge commits only**: no squash or rebase. Stacked PRs depend on it: squashing a base PR
+  rewrites the commits the next PR is built on.
+- **Stacked PRs** (a PR whose base is another PR's branch):
+  - When the base PR merges, **delete its branch**. GitHub then moves the next PR onto the
+    umbrella automatically. Never merge a PR whose base has already been merged: its commits land
+    on a dead branch and never reach `master`.
+  - **"No conflicts" doesn't mean "compiles together."** When the umbrella has moved since a PR
+    was opened, merge the umbrella into the PR and let CI run again before merging it. Two
+    changes can each pass alone and break each other.
 
 Never commit straight to `master`.
 
