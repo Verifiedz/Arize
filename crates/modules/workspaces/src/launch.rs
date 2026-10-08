@@ -1,4 +1,5 @@
-//! The queued ops that run scripts: `activate`, `force_relaunch` and `cleanup` (CLAUDE.md §10).
+//! The queued ops that run scripts: `activate`, `force_relaunch`, `cleanup` and `stop`
+//! (CLAUDE.md §10, ADR 0026).
 //!
 //! Scripts run only through `ctx.launcher` (ADR 0010), one step at a time, in order. The first
 //! step that fails stops the launch and leaves the workspace `dirty` (ADR 0010 §2a, §10.3), so
@@ -54,17 +55,7 @@ impl Workspaces {
         };
 
         ctx.progress(0.0, "cleanup");
-        // A cleanup run is its own attempt, with its own session id (ADR 0010 §9: "not reused
-        // across a later cleanup or force_relaunch").
-        let step = launch_step(&workspace, Step::Cleanup, SpawnMode::Supervised { timeout }, None);
-        let out = ctx.launcher.run(&step, &ctx.cancel).await?;
-        if ctx.cancel.is_cancelled() {
-            return Err(Error::new(ErrorCode::ModuleError, format!("{id}: cleanup was cancelled; still dirty")));
-        }
-        if let Some(reason) = failure(step.mode, &out) {
-            return Err(Error::new(ErrorCode::ModuleError, format!("{id}: cleanup failed ({reason}); still dirty"))
-                .with_detail(json!({"workspace": id, "reason": reason, "log": out.log_path})));
-        }
+        let log = run_cleanup(ctx, id, &workspace, timeout, "still dirty").await?;
 
         let _g = self.write.lock();
         // Re-read: a `reset` may have run while the script did.
@@ -72,10 +63,52 @@ impl Workspaces {
         let next = state::cleanup_succeeded(&saved.state)?;
         ctx.store.transaction(|tx| {
             tx.put(&state_path(id), persist::encode(&Saved::new(next).with_last_session(saved.last_session.clone())))?;
-            tx.emit("workspaces.session.cleaned", json!({"workspace": id, "log": out.log_path}))
+            tx.emit("workspaces.session.cleaned", json!({"workspace": id, "log": log}))
         })?;
         ctx.progress(1.0, "cleaned up");
-        Ok(json!({"id": id, "state": "ready"}))
+        // The log says what the script did (e.g. what it closed), for the client to show.
+        Ok(json!({"id": id, "state": "ready", "log": log}))
+    }
+
+    /// `workspaces.stop`: run the cleanup script on an `active` workspace, so it stops what the
+    /// launch started (ADR 0026 §1). Success moves `active → ready`; with no cleanup script there
+    /// is nothing Shimmer could stop, so it is `ready` at once. A failed stop stays `active`.
+    pub(crate) async fn stop(&self, ctx: &Ctx, id: &str) -> Result<Value> {
+        let script = {
+            let _g = self.write.lock();
+            let folder = folder(ctx, id)?;
+            let saved = folder.saved(ctx, id).unwrap_or_else(|| Ok(Saved::ready()))?;
+            state::start_stop(&saved.state)?;
+            if folder.has_cleanup_script() {
+                let workspace = folder.load(ctx, id)?;
+                workspace.check_cleanup_script(&folder.files, ScriptExt::this_platform())?;
+                let timeout =
+                    workspace.cleanup_timeout.ok_or_else(|| Error::internal("cleanup script without a timeout"))?;
+                Some((workspace, timeout))
+            } else {
+                None
+            }
+        };
+
+        ctx.progress(0.0, "stopping");
+        let log = match &script {
+            Some((workspace, timeout)) => Some(run_cleanup(ctx, id, workspace, *timeout, "still active").await?),
+            None => None,
+        };
+
+        let _g = self.write.lock();
+        // Re-read: anything may have changed it while the script ran.
+        let saved = folder(ctx, id)?.saved(ctx, id).unwrap_or_else(|| Ok(Saved::ready()))?;
+        let next = state::stop_succeeded(&saved.state)?;
+        ctx.store.transaction(|tx| {
+            tx.put(&state_path(id), persist::encode(&Saved::new(next).with_last_session(saved.last_session.clone())))?;
+            tx.emit(
+                "workspaces.session.stopped",
+                json!({"workspace": id, "ran_cleanup": log.is_some(), "log": log.clone().unwrap_or_default()}),
+            )
+        })?;
+        ctx.progress(1.0, "stopped");
+        Ok(json!({"id": id, "state": "ready", "log": log.unwrap_or_default()}))
     }
 
     /// Check the workspace can launch and claim it: under the lock, read its state, apply the
@@ -122,6 +155,10 @@ impl Workspaces {
         let steps: Vec<(Step, SpawnMode)> = workspace.launch_steps().collect();
         let count = steps.len() as u32;
         let mut session_id: Option<String> = None;
+        // The last step's log when it is supervised: a template that ends with a summary step
+        // (update-everything) gets it printed by `activate --wait`. One ending with a detached
+        // window has none.
+        let mut last_log = String::new();
 
         for (i, (step, mode)) in steps.into_iter().enumerate() {
             let index = i as u32 + 1;
@@ -167,6 +204,10 @@ impl Workspaces {
             if let Some(reason) = failure(mode, &out) {
                 return Err(fail(reason, &out.log_path, Outcome::Dirty, &session_id)?);
             }
+            last_log = match mode {
+                SpawnMode::Supervised { .. } => out.log_path.clone(),
+                SpawnMode::Detached => String::new(),
+            };
         }
 
         let _g = self.write.lock();
@@ -183,7 +224,7 @@ impl Workspaces {
             )
         })?;
         ctx.progress(1.0, "launched");
-        Ok(json!({"id": id, "state": "active", "session_id": session}))
+        Ok(json!({"id": id, "state": "active", "session_id": session, "log": last_log}))
     }
 
     /// Save which step is about to run, so a daemon that dies now restarts knowing it.
@@ -252,6 +293,22 @@ struct Failure {
     reason: String,
     log: String,
     outcome: Outcome,
+}
+
+/// Run the cleanup script, supervised, as its own attempt with its own session id (ADR 0010 §9:
+/// "not reused across a later cleanup or force_relaunch"). Its log path, or the error the task
+/// fails with; `unchanged` says what state the workspace is left in ("still dirty").
+async fn run_cleanup(ctx: &Ctx, id: &str, workspace: &Workspace, timeout: Duration, unchanged: &str) -> Result<String> {
+    let step = launch_step(workspace, Step::Cleanup, SpawnMode::Supervised { timeout }, None);
+    let out = ctx.launcher.run(&step, &ctx.cancel).await?;
+    if ctx.cancel.is_cancelled() {
+        return Err(Error::new(ErrorCode::ModuleError, format!("{id}: cleanup was cancelled; {unchanged}")));
+    }
+    if let Some(reason) = failure(step.mode, &out) {
+        return Err(Error::new(ErrorCode::ModuleError, format!("{id}: cleanup failed ({reason}); {unchanged}"))
+            .with_detail(json!({"workspace": id, "reason": reason, "log": out.log_path})));
+    }
+    Ok(out.log_path)
 }
 
 /// The workspace's state as it is on disk now. Missing `state.toml` reads as `ready`.

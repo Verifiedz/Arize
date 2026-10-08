@@ -1,0 +1,41 @@
+# GitHub inbox: what GitHub is waiting on you for, in one list. Created from Shimmer's
+# github-inbox template. It's your folder now: edit it freely.
+#
+#   shimmer workspaces activate <id> --wait     fetch, then print the inbox
+#   shimmer workspaces reconfigure <id>         change your answers (SCOPE, OPEN, NOTIFY…)
+#
+# Needs the gh CLI, logged in once with `gh auth login`. Shimmer never sees a GitHub token: gh
+# keeps it. For GitHub Enterprise, add GH_HOST = "github.your-company.com" to [env] below.
+#
+# On a schedule (e.g. weekdays at 09:00 and 14:00), set NOTIFY to "when-reviews" to get a desktop
+# notification when someone is waiting on your review.
+
+[workspace]
+label = "GitHub inbox"
+description = "PRs to review, your PRs' status, issues assigned to you"
+
+[[step]]
+name = "check"
+description = "gh is installed and logged in"
+mode = "supervised"
+timeout_s = 30
+
+[[step]]
+name = "fetch"
+description = "One GitHub query for reviews, your PRs and your issues, and the unread count"
+mode = "supervised"
+timeout_s = 120
+
+[[step]]
+name = "open"
+description = "Open them in the browser (OPEN)"
+mode = "detached"
+
+[[step]]
+name = "summary"
+description = "The inbox; a notification with NOTIFY"
+mode = "supervised"
+timeout_s = 30
+
+[cleanup]
+timeout_s = 15

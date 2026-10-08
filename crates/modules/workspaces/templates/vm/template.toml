@@ -1,0 +1,119 @@
+[template]
+label = "Virtual machine"
+description = "Start a VM, wait for SSH, then open an editor and terminal inside it"
+category = "code"
+needs = [
+    "The VM program's command-line tool (utmctl, prlctl, VBoxManage, vmrun, virsh or multipass), or your own start and stop commands",
+    "ssh, to open an editor or terminal inside the VM",
+    "Cursor or VS Code with Remote-SSH, for an editor inside the VM",
+]
+good_to_know = [
+    "Never stores a password. Best: an SSH key (ssh-copy-id once). Otherwise ssh asks you itself, or SSH_PASSWORD_ITEM names a macOS Keychain or Linux keyring entry that ssh reads when it connects",
+    "Starts the VM only if it isn't running, then waits (up to 5 minutes) until it answers on its SSH port",
+    "Run Shimmer on the computer that hosts the VM",
+]
+on_stop = "Suspends it, shuts it down or leaves it running, as you chose (ON_STOP), but only if this workspace started it: a VM you started yourself is left running. Closes the SSH terminal (and virt-viewer) where it can. Your editor stays open."
+
+[[question]]
+name = "VM_SOFTWARE"
+prompt = "VM software"
+kind = "choice"
+choices = ["utm", "parallels", "virtualbox", "vmware", "libvirt", "multipass", "custom"]
+required = true
+help = "custom: you give the start and stop commands yourself, for anything else."
+
+[[question]]
+name = "VM_NAME"
+prompt = "The VM's name"
+kind = "text"
+required = true
+help = "As the software shows it. VMware: the path to its .vmx file. libvirt: the domain name."
+
+[[question]]
+name = "START_COMMAND"
+prompt = "Command that starts the VM (custom only)"
+kind = "command"
+help = "Only for custom, e.g. qemu-system-aarch64 … or a script of yours."
+
+[[question]]
+name = "STOP_COMMAND"
+prompt = "Command that stops the VM (custom only)"
+kind = "command"
+help = "Only for custom. Run by workspaces stop. Leave empty to leave it running."
+
+[[question]]
+name = "START_MODE"
+prompt = "Start it with its window, or headless"
+kind = "choice"
+choices = ["window", "headless"]
+default = "window"
+help = "headless works with VirtualBox, VMware and libvirt; UTM, Parallels and Multipass decide for themselves."
+
+[[question]]
+name = "VM_HOST"
+prompt = "The VM's address for SSH"
+kind = "text"
+help = "A hostname, IP or ~/.ssh/config alias. auto: ask UTM or Multipass. Leave empty to only start the VM."
+
+[[question]]
+name = "SSH_USER"
+prompt = "Your user inside the VM"
+kind = "text"
+help = "Leave empty to use your ~/.ssh/config or your local user name."
+
+[[question]]
+name = "SSH_PORT"
+prompt = "SSH port"
+kind = "text"
+default = "22"
+
+[[question]]
+name = "SSH_PASSWORD_ITEM"
+prompt = "Keychain entry holding the SSH password (optional)"
+kind = "text"
+help = "Never the password itself: the NAME of an entry in macOS Keychain or the Linux keyring. Better: leave empty and use an SSH key (ssh-copy-id), or let ssh ask you."
+
+[[question]]
+name = "REMOTE_EDITOR"
+prompt = "Editor to open inside the VM (Remote-SSH)"
+kind = "choice"
+choices = ["none", "cursor", "vscode"]
+default = "none"
+
+[[question]]
+name = "REMOTE_FOLDER"
+prompt = "Folder inside the VM to open"
+kind = "text"
+help = "e.g. /home/me/code/project. Leave empty for your home folder."
+
+[[question]]
+name = "TERMINAL_APP"
+prompt = "Terminal for an SSH session into the VM"
+kind = "choice"
+choices = ["auto", "kitty", "foot", "alacritty", "wezterm", "ghostty", "gnome-terminal", "konsole", "terminal", "iterm", "none"]
+default = "none"
+help = "auto: Terminal on macOS, the first one found on Linux. terminal and iterm are macOS only. none: no SSH terminal."
+
+[[question]]
+name = "OPEN_ON"
+prompt = "Where windows open"
+kind = "choice"
+choices = ["auto", "this-machine", "connected-computer"]
+default = "auto"
+help = "this-machine: this computer's own screen, even if Shimmer was started from a Cursor/VS Code terminal connected from elsewhere. connected-computer: the computer you're connected from. auto: wherever Shimmer was started."
+
+[[question]]
+name = "ON_STOP"
+prompt = "What workspaces stop does to the VM"
+kind = "choice"
+choices = ["suspend", "shutdown", "leave-running"]
+required = true
+help = "Only a VM this workspace started; one you started yourself is always left running. suspend: saved as it is, quick to resume. shutdown: a clean power-off (unsaved work inside the VM is lost). leave-running: stop never touches the VM."
+
+[[question]]
+name = "CLOSE_ON_STOP"
+prompt = "Close what it opened when you run workspaces stop"
+kind = "choice"
+choices = ["yes", "no"]
+default = "yes"
+help = "Closed: kitty/foot/alacritty/wezterm/ghostty/konsole/xterm terminals. Never closed: the editor, GNOME Terminal and macOS Terminal/iTerm windows (they share a program with your other work). stop lists exactly what it closed and what it left."
