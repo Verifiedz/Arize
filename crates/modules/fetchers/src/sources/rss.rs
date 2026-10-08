@@ -44,32 +44,54 @@ impl Source for Rss {
         }
 
         let resp = http::require_ok(http::get(ctx, &self.url).await?, &self.url)?;
-        let feed = feed_rs::parser::parse(resp.body.as_slice())
+        // feed-rs fills in any entry id the feed itself left blank (`assign_missing_ids` ->
+        // `generate_id`): a hash of the entry's link + title when both exist, or a random
+        // UUID when it has neither. A hash keyed on title changes the dedup key the moment
+        // someone edits a post's title, and a random UUID changes it on every single parse
+        // -- either way `entry.id` is no longer a stable dedup key, which is the one thing
+        // `source_id` (ADR 0028 §4) is required to be. Overriding the generator to derive
+        // solely from the link keeps it stable across both title edits and reparses; an
+        // entry with no link at all then gets an empty id, which is handled by skipping it
+        // below rather than by falling back to a non-id value.
+        let parser = feed_rs::parser::Builder::new()
+            .id_generator(|links: &[feed_rs::model::Link], _, _| {
+                links.first().map(|l| l.href.clone()).unwrap_or_default()
+            })
+            .build();
+        let feed = parser
+            .parse(resp.body.as_slice())
             .map_err(|e| Error::module_error(format!("rss: could not parse feed at {}: {e}", self.url)))?;
 
         // Zero entries is not treated as a failure the way an HTML selector matching
         // nothing is (`html::select_or_fail`) -- a feed can legitimately have no items yet
         // (a brand-new blog), so there is no "structure changed" signal to read into it.
+        // An entry can still end up with an empty id here: the feed itself may supply an
+        // explicit `<id>`/`<guid>` (in which case our override above is never even called,
+        // per `assign_missing_ids`), but an empty *explicit* id is as useless a dedup key
+        // as a missing one, and an entry with neither a feed-supplied id nor a link has
+        // nothing stable to key on either way -- both are dropped rather than emitted with
+        // an empty source_id or empty url.
         let items = feed
             .entries
             .into_iter()
-            .map(|entry| {
+            .filter_map(|entry| {
+                if entry.id.trim().is_empty() {
+                    return None;
+                }
                 let url = entry.links.first().map(|l| l.href.clone()).unwrap_or_default();
-                // Dedup key (ADR 0028 §2a): the entry's own id/guid, falling back to its
-                // link -- feed-rs normally synthesizes a non-empty `id` even when the
-                // underlying feed entry had none, but the fallback covers the edge case
-                // where that synthesis still lands on an empty string.
-                let source_id = if entry.id.trim().is_empty() { url.clone() } else { entry.id };
+                if url.trim().is_empty() {
+                    return None;
+                }
                 let title = entry.title.map(|t| t.content).unwrap_or_else(|| url.clone());
-                RawItem {
-                    source_id,
+                Some(RawItem {
+                    source_id: entry.id,
                     title,
                     url,
                     raw_data: json!({
                         "summary": entry.summary.map(|t| t.content),
                         "published": entry.published,
                     }),
-                }
+                })
             })
             .collect();
 
@@ -111,6 +133,54 @@ mod tests {
   <updated>2026-10-01T00:00:00Z</updated>
 </feed>"#;
 
+    /// One entry with no `<id>` of its own, so feed-rs would otherwise invent one --
+    /// `v1` and `v2` keep the same link but differ only in `<title>`, to check that the
+    /// generated dedup key tracks the link rather than the title.
+    fn no_id_feed_with_title(title: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Example Blog</title>
+  <id>urn:uuid:feed-1</id>
+  <updated>2026-10-01T00:00:00Z</updated>
+  <entry>
+    <title>{title}</title>
+    <link href="https://example.test/posts/1"/>
+    <updated>2026-10-01T00:00:00Z</updated>
+  </entry>
+</feed>"#
+        )
+    }
+
+    /// One entry with neither an `<id>` nor a `<link>` -- feed-rs's own default generator
+    /// would fall back to a random UUID here, which is exactly the unstable-dedup-key case
+    /// this module's override exists to avoid.
+    const NO_ID_NO_LINK_FEED: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Example Blog</title>
+  <id>urn:uuid:feed-1</id>
+  <updated>2026-10-01T00:00:00Z</updated>
+  <entry>
+    <title>Untethered post</title>
+    <updated>2026-10-01T00:00:00Z</updated>
+  </entry>
+</feed>"#;
+
+    /// An entry with an explicit `<id>` but no `<link>` -- the feed itself supplied an id
+    /// (so the override generator is never consulted), but there is still no url to show
+    /// the user.
+    const EXPLICIT_ID_NO_LINK_FEED: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Example Blog</title>
+  <id>urn:uuid:feed-1</id>
+  <updated>2026-10-01T00:00:00Z</updated>
+  <entry>
+    <id>urn:uuid:entry-1</id>
+    <title>Linkless post</title>
+    <updated>2026-10-01T00:00:00Z</updated>
+  </entry>
+</feed>"#;
+
     fn ok(body: &str) -> HttpResponse {
         HttpResponse {
             status: 200,
@@ -146,6 +216,56 @@ mod tests {
         assert_eq!(page.items[0].raw_data["summary"], "The first post's summary.");
         assert_eq!(page.items[1].source_id, "urn:uuid:entry-2");
         assert!(page.next_cursor.is_none(), "a feed is always a single page");
+    }
+
+    #[tokio::test]
+    async fn an_entry_with_no_feed_supplied_id_gets_a_dedup_key_derived_from_its_link() {
+        let env = TestEnv::new("fetchers");
+        stub(&env, "https://example.test/feed.xml", ok(&no_id_feed_with_title("Original title")));
+        let rss = Rss::new("my-team-blog".into(), "https://example.test/feed.xml".into());
+
+        let page = rss.fetch_page(&env.ctx, None).await.unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].source_id, "https://example.test/posts/1");
+    }
+
+    #[tokio::test]
+    async fn editing_the_title_of_a_link_only_entry_does_not_change_its_dedup_key() {
+        // The bug this override exists to fix: feed-rs's own default generator hashes
+        // link + title together, so an edited title alone would otherwise mint a brand
+        // new id and the item would be wrongly re-emitted as new.
+        let env = TestEnv::new("fetchers");
+        let rss = Rss::new("my-team-blog".into(), "https://example.test/feed.xml".into());
+
+        stub(&env, "https://example.test/feed.xml", ok(&no_id_feed_with_title("Original title")));
+        let first = rss.fetch_page(&env.ctx, None).await.unwrap();
+
+        stub(&env, "https://example.test/feed.xml", ok(&no_id_feed_with_title("Edited title")));
+        let second = rss.fetch_page(&env.ctx, None).await.unwrap();
+
+        assert_eq!(first.items[0].source_id, second.items[0].source_id);
+    }
+
+    #[tokio::test]
+    async fn an_entry_with_neither_a_feed_id_nor_a_link_is_skipped_not_given_a_random_id() {
+        // feed-rs's own default generator falls back to a random UUID here, which would
+        // make this item look "new" on every single parse -- the opposite of dedup.
+        let env = TestEnv::new("fetchers");
+        stub(&env, "https://example.test/feed.xml", ok(NO_ID_NO_LINK_FEED));
+        let rss = Rss::new("my-team-blog".into(), "https://example.test/feed.xml".into());
+
+        let page = rss.fetch_page(&env.ctx, None).await.unwrap();
+        assert!(page.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_entry_with_an_explicit_id_but_no_link_is_skipped() {
+        let env = TestEnv::new("fetchers");
+        stub(&env, "https://example.test/feed.xml", ok(EXPLICIT_ID_NO_LINK_FEED));
+        let rss = Rss::new("my-team-blog".into(), "https://example.test/feed.xml".into());
+
+        let page = rss.fetch_page(&env.ctx, None).await.unwrap();
+        assert!(page.items.is_empty(), "no link means no usable url, even with an explicit id");
     }
 
     #[tokio::test]

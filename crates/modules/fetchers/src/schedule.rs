@@ -123,13 +123,40 @@ impl FetchersConfig {
                         )));
                     }
                 }
-                Some("rss") => {
-                    if source.url.as_deref().is_none_or(|u| u.trim().is_empty()) {
-                        return Err(Error::invalid_params(format!("sources.{id}: kind \"rss\" needs a non-empty url")));
+                Some(kind) => {
+                    // A `kind` entry builds a brand-new instance (`crate::source::resolve`)
+                    // rather than adjusting a fixed, compiled-in one -- so an id that
+                    // already belongs to the fixed registry would either sit alongside it
+                    // as a silent duplicate (`crate::source::known`) or shadow it outright
+                    // (`crate::source::resolve` always prefers the `kind` branch). Neither
+                    // is a real "this source is both configured and reconfigured" case we
+                    // want to allow; reject it at load time rather than let one silently
+                    // win.
+                    if crate::source::find(id).is_some() {
+                        return Err(Error::invalid_params(format!(
+                            "sources.{id}: kind \"{kind}\" collides with a fixed, compiled-in source of the same id"
+                        )));
                     }
-                }
-                Some(other) => {
-                    return Err(Error::invalid_params(format!("sources.{id}: unknown kind \"{other}\" (known: rss)")));
+                    match kind {
+                        "rss" => {
+                            let url = source.url.as_deref().unwrap_or_default().trim();
+                            if url.is_empty() {
+                                return Err(Error::invalid_params(format!(
+                                    "sources.{id}: kind \"rss\" needs a non-empty url"
+                                )));
+                            }
+                            if !is_http_url(url) {
+                                return Err(Error::invalid_params(format!(
+                                    "sources.{id}: kind \"rss\" url must be a well-formed http:// or https:// url, got '{url}'"
+                                )));
+                            }
+                        }
+                        other => {
+                            return Err(Error::invalid_params(format!(
+                                "sources.{id}: unknown kind \"{other}\" (known: rss)"
+                            )));
+                        }
+                    }
                 }
             }
         }
@@ -139,6 +166,13 @@ impl FetchersConfig {
     pub fn load(ctx: &Ctx) -> Result<Self> {
         Self::from_value(ctx.config.raw())
     }
+}
+
+/// `url` is deliberately not a free-text field: an `rss` source feeds straight into
+/// `http::get` (ADR 0028 §2a), so a malformed value would otherwise surface as a cryptic
+/// connection error deep in the first tick rather than a clear one at load time.
+fn is_http_url(candidate: &str) -> bool {
+    matches!(url::Url::parse(candidate), Ok(u) if u.scheme() == "http" || u.scheme() == "https")
 }
 
 /// Every enabled, configured source whose interval has elapsed since its last run (or that
@@ -294,6 +328,47 @@ mod tests {
         assert_eq!(err.code, shimmer_core::ErrorCode::InvalidParams);
         assert!(err.message.contains("my-team-blog"), "{}", err.message);
         assert!(err.message.contains("url"), "{}", err.message);
+    }
+
+    #[test]
+    fn an_rss_kind_with_a_non_http_url_fails_at_load_time() {
+        let err = FetchersConfig::from_value(&json!({
+            "sources": {"my-team-blog": {"enabled": true, "interval": "hourly", "kind": "rss", "url": "not-a-url"}}
+        }))
+        .unwrap_err();
+        assert_eq!(err.code, shimmer_core::ErrorCode::InvalidParams);
+        assert!(err.message.contains("my-team-blog"), "{}", err.message);
+    }
+
+    #[test]
+    fn an_rss_kind_with_a_non_http_scheme_url_fails_at_load_time() {
+        let err = FetchersConfig::from_value(&json!({
+            "sources": {"my-team-blog": {"enabled": true, "interval": "hourly", "kind": "rss", "url": "ftp://example.test/feed.xml"}}
+        }))
+        .unwrap_err();
+        assert_eq!(err.code, shimmer_core::ErrorCode::InvalidParams);
+        assert!(err.message.contains("my-team-blog"), "{}", err.message);
+    }
+
+    #[test]
+    fn an_rss_kind_with_an_https_url_parses() {
+        let cfg = FetchersConfig::from_value(&json!({
+            "sources": {"my-team-blog": {"enabled": true, "interval": "hourly", "kind": "rss", "url": "https://example.test/feed.xml"}}
+        }))
+        .unwrap();
+        assert_eq!(cfg.sources["my-team-blog"].url.as_deref(), Some("https://example.test/feed.xml"));
+    }
+
+    #[test]
+    fn a_kind_entry_whose_id_collides_with_a_fixed_source_fails_at_load_time() {
+        for id in ["hn-whoishiring", "weworkremotely"] {
+            let err = FetchersConfig::from_value(&json!({
+                "sources": {id: {"enabled": true, "interval": "hourly", "kind": "rss", "url": "https://example.test/feed.xml"}}
+            }))
+            .unwrap_err();
+            assert_eq!(err.code, shimmer_core::ErrorCode::InvalidParams, "id: {id}");
+            assert!(err.message.contains(id), "{}", err.message);
+        }
     }
 
     #[test]
