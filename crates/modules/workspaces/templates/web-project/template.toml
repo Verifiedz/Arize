@@ -1,0 +1,151 @@
+[template]
+label = "Web project"
+description = "Editor, dev server, localhost and your links, opened in one go"
+category = "code"
+needs = [
+    "Your editor (VS Code, Cursor, Zed, WebStorm, IntelliJ, Sublime or Neovim)",
+    "For a JavaScript project: Node and its package manager (npm, pnpm, yarn or bun)",
+    "A terminal app, if you want a terminal window opened",
+]
+good_to_know = [
+    "Pulls the latest code each time it opens, only when you have no uncommitted changes and it's a fast-forward; never merges (GIT_ON_OPEN = none turns it off)",
+    "Installs packages when the lockfile changed, and runs your dev server in the background, logging to a temp folder",
+    "With a terminal inside the editor (IDE_TERMINAL_COMMAND), it writes .vscode/tasks.json in your project, hidden from git through .git/info/exclude",
+    "A separate browser window (BROWSER_WINDOW) uses its own browser profile under ~/.local/state/shimmer/browser-profiles/, so it's not logged in to your usual sites",
+    "Everything is set by your answers; the scripts stay the template's own and you can edit them in the workspace's folder",
+]
+on_stop = "Stops the dev server (freeing its port) and the services it started, closes the terminals and browser window it opened where it can, and lists what it left open. Your editor always stays open."
+
+[[question]]
+name = "PROJECT_DIR"
+prompt = "Project folder"
+kind = "folder"
+required = true
+
+[[question]]
+name = "CODE_EDITOR"
+prompt = "Editor"
+kind = "choice"
+choices = ["vscode", "cursor", "zed", "webstorm", "intellij", "sublime", "neovim", "none"]
+default = "vscode"
+help = "The project opens in it. neovim opens in a terminal (TERMINAL_APP). none: no editor."
+
+[[question]]
+name = "OPEN_PATH"
+prompt = "File to open instead of the folder"
+kind = "text"
+help = "Inside the project, e.g. site.code-workspace or src/app/page.tsx. Leave empty to open the folder."
+
+[[question]]
+name = "IDE_TERMINAL_COMMAND"
+prompt = "Command to run in a terminal inside the editor"
+kind = "command"
+help = "VS Code and Cursor only, e.g. claude or npm run lint -- --watch. Leave empty for none. Shimmer writes .vscode/tasks.json (kept out of git); the editor may ask once to allow automatic tasks."
+
+[[question]]
+name = "GIT_ON_OPEN"
+prompt = "Pull the latest code when it opens"
+kind = "choice"
+choices = ["pull", "none"]
+default = "pull"
+help = "pull: only when you have no uncommitted changes; never stops the launch if you're offline."
+
+[[question]]
+name = "INSTALL_COMMAND"
+prompt = "Install command"
+kind = "command"
+default = "auto"
+help = "auto: npm/pnpm/yarn/bun install, only when the lockfile changed. Leave empty to never install."
+
+[[question]]
+name = "SERVICES_COMMAND"
+prompt = "Command to start services first"
+kind = "command"
+help = "e.g. docker compose up -d. Leave empty for none."
+
+[[question]]
+name = "SERVICES_STOP_COMMAND"
+prompt = "Command to stop those services"
+kind = "command"
+help = "Run by workspaces stop, e.g. docker compose down. Leave empty for none."
+
+[[question]]
+name = "DEV_COMMAND"
+prompt = "Dev server command"
+kind = "command"
+default = "auto"
+help = "auto: the dev (or start) script in package.json. Leave empty for no dev server."
+
+[[question]]
+name = "LOCAL_URL"
+prompt = "Local URL"
+kind = "url"
+default = "auto"
+help = "auto: from the framework (Next.js :3000, Vite :5173, Astro :4321…). Leave empty for none."
+
+[[question]]
+name = "LIVE_URL"
+prompt = "Your live (deployed) site"
+kind = "url"
+default = "auto"
+help = "e.g. https://yourname.com or https://my-site.vercel.app. auto: the homepage field in package.json. Leave empty for none."
+
+[[question]]
+name = "REPO_PAGE"
+prompt = "Repository page to open"
+kind = "choice"
+choices = ["home", "pulls", "issues", "actions", "none"]
+default = "home"
+help = "Found from the project's git remote."
+
+[[question]]
+name = "LINKS"
+prompt = "Other links to open"
+kind = "urls"
+help = "Anything else: your hosting dashboard (Vercel, Netlify…), analytics, docs. Separate them with spaces."
+
+[[question]]
+name = "BROWSER_WINDOW"
+prompt = "Open the links in your normal browser, or a window of their own"
+kind = "choice"
+choices = ["shared", "separate"]
+default = "shared"
+help = "separate: a browser window with its own profile (log in to sites once inside it; it remembers), which workspaces stop closes. shared: tabs in your normal browser, which stop can't close."
+
+[[question]]
+name = "BROWSER_APP"
+prompt = "Browser for that separate window"
+kind = "choice"
+choices = ["auto", "firefox", "chrome", "chromium", "brave", "edge"]
+default = "auto"
+help = "Only used when BROWSER_WINDOW is separate. auto: the first one installed."
+
+[[question]]
+name = "TERMINAL_APP"
+prompt = "External terminal (a separate window)"
+kind = "choice"
+choices = ["auto", "kitty", "foot", "alacritty", "wezterm", "ghostty", "gnome-terminal", "konsole", "terminal", "iterm", "none"]
+default = "auto"
+help = "auto: Terminal on macOS, the first one found on Linux. terminal and iterm are macOS only."
+
+[[question]]
+name = "TERMINAL_COMMAND"
+prompt = "Command to run in the external terminal"
+kind = "command"
+help = "e.g. claude. Leave empty for just a shell in the project."
+
+[[question]]
+name = "OPEN_ON"
+prompt = "Where windows open"
+kind = "choice"
+choices = ["auto", "this-machine", "connected-computer"]
+default = "auto"
+help = "this-machine: this computer's own screen, even if Shimmer was started from a Cursor/VS Code terminal connected from elsewhere. connected-computer: the computer you're connected from. auto: wherever Shimmer was started."
+
+[[question]]
+name = "CLOSE_ON_STOP"
+prompt = "Close what it opened when you run workspaces stop"
+kind = "choice"
+choices = ["yes", "no"]
+default = "yes"
+help = "Closed: the dev server, services, kitty/foot/alacritty/wezterm/ghostty/konsole/xterm terminals, and the browser window if BROWSER_WINDOW is separate. Never closed: the editor, GNOME Terminal and macOS Terminal/iTerm windows, and tabs in your normal browser (they share a program with your other work). stop lists exactly what it closed and what it left."

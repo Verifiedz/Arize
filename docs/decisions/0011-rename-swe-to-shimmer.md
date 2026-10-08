@@ -1,6 +1,6 @@
 # 0011. Rename the `swe` placeholder to `shimmer`
 
-Status: proposed · Raised by Dev B (issue #15) · Needs sign-off: Dev A, Dev B (CLAUDE.md §4,
+Status: accepted (M1, #36) · Raised by Dev B (issue #15) · Signed off: Dev A, Dev B (CLAUDE.md §4,
 changes `core` and `proto`) · Dev C notified (protocol.md, socket path, crate names)
 
 ## Context

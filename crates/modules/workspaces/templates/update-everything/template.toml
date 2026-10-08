@@ -1,0 +1,67 @@
+[template]
+label = "Update everything"
+description = "Update your developer tools and system packages, then see what changed"
+category = "upkeep"
+needs = [
+    "Nothing beyond what you want updated: it runs only the updaters that are installed (or topgrade, if you have it)",
+]
+good_to_know = [
+    "MODE = preview first shows exactly which commands it would run, and runs none of them",
+    "It really updates things: rustup, cargo-installed tools, brew, npm/pnpm globals, pipx, uv, flatpak, gh extensions and more",
+    "System packages need sudo. SYSTEM_UPDATES = terminal opens a window where you type your password (Shimmer never sees it); passwordless needs a sudo rule of yours; skip leaves them",
+    "One updater failing never stops the others; the summary says what updated, was skipped and failed",
+    "On a schedule, use passwordless or skip: with terminal, a window waits for your password",
+]
+on_stop = "Nothing to undo: updates stay installed. Closes the system update's terminal if it's still open."
+
+[[question]]
+name = "MODE"
+prompt = "Update, or only show what it would run"
+kind = "choice"
+choices = ["preview", "update"]
+required = true
+help = "preview: runs nothing; the summary lists every command update would run. Start with preview, then: shimmer workspaces reconfigure NAME --set MODE=update."
+
+[[question]]
+name = "SYSTEM_UPDATES"
+prompt = "Your system's packages (pacman, apt, dnf, macOS updates)"
+kind = "choice"
+choices = ["skip", "terminal", "passwordless"]
+required = true
+help = "They need sudo. terminal: a window opens and you type your password there (Shimmer never sees it). passwordless: for a sudo rule that needs no password, and for running it on a schedule. skip: tools only."
+
+[[question]]
+name = "USE_TOPGRADE"
+prompt = "Use topgrade for the tools"
+kind = "choice"
+choices = ["auto", "yes", "no"]
+default = "auto"
+help = "topgrade knows 100+ updaters. auto: use it when it's installed, else Shimmer's own list (rustup, cargo, brew, mas, npm, pnpm, bun, deno, pipx, uv, flatpak, gh, ghcup, tldr, claude)."
+
+[[question]]
+name = "SKIP"
+prompt = "Updaters to never run"
+kind = "text"
+help = "Names from the list, separated by spaces, e.g. npm flatpak. Leave empty to run every one that's installed."
+
+[[question]]
+name = "EXTRA_COMMANDS"
+prompt = "A command of your own to run too"
+kind = "command"
+help = "Anything not on the list, e.g. git -C ~/dotfiles pull. Add more later, one per line, in workspace.toml."
+
+[[question]]
+name = "TERMINAL_APP"
+prompt = "Terminal for the system update"
+kind = "choice"
+choices = ["auto", "kitty", "foot", "alacritty", "wezterm", "ghostty", "gnome-terminal", "konsole", "terminal", "iterm"]
+default = "auto"
+help = "auto: Terminal on macOS, the first one found on Linux. terminal and iterm are macOS only. Only with terminal."
+
+[[question]]
+name = "OPEN_ON"
+prompt = "Where the terminal opens"
+kind = "choice"
+choices = ["auto", "this-machine", "connected-computer"]
+default = "auto"
+help = "this-machine: this computer's own screen, even if Shimmer was started from a Cursor/VS Code terminal connected from elsewhere. connected-computer: the computer you're connected from. auto: wherever Shimmer was started."
