@@ -198,7 +198,9 @@ impl Fetchers {
                     "method": match s.method() { source::Method::Api => "api", source::Method::Scrape => "scrape" },
                     "kind": cfg.and_then(|c| c.kind.clone()),
                     "enabled": cfg.is_some_and(|c| c.enabled),
-                    "interval_s": cfg.and_then(|c| c.interval.resolve().ok()),
+                    // 0: already validated at load time (§126 review's per-method floor);
+                    // this is read-only display, not re-validation, same as `due_sources`.
+                    "interval_s": cfg.and_then(|c| c.interval.resolve(0).ok()),
                 })
             })
             .collect();
