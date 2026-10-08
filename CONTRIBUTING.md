@@ -89,14 +89,24 @@ locally to get around this; write the ADR.
 
 ## Branch workflow
 
-- **Larger work** gets a long-lived feature branch with a **draft PR into `master`**, opened
-  early so everyone can see where it's heading.
-- Build it in **small child branches**, each with its own PR **into the feature branch**. Small
+- **Larger work** gets a long-lived umbrella branch with a **draft PR into `master`**, opened
+  early so everyone can see where it's heading. **Name it `integration/<name>`** (e.g.
+  `integration/fetchers`; `post-<name>` works too).
+- Build it in **small child branches**, each with its own PR **into the umbrella branch**. Small
   PRs are quick to review.
-- When the feature is done, mark the draft PR ready. **`master` needs 2 approvals** to merge.
+- When the feature is done, mark the draft PR ready. **`master` needs 1 approval** to merge.
+
+The prefix is what protects the umbrella. GitHub's rulesets (`.github/rulesets/`) give
+`integration/*` and `post-*` branches the same rules as `master`: every PR into them needs an
+approval and green CI, and nothing can be pushed to them directly. An umbrella with any other name
+has **no protection at all**, so PRs merged into it skip review and only get looked at as one big
+PR at the end, which is exactly when problems are hardest to spot. Rename one with the wrong name
+(GitHub retargets its open PRs automatically) rather than working around it.
+
+Ordinary feature branches have no rules on purpose, so you can push to them freely.
 
 A small, self-contained change (a doc fix, one bug) can be a single branch with a PR straight
-into `master`. It still needs 2 approvals.
+into `master`. It still needs 1 approval.
 
 Never commit straight to `master`.
 
