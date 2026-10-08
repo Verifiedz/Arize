@@ -8,6 +8,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use shimmer_core::{Ctx, Error, Result};
 
+use crate::schedule::FetchersConfig;
+
 /// The host loops [`Source::fetch_page`] at most this many times per run, following
 /// `next_cursor` -- a `Source` never loops itself.
 pub const MAX_PAGES: u32 = 10;
@@ -78,7 +80,10 @@ pub fn find(id: &str) -> Option<std::sync::Arc<dyn Source>> {
 /// `Error::internal`, not `invalid_params`, on the "known kind but missing its own field"
 /// branches.
 pub fn resolve(ctx: &Ctx, id: &str) -> Result<Option<std::sync::Arc<dyn Source>>> {
-    let config = crate::schedule::FetchersConfig::load(ctx)?;
+    resolve_from(&FetchersConfig::load(ctx)?, id)
+}
+
+fn resolve_from(config: &FetchersConfig, id: &str) -> Result<Option<std::sync::Arc<dyn Source>>> {
     match config.sources.get(id).and_then(|c| c.kind.as_deref()) {
         Some("rss") => {
             let url = config.sources.get(id).and_then(|c| c.url.as_deref()).ok_or_else(|| {
@@ -93,8 +98,27 @@ pub fn resolve(ctx: &Ctx, id: &str) -> Result<Option<std::sync::Arc<dyn Source>>
     }
 }
 
+/// Every source the daemon currently knows about: the fixed [`registry`], plus one instance
+/// per configured `kind` entry (ADR 0028 §2a). What `fetchers.list`/`fetchers.status` show,
+/// and the universe [`resolve`] can ever return something for.
+pub fn known(ctx: &Ctx) -> Result<Vec<std::sync::Arc<dyn Source>>> {
+    let config = FetchersConfig::load(ctx)?;
+    let mut sources = registry();
+    for (id, cfg) in &config.sources {
+        if cfg.kind.is_some() {
+            if let Some(s) = resolve_from(&config, id)? {
+                sources.push(s);
+            }
+        }
+    }
+    Ok(sources)
+}
+
 #[cfg(test)]
 mod tests {
+    use shimmer_core::testing::TestEnv;
+    use shimmer_core::ModuleConfig;
+
     use super::*;
 
     #[test]
@@ -105,5 +129,24 @@ mod tests {
         assert!(find("hn-whoishiring").is_some());
         assert!(find("weworkremotely").is_some());
         assert!(find("not-a-real-source").is_none());
+    }
+
+    #[test]
+    fn known_includes_the_fixed_registry_with_no_config_at_all() {
+        let env = TestEnv::new("fetchers");
+        let ids: Vec<_> = known(&env.ctx).unwrap().iter().map(|s| s.id().to_string()).collect();
+        assert_eq!(ids, vec!["hn-whoishiring", "weworkremotely"]);
+    }
+
+    #[test]
+    fn known_adds_every_configured_kind_instance_on_top_of_the_fixed_registry() {
+        let mut env = TestEnv::new("fetchers");
+        env.ctx.config = ModuleConfig::new(serde_json::json!({
+            "sources": {
+                "my-team-blog": {"enabled": true, "interval": "hourly", "kind": "rss", "url": "https://example.test/feed.xml"},
+            }
+        }));
+        let ids: Vec<_> = known(&env.ctx).unwrap().iter().map(|s| s.id().to_string()).collect();
+        assert_eq!(ids, vec!["hn-whoishiring", "weworkremotely", "my-team-blog"]);
     }
 }
