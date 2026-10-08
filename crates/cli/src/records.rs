@@ -11,14 +11,16 @@ use shimmer_core::{Error, ErrorCode, Result};
 
 use crate::client::Client;
 use crate::csv;
-use crate::render::{self, cell, table};
+use crate::render::{self, cell, shorten, table, wrap};
 use crate::workspaces::Prompt;
 
 pub const USAGE: &str = "usage: shimmer records <command>
 
 commands:
   collections                          list collections and their fields
-  templates                            list ready-made collections to start from
+  templates [CATEGORY]                 list ready-made collections to start from, by category
+  peek TEMPLATE [--file]               everything about one template: its fields, what completing
+                                       does, examples; --file prints the file exactly
   new ID --from TEMPLATE [--label TEXT] create a collection from a template, e.g.
                                          shimmer records new jobs --from job-applications
   add COLLECTION [ID] [--FIELD VALUE]… add a record, e.g.
@@ -129,7 +131,15 @@ pub enum RecordsCmd {
     Check {
         collection: String,
     },
-    Templates,
+    /// `which`: a category (only its templates) or a template (as `peek` shows it).
+    Templates {
+        which: Option<String>,
+    },
+    /// `file`: the template's file exactly, instead of the summary.
+    Peek {
+        template: String,
+        file: bool,
+    },
     New {
         id: String,
         template: String,
@@ -244,6 +254,10 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
     if yes {
         rest.retain(|w| w != "--yes");
     }
+    let file = sub == "peek" && rest.iter().any(|w| w == "--file");
+    if file {
+        rest.retain(|w| w != "--file");
+    }
     let dry_run = sub == "import" && rest.iter().any(|w| w == "--dry-run");
     let skip_invalid = sub == "import" && rest.iter().any(|w| w == "--skip-invalid");
     if sub == "import" {
@@ -347,10 +361,19 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
         }
         "templates" => {
             no_flags()?;
-            match positional.is_empty() {
-                true => Ok(RecordsCmd::Templates),
-                false => Err("'records templates' takes no arguments".into()),
+            let mut words = positional.into_iter();
+            match (words.next(), words.next()) {
+                (which, None) => Ok(RecordsCmd::Templates { which }),
+                _ => Err("usage: shimmer records templates [CATEGORY | TEMPLATE]".into()),
             }
+        }
+        "peek" => {
+            let usage = "usage: shimmer records peek TEMPLATE [--file] (see 'shimmer records templates')";
+            if let Some((f, _)) = flags.first() {
+                return Err(format!("'records peek' takes --file, not '--{f}'; {usage}"));
+            }
+            let [template]: [String; 1] = positional.try_into().map_err(|_| usage)?;
+            Ok(RecordsCmd::Peek { template, file })
         }
         "new" => {
             let usage = "usage: shimmer records new ID --from TEMPLATE [--label TEXT]";
@@ -456,7 +479,7 @@ fn number(flag: &str, value: &str) -> std::result::Result<usize, String> {
 impl RecordsCmd {
     fn collection(&self) -> Option<&str> {
         match self {
-            Self::Help | Self::Collections | Self::Templates | Self::New { .. } => None,
+            Self::Help | Self::Collections | Self::Templates { .. } | Self::Peek { .. } | Self::New { .. } => None,
             Self::Add { collection, .. }
             | Self::Rename { collection, .. }
             | Self::List { collection, .. }
@@ -595,7 +618,9 @@ pub fn request(cmd: &RecordsCmd, schema: &Value) -> Result<(&'static str, Value)
         RecordsCmd::Restore { collection, id } => ("records.restore", json!({"collection": collection, "id": id})),
         RecordsCmd::Trash { collection } => ("records.trash", json!({"collection": collection})),
         RecordsCmd::Check { collection } => ("records.check", json!({"collection": collection})),
-        RecordsCmd::Templates => ("records.templates", json!({})),
+        RecordsCmd::Templates { .. } => ("records.templates", json!({})),
+        RecordsCmd::Peek { template, file: true } => ("records.templates", json!({"id": template, "file": true})),
+        RecordsCmd::Peek { .. } => ("records.templates", json!({})),
         RecordsCmd::New { id, template, label } => {
             let mut params = json!({"id": id, "template": template});
             if let Some(label) = label {
@@ -761,6 +786,24 @@ pub async fn run(client: &mut Client, cmd: &RecordsCmd, json: bool, prompt: &mut
                 std::fs::read_to_string(file).map_err(|e| Error::invalid_params(format!("can't read {file}: {e}")))?;
             let rows = import_rows(file, &text, &schema)?;
             return import(client, prompt, collection, rows, *dry_run, *skip_invalid, *yes, json).await;
+        }
+        // Rendering these can fail (no such template or category), so they don't go through `show`.
+        RecordsCmd::Templates { which } => {
+            let data = client.call("records.templates", json!({})).await?;
+            let text = templates(&data, which.as_deref())?;
+            return Ok(if json { render::json(&data) } else { text });
+        }
+        RecordsCmd::Peek { template, file } => {
+            // The whole list first, so a category's name or a typo gets a helpful message.
+            let data = client.call("records.templates", json!({})).await?;
+            let text = peek(&data, template)?;
+            if !*file {
+                let one = data["templates"].as_array().and_then(|ts| ts.iter().find(|t| t["id"] == template.as_str()));
+                return Ok(if json { render::json(one.unwrap_or(&Value::Null)) } else { text });
+            }
+            let (op, params) = request(cmd, &schema)?;
+            let full = client.call(op, params).await?;
+            return Ok(if json { render::json(&full["templates"][0]) } else { show(cmd, &full, &schema) });
         }
         RecordsCmd::Export { format, .. } => {
             let (op, mut params) = request(cmd, &schema)?;
@@ -1019,7 +1062,12 @@ pub fn show(cmd: &RecordsCmd, data: &Value, schema: &Value) -> String {
         }
         RecordsCmd::Restore { collection, id } => format!("✓ {collection}/{id} restored"),
         RecordsCmd::Check { collection } => check_report(collection, data),
-        RecordsCmd::Templates => templates(data),
+        RecordsCmd::Templates { which } => templates(data, which.as_deref()).unwrap_or_else(|e| e.message),
+        RecordsCmd::Peek { template, file: false } => peek(data, template).unwrap_or_else(|e| e.message),
+        // The file exactly, as `records new` would copy it.
+        RecordsCmd::Peek { file: true, .. } => {
+            data["templates"][0]["file"].as_str().unwrap_or_default().trim_end().to_owned()
+        }
         RecordsCmd::New { id, template, .. } => created(id, template, data),
         RecordsCmd::RenameField { collection, from, to } => format!(
             "✓ {collection}: field '{}' is now '{}' ({} record(s) updated)",
@@ -1062,17 +1110,145 @@ pub fn show(cmd: &RecordsCmd, data: &Value, schema: &Value) -> String {
     }
 }
 
-fn templates(data: &Value) -> String {
-    let rows: Vec<Vec<String>> = data["templates"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|t| vec![cell(&t["id"]), cell(&t["label"]), t["description"].as_str().unwrap_or_default().to_owned()])
-        .collect();
-    match rows.is_empty() {
-        true => "no templates".into(),
-        false => table(&["ID".into(), "LABEL".into(), "DESCRIPTION".into()], &rows),
+/// `records.templates`, grouped under the categories' headings in the daemon's order. With
+/// `which`: only that category's templates, or that one template in full.
+fn templates(data: &Value, which: Option<&str>) -> Result<String> {
+    let all = data["templates"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let categories = data["categories"].as_array().map(Vec::as_slice).unwrap_or_default();
+    if let Some(which) = which {
+        if all.iter().any(|t| t["id"] == which) {
+            return peek(data, which);
+        }
+        if !categories.iter().any(|c| c["id"] == which) {
+            let names: Vec<String> = categories.iter().map(|c| cell(&c["id"])).collect();
+            return Err(Error::not_found(format!(
+                "no template or category '{which}' (categories: {}; templates: shimmer records templates)",
+                names.join(", ")
+            )));
+        }
     }
+    if all.is_empty() {
+        return Ok("no templates".into());
+    }
+    let id_width = all.iter().map(|t| cell(&t["id"]).chars().count()).max().unwrap_or(0);
+    let mut groups: Vec<(String, Vec<&Value>)> = Vec::new();
+    for t in all.iter().filter(|t| which.is_none_or(|w| t["category"] == w)) {
+        // "Job hunt (job-hunt)": the short name is what `templates CATEGORY` takes.
+        let heading = categories
+            .iter()
+            .find(|c| c["id"] == t["category"])
+            .map_or_else(|| "Other".to_owned(), |c| format!("{} ({})", cell(&c["label"]), cell(&c["id"])));
+        match groups.iter_mut().find(|(h, _)| *h == heading) {
+            Some((_, ts)) => ts.push(t),
+            None => groups.push((heading, vec![t])),
+        }
+    }
+    let mut out = String::new();
+    for (heading, ts) in &groups {
+        let _ = writeln!(out, "{heading}");
+        for t in ts {
+            let id = t["id"].as_str().unwrap_or_default();
+            let _ = writeln!(out, "  {id:<id_width$}  {}", shorten(t["description"].as_str().unwrap_or_default()));
+        }
+        out.push('\n');
+    }
+    out.push_str("everything about one:      shimmer records peek TEMPLATE\n");
+    out.push_str("make a collection from it: shimmer records new ID --from TEMPLATE");
+    Ok(out)
+}
+
+/// `peek TEMPLATE`: everything about one template before making a collection from it. A
+/// category's name gets a pointer to `templates CATEGORY`; anything else is `not_found`.
+fn peek(data: &Value, id: &str) -> Result<String> {
+    let all = data["templates"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let categories = data["categories"].as_array().map(Vec::as_slice).unwrap_or_default();
+    match all.iter().find(|t| t["id"] == id) {
+        Some(t) => Ok(template_in_full(t, categories)),
+        None if categories.iter().any(|c| c["id"] == id) => Err(Error::not_found(format!(
+            "'{id}' is a category, not a template: see its templates with shimmer records templates {id}"
+        ))),
+        None => {
+            let names: Vec<String> = all.iter().map(|t| cell(&t["id"])).collect();
+            Err(Error::not_found(format!("no template '{id}' (there are: {})", names.join(", "))))
+        }
+    }
+}
+
+/// What completing a record does, in words, from the collection's settings (ADR 0021).
+fn completing(t: &Value) -> String {
+    if t["completable"] == false {
+        return "Nothing to complete: it's a reference list, so records have no todo/done.".into();
+    }
+    let mut out = match t["stamp_on_complete"].as_str() {
+        Some(stamp) => format!("Marks it done and stamps {stamp} with today's date."),
+        None => "Marks it done.".to_owned(),
+    };
+    out.push(' ');
+    out.push_str(match t["repeat_complete"].as_str() {
+        Some("refuse") => "It happens once: completing it again is refused until you reopen it.",
+        _ => "Completing it again counts again (and re-stamps it).",
+    });
+    out
+}
+
+/// One template: what it's for, what completing does, its fields, what to know, examples, and
+/// what goes with it. Everything comes from `records.templates` (§2).
+fn template_in_full(t: &Value, categories: &[Value]) -> String {
+    let id = t["id"].as_str().unwrap_or_default();
+    let list = |key: &str| t[key].as_array().cloned().unwrap_or_default();
+    let mut out = format!("{id}: {}", cell(&t["label"]));
+    if let Some(category) = categories.iter().find(|c| c["id"] == t["category"]) {
+        let _ = write!(out, "  ({})", cell(&category["label"]));
+    }
+    if let Some(description) = t["description"].as_str() {
+        let _ = write!(out, "\n  {}", wrap(description, 88, "  "));
+    }
+    out.push('\n');
+
+    let fields = list("fields");
+    let _ = writeln!(out, "\nFields ({}; * = required)", fields.len());
+    let width =
+        fields.iter().map(|f| cell(&f["name"]).chars().count() + usize::from(f["required"] == true)).max().unwrap_or(0);
+    for f in &fields {
+        let mut name = cell(&f["name"]);
+        if f["required"] == true {
+            name.push('*');
+        }
+        let mut notes = field_notes(f);
+        if notes.is_empty() {
+            notes.push("text".into());
+        }
+        let _ = writeln!(out, "{}", format!("  {name:<width$}  {}", notes.join(", ")).trim_end());
+    }
+    if let Some(title) = t["title"].as_str() {
+        let _ = writeln!(out, "  each record is shown as: {title}");
+    }
+
+    let _ = writeln!(out, "\nWhen you complete a record\n  {}", wrap(&completing(t), 88, "  "));
+
+    let notes = list("notes");
+    if !notes.is_empty() {
+        out.push_str("\nGood to know\n");
+        for note in &notes {
+            let _ = writeln!(out, "  • {}", wrap(note.as_str().unwrap_or_default(), 86, "    "));
+        }
+    }
+    let examples = list("examples");
+    if !examples.is_empty() {
+        out.push_str("\nHow it works (<collection> is the name you give it)\n");
+        for line in &examples {
+            let _ = writeln!(out, "{}", format!("  {}", line.as_str().unwrap_or_default()).trim_end());
+        }
+    }
+    let related: Vec<String> = list("related").iter().map(cell).collect();
+    if !related.is_empty() {
+        let _ = writeln!(out, "\nGoes with: {} (shimmer records peek NAME)", related.join(", "));
+    }
+    let _ = write!(
+        out,
+        "\nmake one:      shimmer records new ID --from {id}\nsee the file:  shimmer records peek {id} --file"
+    );
+    out
 }
 
 /// What was made, how to add the first record (its required fields), and what goes with it.
@@ -1150,6 +1326,16 @@ fn describe_field(f: &Value) -> String {
     if f["required"] == true {
         s.push('*');
     }
+    let notes = field_notes(f);
+    if !notes.is_empty() {
+        let _ = write!(s, " ({})", notes.join(", "));
+    }
+    s
+}
+
+/// A field's type (enum values, ref target), role and uniqueness, as `describe_field` and
+/// `peek` show them.
+fn field_notes(f: &Value) -> Vec<String> {
     let mut notes = Vec::new();
     match f["type"].as_str() {
         Some("enum") => {
@@ -1175,10 +1361,7 @@ fn describe_field(f: &Value) -> String {
     if f["unique"] == true {
         notes.push("unique".to_owned());
     }
-    if !notes.is_empty() {
-        let _ = write!(s, " ({})", notes.join(", "));
-    }
-    s
+    notes
 }
 
 /// Reference collections (`completable = false`, ADR 0021) have no status to show.
@@ -1610,7 +1793,7 @@ mod tests {
 
     #[test]
     fn templates_and_new() {
-        assert_eq!(parse_words(&["templates"]).unwrap(), RecordsCmd::Templates);
+        assert_eq!(parse_words(&["templates"]).unwrap(), RecordsCmd::Templates { which: None });
         let new = parse_words(&["new", "jobs", "--from", "job-applications", "--label", "Internships"]).unwrap();
         assert_eq!(
             request(&new, &Value::Null).unwrap(),
@@ -1633,10 +1816,107 @@ mod tests {
             show(&new, &collection, &Value::Null),
             "✓ created collection jobs from job-applications\n  add one: shimmer records add jobs --position … --company …\n  goes with: interviews (shimmer records new interviews --from interviews)"
         );
-        let listing = json!({"templates": [{"id": "leetcode", "label": "LeetCode", "description": "Problems"}]});
+    }
+
+    /// What `records.templates` sends (ADR 0030 §1), cut down.
+    fn listing() -> Value {
+        json!({
+            "categories": [{"id": "job-hunt", "label": "Job hunt"}, {"id": "practice", "label": "Practice"}],
+            "templates": [
+                {"id": "offers", "label": "Offers", "category": "job-hunt", "description": "Compare offers",
+                 "fields": [], "completable": true, "repeat_complete": "refuse", "related": [], "notes": [], "examples": []},
+                {"id": "leetcode", "label": "LeetCode", "category": "practice",
+                 "description": "Problems by pattern and difficulty, with how sure you are and when to redo them, and more",
+                 "title": "{title}", "stamp_on_complete": "last_solved", "repeat_complete": "restamp",
+                 "completable": true, "related": ["interview-questions"],
+                 "fields": [
+                    {"name": "title", "type": "string", "required": true},
+                    {"name": "difficulty", "type": "enum", "values": ["easy", "medium", "hard"]},
+                    {"name": "url", "type": "string", "role": "url", "unique": true},
+                    {"name": "last_solved", "type": "date"}],
+                 "notes": ["Keep it private."],
+                 "examples": ["shimmer records add <collection> --title \"Two Sum\"", "    --difficulty easy"]}
+            ]
+        })
+    }
+
+    #[test]
+    fn templates_and_peek_parse() {
         assert_eq!(
-            show(&RecordsCmd::Templates, &listing, &Value::Null),
-            "ID        LABEL     DESCRIPTION\nleetcode  LeetCode  Problems"
+            parse_words(&["templates", "practice"]).unwrap(),
+            RecordsCmd::Templates { which: Some("practice".into()) }
+        );
+        assert!(parse_words(&["templates", "a", "b"]).unwrap_err().contains("usage"));
+        assert!(parse_words(&["templates", "--all", "x"]).unwrap_err().contains("takes no options"));
+        assert_eq!(
+            parse_words(&["peek", "leetcode"]).unwrap(),
+            RecordsCmd::Peek { template: "leetcode".into(), file: false }
+        );
+        let file = parse_words(&["peek", "--file", "leetcode"]).unwrap();
+        assert_eq!(file, RecordsCmd::Peek { template: "leetcode".into(), file: true });
+        assert_eq!(
+            request(&file, &Value::Null).unwrap(),
+            ("records.templates", json!({"id": "leetcode", "file": true}))
+        );
+        assert!(parse_words(&["peek"]).unwrap_err().contains("usage: shimmer records peek TEMPLATE"));
+        assert!(parse_words(&["peek", "a", "b"]).unwrap_err().contains("usage"));
+        assert!(parse_words(&["peek", "leetcode", "--scripts", "x"]).unwrap_err().contains("takes --file"));
+    }
+
+    #[test]
+    fn templates_are_grouped_by_category() {
+        let all = templates(&listing(), None).unwrap();
+        assert_eq!(
+            all,
+            "Job hunt (job-hunt)\n  offers    Compare offers\n\n\
+             Practice (practice)\n  leetcode  Problems by pattern and difficulty, with how sure you are and when to…\n\n\
+             everything about one:      shimmer records peek TEMPLATE\n\
+             make a collection from it: shimmer records new ID --from TEMPLATE"
+        );
+        let one_category = templates(&listing(), Some("practice")).unwrap();
+        assert!(one_category.starts_with("Practice (practice)\n  leetcode") && !one_category.contains("offers"));
+        // A template's name shows it in full; anything else names the categories.
+        assert_eq!(templates(&listing(), Some("leetcode")).unwrap(), peek(&listing(), "leetcode").unwrap());
+        let e = templates(&listing(), Some("games")).unwrap_err();
+        assert_eq!(e.code, ErrorCode::NotFound);
+        assert!(e.message.contains("no template or category 'games' (categories: job-hunt, practice"), "{}", e.message);
+        assert_eq!(templates(&json!({"templates": []}), None).unwrap(), "no templates");
+    }
+
+    #[test]
+    fn peek_shows_everything_about_one_template() {
+        assert_eq!(
+            peek(&listing(), "leetcode").unwrap(),
+            "leetcode: LeetCode  (Practice)\n  Problems by pattern and difficulty, with how sure you are and when to redo them, and\n  more\n\
+             \nFields (4; * = required)\n  title*       text\n  difficulty   easy|medium|hard\n  url          url, unique\n  last_solved  date\n  each record is shown as: {title}\n\
+             \nWhen you complete a record\n  Marks it done and stamps last_solved with today's date. Completing it again counts again\n  (and re-stamps it).\n\
+             \nGood to know\n  • Keep it private.\n\
+             \nHow it works (<collection> is the name you give it)\n  shimmer records add <collection> --title \"Two Sum\"\n      --difficulty easy\n\
+             \nGoes with: interview-questions (shimmer records peek NAME)\n\
+             \nmake one:      shimmer records new ID --from leetcode\nsee the file:  shimmer records peek leetcode --file"
+        );
+        let offers = peek(&listing(), "offers").unwrap();
+        assert!(offers.contains("Marks it done. It happens once: completing it again is refused"), "{offers}");
+        assert!(offers.contains("Fields (0; * = required)") && !offers.contains("Good to know"), "{offers}");
+        let mut reference = listing();
+        reference["templates"][0]["completable"] = json!(false);
+        assert!(peek(&reference, "offers").unwrap().contains("it's a reference list"));
+
+        let e = peek(&listing(), "practice").unwrap_err();
+        assert!(
+            e.message.contains(
+                "'practice' is a category, not a template: see its templates with shimmer records templates practice"
+            ),
+            "{}",
+            e.message
+        );
+        let e = peek(&listing(), "chess").unwrap_err();
+        assert_eq!(e.message, "no template 'chess' (there are: offers, leetcode)");
+        // --file prints the file exactly.
+        let file = json!({"templates": [{"id": "leetcode", "file": "# LeetCode\n[collection]\nid = \"leetcode\"\n"}]});
+        assert_eq!(
+            show(&RecordsCmd::Peek { template: "leetcode".into(), file: true }, &file, &Value::Null),
+            "# LeetCode\n[collection]\nid = \"leetcode\""
         );
     }
 

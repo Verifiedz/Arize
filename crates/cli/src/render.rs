@@ -119,6 +119,36 @@ pub(crate) fn table(header: &[String], rows: &[Vec<String>]) -> String {
     out
 }
 
+/// The longest description shown in the list; `peek` shows it whole.
+const LISTED_DESCRIPTION: usize = 72;
+
+/// A description cut at [`LISTED_DESCRIPTION`] characters, at a word, for a list of templates.
+pub fn shorten(text: &str) -> String {
+    if text.chars().count() <= LISTED_DESCRIPTION {
+        return text.to_owned();
+    }
+    let cut: String = text.chars().take(LISTED_DESCRIPTION).collect();
+    let cut = cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head);
+    format!("{}…", cut.trim_end_matches([',', ':', ';', ' ']))
+}
+
+/// Words wrapped to `width`, each line after the first indented by `indent`.
+pub fn wrap(text: &str, width: usize, indent: &str) -> String {
+    let mut lines: Vec<String> = vec![String::new()];
+    for word in text.split_whitespace() {
+        let line = lines.last_mut().expect("never empty");
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > width {
+            lines.push(word.to_owned());
+        } else {
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+    }
+    lines.join(&format!("\n{indent}"))
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;

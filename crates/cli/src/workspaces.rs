@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use shimmer_core::{Error, ErrorCode, Result};
 
 use crate::client::Client;
-use crate::render::{self, cell, table};
+use crate::render::{self, cell, shorten, table, wrap};
 
 pub const USAGE: &str = "usage: shimmer workspaces <command>
 
@@ -945,9 +945,6 @@ fn how_to_answer(e: Error, prompt: &dyn Prompt) -> Error {
     e
 }
 
-/// The longest description shown in the list; `templates TEMPLATE` shows it whole.
-const LISTED_DESCRIPTION: usize = 72;
-
 /// `workspaces.templates`, grouped under the categories' headings in the daemon's order. With
 /// `which`: only that category's templates, or that one template in full.
 fn templates(data: &Value, which: Option<&str>) -> Result<String> {
@@ -993,33 +990,6 @@ fn templates(data: &Value, which: Option<&str>) -> Result<String> {
     out.push_str("everything about one:     shimmer workspaces peek TEMPLATE\n");
     out.push_str("make a workspace from it: shimmer workspaces new NAME --from TEMPLATE");
     Ok(out)
-}
-
-/// A description cut at [`LISTED_DESCRIPTION`] characters, at a word.
-fn shorten(text: &str) -> String {
-    if text.chars().count() <= LISTED_DESCRIPTION {
-        return text.to_owned();
-    }
-    let cut: String = text.chars().take(LISTED_DESCRIPTION).collect();
-    let cut = cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head);
-    format!("{}…", cut.trim_end_matches([',', ':', ';', ' ']))
-}
-
-/// Words wrapped to `width`, each line after the first indented by `indent`.
-fn wrap(text: &str, width: usize, indent: &str) -> String {
-    let mut lines: Vec<String> = vec![String::new()];
-    for word in text.split_whitespace() {
-        let line = lines.last_mut().expect("never empty");
-        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > width {
-            lines.push(word.to_owned());
-        } else {
-            if !line.is_empty() {
-                line.push(' ');
-            }
-            line.push_str(word);
-        }
-    }
-    lines.join(&format!("\n{indent}"))
 }
 
 /// `peek TEMPLATE`: everything about one template before making a workspace from it. A
