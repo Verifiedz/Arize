@@ -37,7 +37,7 @@ label = "Ship It"
 "code-freeze"  = "scheduler.pause"
 "thaw"         = "scheduler.resume"
 "deprecate"    = "scheduler.remove"
-# every other command (ADR 0028)
+# every other command (ADR 0029)
 "boilerplate"    = "records.templates"
 "greenfield"     = "records.create_collection"
 "graveyard"      = "records.trash"

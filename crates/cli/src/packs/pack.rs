@@ -68,7 +68,7 @@ pub const TARGETS: &[Target] = &[
     Target { op: "records.rename", words: &["records", "rename"] },
     Target { op: "records.remove", words: &["records", "remove"] },
     Target { op: "records.restore", words: &["records", "restore"] },
-    // ADR 0028: every command, the rare and destructive ones too (they still ask first).
+    // ADR 0029: every command, the rare and destructive ones too (they still ask first).
     Target { op: "records.templates", words: &["records", "templates"] },
     Target { op: "records.create_collection", words: &["records", "new"] },
     Target { op: "records.trash", words: &["records", "trash"] },

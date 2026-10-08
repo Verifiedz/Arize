@@ -1,4 +1,4 @@
-# 0028. Command packs can alias every command
+# 0029. Command packs can alias every command
 
 Status: accepted (2026-10-07). Amends ADR 0013 §6, ADR 0021 §6, ADR 0022 §4, ADR 0025 §8.
 

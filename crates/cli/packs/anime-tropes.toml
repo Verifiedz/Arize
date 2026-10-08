@@ -38,7 +38,7 @@ label = "Anime Tropes"
 "chotto-matte" = "scheduler.pause"
 "hajime"       = "scheduler.resume"
 "mou-ii"       = "scheduler.remove"
-# every other command (ADR 0028)
+# every other command (ADR 0029)
 "sugoi"          = "records.templates"
 "yosh"           = "records.create_collection"
 "gomen"          = "records.trash"

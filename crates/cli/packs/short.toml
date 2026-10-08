@@ -38,7 +38,7 @@ label = "Short"
 "spause"  = "scheduler.pause"
 "sresume" = "scheduler.resume"
 "sdel"    = "scheduler.remove"
-# every other command (ADR 0028)
+# every other command (ADR 0029)
 "rtpl"       = "records.templates"
 "rnew"       = "records.create_collection"
 "rtrash"     = "records.trash"

@@ -37,7 +37,7 @@ label = "Starship"
 "hold-position"   = "scheduler.pause"
 "full-ahead"      = "scheduler.resume"
 "scrub-mission"   = "scheduler.remove"
-# every other command (ADR 0028)
+# every other command (ADR 0029)
 "starcharts"        = "records.templates"
 "commission"        = "records.create_collection"
 "debris-field"      = "records.trash"
