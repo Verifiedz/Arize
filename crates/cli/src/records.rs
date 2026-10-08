@@ -11,7 +11,7 @@ use shimmer_core::{Error, ErrorCode, Result};
 
 use crate::client::Client;
 use crate::csv;
-use crate::render::{self, cell, shorten, table, wrap};
+use crate::render::{self, cell, table, wrap};
 use crate::schedules;
 use crate::workspaces::Prompt;
 
@@ -228,10 +228,7 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
     let Some(sub) = words.next() else { return Ok(RecordsCmd::Help) };
     let mut rest: Vec<String> = words.collect();
     // `--clear-stamp` is the one flag here that takes no value.
-    let clear_stamp = sub == "reopen" && rest.iter().any(|w| w == "--clear-stamp");
-    if clear_stamp {
-        rest.retain(|w| w != "--clear-stamp");
-    }
+    let clear_stamp = take_flag(&mut rest, sub == "reopen", "--clear-stamp");
     // `--add` and `--remove` take two words, a field and a value, so they come out before `split`.
     let mut items = Vec::new();
     if sub == "update" || sub == "complete" {
@@ -253,28 +250,13 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
         }
         rest = kept;
     }
-    let force = sub == "remove" && rest.iter().any(|w| w == "--force");
-    if force {
-        rest.retain(|w| w != "--force");
-    }
-    let yes = matches!(sub.as_str(), "remove-collection" | "import" | "purge") && rest.iter().any(|w| w == "--yes");
-    if yes {
-        rest.retain(|w| w != "--yes");
-    }
+    let force = take_flag(&mut rest, sub == "remove", "--force");
+    let yes = take_flag(&mut rest, matches!(sub.as_str(), "remove-collection" | "import" | "purge"), "--yes");
     let move_schedules =
-        matches!(sub.as_str(), "rename" | "rename-collection") && rest.iter().any(|w| w == "--move-schedules");
-    if move_schedules {
-        rest.retain(|w| w != "--move-schedules");
-    }
-    let file = sub == "peek" && rest.iter().any(|w| w == "--file");
-    if file {
-        rest.retain(|w| w != "--file");
-    }
-    let dry_run = sub == "import" && rest.iter().any(|w| w == "--dry-run");
-    let skip_invalid = sub == "import" && rest.iter().any(|w| w == "--skip-invalid");
-    if sub == "import" {
-        rest.retain(|w| w != "--dry-run" && w != "--skip-invalid");
-    }
+        take_flag(&mut rest, matches!(sub.as_str(), "rename" | "rename-collection"), "--move-schedules");
+    let file = take_flag(&mut rest, sub == "peek", "--file");
+    let dry_run = take_flag(&mut rest, sub == "import", "--dry-run");
+    let skip_invalid = take_flag(&mut rest, sub == "import", "--skip-invalid");
     let (positional, flags) = split(rest)?;
     let no_flags = || match flags.first() {
         Some((f, _)) => Err(format!("'records {sub}' takes no options, got '--{f}'")),
@@ -442,6 +424,17 @@ pub fn parse(words: Vec<String>) -> std::result::Result<RecordsCmd, String> {
         }
         other => Err(format!("unknown records command '{other}'; see 'shimmer records --help'")),
     }
+}
+
+/// Whether `flag` (one that takes no value) was given to a command it `applies` to, removing it
+/// from `rest` so `split` doesn't take the next word as its value. Elsewhere it stays, and
+/// `split` reports it.
+fn take_flag(rest: &mut Vec<String>, applies: bool, flag: &str) -> bool {
+    let given = applies && rest.iter().any(|w| w == flag);
+    if given {
+        rest.retain(|w| w != flag);
+    }
+    given
 }
 
 /// Separate positional words from `--name value` / `--name=value` pairs. Every flag here
@@ -1165,70 +1158,6 @@ pub fn show(cmd: &RecordsCmd, data: &Value, schema: &Value) -> String {
     }
 }
 
-/// `records.templates`, grouped under the categories' headings in the daemon's order. With
-/// `which`: only that category's templates, or that one template in full.
-fn templates(data: &Value, which: Option<&str>) -> Result<String> {
-    let all = data["templates"].as_array().map(Vec::as_slice).unwrap_or_default();
-    let categories = data["categories"].as_array().map(Vec::as_slice).unwrap_or_default();
-    if let Some(which) = which {
-        if all.iter().any(|t| t["id"] == which) {
-            return peek(data, which);
-        }
-        if !categories.iter().any(|c| c["id"] == which) {
-            let names: Vec<String> = categories.iter().map(|c| cell(&c["id"])).collect();
-            return Err(Error::not_found(format!(
-                "no template or category '{which}' (categories: {}; templates: shimmer records templates)",
-                names.join(", ")
-            )));
-        }
-    }
-    if all.is_empty() {
-        return Ok("no templates".into());
-    }
-    let id_width = all.iter().map(|t| cell(&t["id"]).chars().count()).max().unwrap_or(0);
-    let mut groups: Vec<(String, Vec<&Value>)> = Vec::new();
-    for t in all.iter().filter(|t| which.is_none_or(|w| t["category"] == w)) {
-        // "Job hunt (job-hunt)": the short name is what `templates CATEGORY` takes.
-        let heading = categories
-            .iter()
-            .find(|c| c["id"] == t["category"])
-            .map_or_else(|| "Other".to_owned(), |c| format!("{} ({})", cell(&c["label"]), cell(&c["id"])));
-        match groups.iter_mut().find(|(h, _)| *h == heading) {
-            Some((_, ts)) => ts.push(t),
-            None => groups.push((heading, vec![t])),
-        }
-    }
-    let mut out = String::new();
-    for (heading, ts) in &groups {
-        let _ = writeln!(out, "{heading}");
-        for t in ts {
-            let id = t["id"].as_str().unwrap_or_default();
-            let _ = writeln!(out, "  {id:<id_width$}  {}", shorten(t["description"].as_str().unwrap_or_default()));
-        }
-        out.push('\n');
-    }
-    out.push_str("everything about one:      shimmer records peek TEMPLATE\n");
-    out.push_str("make a collection from it: shimmer records new ID --from TEMPLATE");
-    Ok(out)
-}
-
-/// `peek TEMPLATE`: everything about one template before making a collection from it. A
-/// category's name gets a pointer to `templates CATEGORY`; anything else is `not_found`.
-fn peek(data: &Value, id: &str) -> Result<String> {
-    let all = data["templates"].as_array().map(Vec::as_slice).unwrap_or_default();
-    let categories = data["categories"].as_array().map(Vec::as_slice).unwrap_or_default();
-    match all.iter().find(|t| t["id"] == id) {
-        Some(t) => Ok(template_in_full(t, categories)),
-        None if categories.iter().any(|c| c["id"] == id) => Err(Error::not_found(format!(
-            "'{id}' is a category, not a template: see its templates with shimmer records templates {id}"
-        ))),
-        None => {
-            let names: Vec<String> = all.iter().map(|t| cell(&t["id"])).collect();
-            Err(Error::not_found(format!("no template '{id}' (there are: {})", names.join(", "))))
-        }
-    }
-}
-
 /// What completing a record does, in words, from the collection's settings (ADR 0021).
 fn completing(t: &Value) -> String {
     if t["completable"] == false {
@@ -1244,6 +1173,22 @@ fn completing(t: &Value) -> String {
         _ => "Completing it again counts again (and re-stamps it).",
     });
     out
+}
+
+/// `records.templates`, grouped by category; with `which`, one category or one template in full.
+fn templates(data: &Value, which: Option<&str>) -> Result<String> {
+    render::templates_by_category(
+        data,
+        which,
+        "records",
+        ("make a collection from it:", "shimmer records new ID --from TEMPLATE"),
+        template_in_full,
+    )
+}
+
+/// `peek TEMPLATE`: everything about one template before making one from it.
+fn peek(data: &Value, id: &str) -> Result<String> {
+    Ok(template_in_full(render::template_named(data, id, "records")?, render::categories(data)))
 }
 
 /// One template: what it's for, what completing does, its fields, what to know, examples, and

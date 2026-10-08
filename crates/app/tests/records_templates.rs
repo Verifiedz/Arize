@@ -4,20 +4,8 @@
 
 mod common;
 
-use common::{stderr, stdout, Home};
+use common::{fails, ok, stderr, Home};
 use serde_json::Value;
-
-fn ok(home: &Home, args: &[&str]) -> String {
-    let o = home.shimmer(args);
-    assert!(o.status.success(), "shimmer {args:?} failed: {}{}", stderr(&o), stdout(&o));
-    stdout(&o)
-}
-
-fn fails(home: &Home, args: &[&str]) -> String {
-    let o = home.shimmer(args);
-    assert!(!o.status.success(), "shimmer {args:?} should have failed: {}", stdout(&o));
-    stderr(&o)
-}
 
 fn json(home: &Home, args: &[&str]) -> Value {
     let mut args = args.to_vec();
