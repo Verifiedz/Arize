@@ -103,6 +103,13 @@ impl FetchersConfig {
             .map_err(|e| Error::invalid_params(format!("[modules.fetchers]: {e}")))?;
         for (id, source) in &cfg.sources {
             source.interval.resolve().map_err(|e| Error::invalid_params(format!("sources.{id}.interval: {e}")))?;
+            if crate::source::find(id).is_none() {
+                let known: Vec<&str> = crate::source::registry().iter().map(|s| s.id()).collect();
+                return Err(Error::invalid_params(format!(
+                    "sources.{id}: unknown source id (known: {})",
+                    known.join(", ")
+                )));
+            }
         }
         Ok(cfg)
     }
@@ -232,6 +239,17 @@ mod tests {
     fn an_unknown_top_level_key_is_rejected() {
         let err = FetchersConfig::from_value(&json!({"tick_interval_s": 60})).unwrap_err();
         assert_eq!(err.code, shimmer_core::ErrorCode::InvalidParams);
+    }
+
+    #[test]
+    fn a_misspelled_source_id_fails_at_load_time_not_on_the_first_tick() {
+        let err = FetchersConfig::from_value(&json!({
+            "sources": {"hn-whoishirign": {"enabled": true, "interval": "daily"}}
+        }))
+        .unwrap_err();
+        assert_eq!(err.code, shimmer_core::ErrorCode::InvalidParams);
+        assert!(err.message.contains("hn-whoishirign"), "{}", err.message);
+        assert!(err.message.contains("hn-whoishiring"), "{}", err.message);
     }
 
     fn source(enabled: bool, interval_s: u64) -> SourceConfig {
