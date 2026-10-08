@@ -130,7 +130,8 @@ impl FetchersConfig {
             let floor = match source.kind.as_deref() {
                 None => {
                     let Some(found) = crate::source::find(id) else {
-                        let known: Vec<&str> = crate::source::registry().iter().map(|s| s.id()).collect();
+                        let known_sources = crate::source::registry();
+                        let known: Vec<&str> = known_sources.iter().map(|s| s.id()).collect();
                         return Err(Error::invalid_params(format!(
                             "sources.{id}: unknown source id (known: {})",
                             known.join(", ")
