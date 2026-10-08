@@ -191,6 +191,16 @@ Pruning: at the end of a successful run, drop `seen.toml` entries whose `last_se
 than 90 days. Per-run cap: at most 50 new items processed (and thus emitted) per run; items
 beyond the cap are left unmarked and picked up by a later run — see §7.
 
+**Amendment (#126 review): a kid skipped before fetching is not touched.** §8's fix for HN
+getting stuck at comment 200 reads this source's own `SeenSet` *inside* `fetch_page`
+(`crate::dedup::load`, read-only) to skip an already-seen kid with zero HTTP calls, before
+the orchestration above ever sees it — so that kid's `last_seen` is not refreshed on that
+run, unlike every item this orchestration actually examines, which this section's own
+"touch everything examined" rule covers. In practice this is harmless here: HN's
+"who is hiring" threads are monthly and don't live anywhere near the 90-day pruning window
+regardless of how many runs pass without a given old comment being re-examined. Noted so a
+future reader isn't surprised that `last_seen` on an old, already-dedup'd item can lag.
+
 ### 5. Scheduling
 
 **Finding:** `Module::triggers()` is `fn triggers(&self) -> Vec<TriggerSpec>` — synchronous,
@@ -281,9 +291,18 @@ only, fetched once through the existing `ctx.http` (so it gets the same cache/ra
 treatment as everything else) via **`texting_robots` 0.2.2** (pure Rust, zero dependencies,
 dual MIT/Apache-2.0 — verified live, more recently touched than the alternative `robotstxt`
 crate). A `Disallow` match is a hard refusal, never a soft warning. User-Agent identifies the
-bot by default (`Shimmer-Fetchers/<version>`, overridable in config), never spoofs a browser.
+bot, never spoofs a browser.
 Scrape sources get the longer config floor from §5 as their "more conservative default
 interval."
+
+**Amendment (#126 review): the User-Agent is daemon-wide, not fetchers-specific.** The
+original text above promised `Shimmer-Fetchers/<version>`, specific to this module. In
+practice the UA is set once on `RealHttpBackend`'s shared `reqwest::Client`
+(`crates/daemon/src/http_backend.rs`), which every network-capable module uses — there is no
+per-module custom-header plumbing (ADR 0027 deferred it). The actual, current value is
+`Shimmer/<version>`, and `robots.rs`'s own `USER_AGENT` constant (used only to *check*
+robots.txt rules) is kept identical to it on purpose, so "what we check" and "what we send"
+never drift apart again.
 
 ### 8. First-run flood
 

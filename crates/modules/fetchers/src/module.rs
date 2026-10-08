@@ -2,7 +2,9 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use shimmer_core::params::decode;
-use shimmer_core::{CommandSpec, Ctx, Error, ErrorCode, Execution, LaneConfig, Manifest, Module, Result, TriggerSpec};
+use shimmer_core::{
+    CommandSpec, Ctx, Error, ErrorCode, Execution, LaneConfig, Manifest, Module, Result, TriggerSpec, WriteLock,
+};
 
 use crate::dedup::{self, RunGuard};
 use crate::schedule::{self, FetchersConfig, FETCH_OP, TICK_OP};
@@ -24,6 +26,13 @@ pub struct Fetchers {
     /// A scheduled tick and a manual `fetchers.fetch` for the same source must never overlap
     /// (ADR 0028 §5).
     running: RunGuard,
+    /// Serialises `last_run.toml`'s read-modify-write (`schedule::record_run`) against itself
+    /// -- the `fetchers` lane runs up to 8 fetches at once, each ending in its own call to
+    /// `record_run`, and an unlocked read-check-write there can drop whichever of two
+    /// concurrently-finishing sources' updates writes second (PR #126 review). A different
+    /// lock from `running`: that one is per-source exclusivity for a whole run, this one is
+    /// held only across the few lines that touch the shared last-run file.
+    write: WriteLock,
 }
 
 #[async_trait]
@@ -152,8 +161,13 @@ impl Fetchers {
         let outcome = self.run_source(ctx, source.as_ref()).await;
         // Recorded regardless of outcome -- including failure -- so a broken source is
         // retried at most once per interval (ADR 0028 §5, §6: "after that, wait for the
-        // next trigger"), not hammered every tick.
-        schedule::record_run(ctx, &source_id, ctx.clock.now())?;
+        // next trigger"), not hammered every tick. Held only across this call -- up to 8
+        // fetches finish around the same time on this lane, and this file's own
+        // read-modify-write must not interleave with another source's (PR #126 review).
+        {
+            let _g = self.write.lock();
+            schedule::record_run(ctx, &source_id, ctx.clock.now())?;
+        }
 
         match outcome {
             Ok(new_items) => {
@@ -184,7 +198,9 @@ impl Fetchers {
                     "method": match s.method() { source::Method::Api => "api", source::Method::Scrape => "scrape" },
                     "kind": cfg.and_then(|c| c.kind.clone()),
                     "enabled": cfg.is_some_and(|c| c.enabled),
-                    "interval_s": cfg.and_then(|c| c.interval.resolve().ok()),
+                    // 0: already validated at load time (§126 review's per-method floor);
+                    // this is read-only display, not re-validation, same as `due_sources`.
+                    "interval_s": cfg.and_then(|c| c.interval.resolve(0).ok()),
                 })
             })
             .collect();
@@ -234,7 +250,18 @@ impl Fetchers {
         let mut found: Vec<RawItem> = Vec::new();
         let mut cursor: Option<String> = None;
 
-        for _ in 0..source::MAX_PAGES {
+        for page_index in 0..source::MAX_PAGES {
+            // A full run can issue up to `MAX_PAGES * PAGE_SIZE` HTTP calls (CLAUDE.md §12
+            // rule 11: "a task that cannot be cancelled is a bug") -- checked once per page
+            // here, and again per-item inside a `Source` whose own page can itself fan out
+            // into many calls (e.g. `sources::hn`'s per-kid loop).
+            if ctx.cancel.is_cancelled() {
+                return Err(Error::new(ErrorCode::ModuleError, "cancelled"));
+            }
+            ctx.progress(
+                page_index as f32 / source::MAX_PAGES as f32,
+                &format!("page {}/{}", page_index + 1, source::MAX_PAGES),
+            );
             let page = source.fetch_page(ctx, cursor.as_deref()).await?;
             for item in page.items {
                 if seen.is_new(&item.source_id) {
@@ -269,14 +296,18 @@ impl Fetchers {
     }
 }
 
-/// Classifies a fetch failure for `fetchers.fetch.failed`'s `reason` (ADR 0028 §9).
-/// `ctx.cancel` is checked first since a cancelled run can surface as almost any underlying
-/// error, depending on exactly where the cancellation landed. `http_error` relies on
-/// `http::require_ok`'s `"http_error:"` message convention; anything else `module_error` --
-/// including a `Method::Scrape` source's own robots.txt refusal, which has no bucket of its
-/// own in ADR 0028 §9's four-reason enum -- is treated as `parse_empty`. A deliberate
-/// simplification (see `http::require_ok`'s own doc comment) rather than inventing a
-/// precise classifier, or a fifth reason, for every possible failure shape.
+/// Classifies a fetch failure for `fetchers.fetch.failed`'s `reason` (ADR 0028 §9, amended by
+/// PR #126 review to add `"blocked"`). `ctx.cancel` is checked first since a cancelled run
+/// can surface as almost any underlying error, depending on exactly where the cancellation
+/// landed. `http_error` relies on `http::require_ok`'s `"http_error:"` message convention;
+/// `blocked` relies on `sources::wwr`'s own `"robots.txt disallows fetching..."` message --
+/// its own bucket, since the page never got fetched at all, unlike a genuine parse failure.
+/// Anything else is `module_error`, treated as `parse_empty` -- a deliberate simplification
+/// (see `http::require_ok`'s own doc comment) rather than inventing a precise classifier, or
+/// a sixth reason, for every possible failure shape. (A corrupt `seen.toml`, for instance,
+/// also falls into this `parse_empty` catch-all -- a known, deliberate tradeoff, see
+/// `dedup.rs`'s `a_malformed_seen_file_is_a_reported_error_not_a_silent_empty_set` test; left
+/// unchanged.)
 fn classify_failure(ctx: &Ctx, err: &Error) -> &'static str {
     if ctx.cancel.is_cancelled() {
         "cancelled"
@@ -284,6 +315,8 @@ fn classify_failure(ctx: &Ctx, err: &Error) -> &'static str {
         "network"
     } else if err.message.starts_with("http_error:") {
         "http_error"
+    } else if err.message.contains("robots.txt") {
+        "blocked"
     } else {
         "parse_empty"
     }
@@ -366,8 +399,8 @@ mod tests {
     async fn tick_enqueues_every_due_source_and_only_those() {
         let env = TestEnv::new("fetchers");
         let mut config = FetchersConfig::default();
-        config.sources.insert("hn-whoishiring".into(), source_config(true, schedule::MIN_INTERVAL_S));
-        config.sources.insert("weworkremotely".into(), source_config(false, schedule::MIN_INTERVAL_S));
+        config.sources.insert("hn-whoishiring".into(), source_config(true, schedule::MIN_INTERVAL_API_S));
+        config.sources.insert("weworkremotely".into(), source_config(false, schedule::MIN_INTERVAL_API_S));
 
         let fetchers = Fetchers::default();
         let result = fetchers.run_due(&env.ctx, &config).await.unwrap();
@@ -384,7 +417,7 @@ mod tests {
     async fn tick_skips_a_source_it_already_sees_running() {
         let env = TestEnv::new("fetchers");
         let mut config = FetchersConfig::default();
-        config.sources.insert("hn-whoishiring".into(), source_config(true, schedule::MIN_INTERVAL_S));
+        config.sources.insert("hn-whoishiring".into(), source_config(true, schedule::MIN_INTERVAL_API_S));
 
         let fetchers = Fetchers::default();
         let _permit = fetchers.running.try_acquire("hn-whoishiring").unwrap();
@@ -443,7 +476,12 @@ mod tests {
         const BASE: &str = "https://hacker-news.firebaseio.com/v0";
         let mut responses = env.http.responses.lock().unwrap();
         responses.insert(format!("{BASE}/user/whoishiring.json"), json_response(json!({"submitted": [1]})));
-        responses.insert(format!("{BASE}/item/1.json"), json_response(json!({"id": 1, "kids": [comment_id]})));
+        responses.insert(
+            format!("{BASE}/item/1.json"),
+            // `title` must match `sources::hn::latest_thread`'s "who is hiring" check (PR #126
+            // review) or this stub's thread is never picked, and every test using it fails.
+            json_response(json!({"id": 1, "title": "Ask HN: Who is hiring? (October 2026)", "kids": [comment_id]})),
+        );
         responses.insert(
             format!("{BASE}/item/{comment_id}.json"),
             json_response(json!({"id": comment_id, "by": "acme", "text": text})),
@@ -646,5 +684,87 @@ mod tests {
         let fetch = fetchers.handle(FETCH_OP, json!({"source": "hn-whoishiring"}), &env.ctx).await.unwrap();
         assert_eq!(fetch["source"], "hn-whoishiring");
         assert_eq!(fetch["new_items"], 1);
+    }
+
+    #[tokio::test]
+    async fn run_source_bails_immediately_once_cancelled_rather_than_paging_on() {
+        let env = TestEnv::new("fetchers");
+        // Deliberately no stubs at all: if the cancellation check did not run before the
+        // first page fetch, this would instead fail with "no stub for...", not the
+        // `cancelled` classification this test is actually about.
+        env.ctx.cancel.cancel();
+        let fetchers = Fetchers::default();
+
+        let source = source::find("hn-whoishiring").unwrap();
+        let err = fetchers.run_source(&env.ctx, source.as_ref()).await.unwrap_err();
+        assert!(env.ctx.cancel.is_cancelled());
+        assert_eq!(classify_failure(&env.ctx, &err), "cancelled");
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_fetch_is_classified_and_emitted_as_cancelled_not_whatever_error_surfaced() {
+        let env = TestEnv::new("fetchers");
+        env.ctx.cancel.cancel();
+        let fetchers = Fetchers::default();
+
+        let err = fetchers.fetch(&env.ctx, "hn-whoishiring".into()).await.unwrap_err();
+        assert_eq!(classify_failure(&env.ctx, &err), "cancelled");
+        let failed: Vec<_> = env.backend.events().into_iter().filter(|e| e.topic == "fetchers.fetch.failed").collect();
+        assert_eq!(failed[0].payload["reason"], "cancelled");
+    }
+
+    #[test]
+    fn a_robots_refusal_is_classified_as_blocked_not_the_parse_empty_catch_all() {
+        let env = TestEnv::new("fetchers");
+        let err = Error::module_error("robots.txt disallows fetching https://example.test/categories/x".to_owned());
+        assert_eq!(classify_failure(&env.ctx, &err), "blocked");
+    }
+
+    #[test]
+    fn an_ordinary_module_error_still_falls_back_to_parse_empty() {
+        let env = TestEnv::new("fetchers");
+        let err = Error::module_error("some other failure shape entirely".to_owned());
+        assert_eq!(classify_failure(&env.ctx, &err), "parse_empty");
+    }
+
+    #[tokio::test]
+    async fn run_source_reports_progress_once_per_page() {
+        let env = TestEnv::new("fetchers");
+        stub_one_hn_comment(&env, 30, "<p>Globex<p>Hiring.");
+        let progress = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let p = progress.clone();
+        let ctx = env.ctx.for_task(
+            env.ctx.cancel.clone(),
+            std::sync::Arc::new(move |f, n| p.lock().unwrap().push((f, n.to_owned()))),
+        );
+        let fetchers = Fetchers::default();
+
+        let source = source::find("hn-whoishiring").unwrap();
+        fetchers.run_source(&ctx, source.as_ref()).await.unwrap();
+
+        let reported = progress.lock().unwrap();
+        assert!(!reported.is_empty(), "at least the first page must report progress");
+        assert!(reported[0].1.contains("page 1/"), "{:?}", reported[0]);
+    }
+
+    #[tokio::test]
+    async fn two_sources_finishing_their_run_record_do_not_clobber_each_others_last_run_entry() {
+        // Not a true concurrency test (see PR #126 review reply) -- this proves the lock is
+        // correctly scoped to `record_run` alone: two sequential holders must each still see
+        // the other's write, which a lock held across the *wrong* span (or none at all, if the
+        // two calls raced) could still get right by accident, but a lock held and released
+        // incorrectly inside `fetch` could not.
+        let env = TestEnv::new("fetchers");
+        let fetchers = Fetchers::default();
+        {
+            let _g = fetchers.write.lock();
+            schedule::record_run(&env.ctx, "hn-whoishiring", env.ctx.clock.now()).unwrap();
+        }
+        {
+            let _g = fetchers.write.lock();
+            schedule::record_run(&env.ctx, "weworkremotely", env.ctx.clock.now()).unwrap();
+        }
+        let all = schedule::load_last_run(&env.ctx).unwrap();
+        assert!(all.contains_key("hn-whoishiring") && all.contains_key("weworkremotely"));
     }
 }

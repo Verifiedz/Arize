@@ -9,7 +9,11 @@ use shimmer_core::{Ctx, Error, Result};
 use texting_robots::Robot;
 
 /// Identifies this daemon to sites it scrapes. Never spoofs a browser (ADR 0028 §7).
-pub const USER_AGENT: &str = concat!("Shimmer-Fetchers/", env!("CARGO_PKG_VERSION"));
+/// Matches the token `RealHttpBackend` actually sends on every request (PR #126 review:
+/// the daemon-wide UA is `"Shimmer/<version>"`, not fetchers-specific -- see that fix's own
+/// comment in `crates/daemon/src/http_backend.rs`) so a site's `Disallow` rule written for
+/// either name is checked against the identity we actually present, not a different one.
+pub const USER_AGENT: &str = concat!("Shimmer/", env!("CARGO_PKG_VERSION"));
 
 /// Fetches and parses `url`'s host's robots.txt -- through `ctx.http`, so it gets the same
 /// cache/rate-limit treatment as any other request, not a bespoke path -- and reports

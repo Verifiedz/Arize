@@ -23,10 +23,16 @@ pub const TICK_INTERVAL: Duration = Duration::from_secs(300);
 pub const TICK_OP: &str = "fetchers.tick";
 pub const FETCH_OP: &str = "fetchers.fetch";
 
-/// A source's own cadence must be at least this many seconds. Provisional and uniform across
-/// every source until a `Source` registry exists to know a source's `Method` and apply ADR
-/// 0028 §7's per-method floor (1800s API / 21600s scrape) instead.
-pub const MIN_INTERVAL_S: u64 = 900;
+/// Floors below which a source's own cadence may not be set, per `Method` (ADR 0028 §5/§7).
+/// An API source hits a known, source-maintained endpoint built for this kind of polling; a
+/// scraped page is a much heavier, more easily-noticed load on a host that never agreed to
+/// be polled, so it gets a much higher floor. `crate::source::find`'s registry (which exists
+/// now, unlike when a single uniform floor was first written here) is what lets
+/// `FetchersConfig::from_value` look a source's `Method` up and apply the right one
+/// (PR #126 review -- a single `MIN_INTERVAL_S` let `weworkremotely`, a `Method::Scrape`
+/// source, be polled as often as every 15 minutes).
+pub const MIN_INTERVAL_API_S: u64 = 1800;
+pub const MIN_INTERVAL_SCRAPE_S: u64 = 21_600;
 
 /// The one `TriggerSpec` this module registers (ADR 0028 §5). `lane: None` defers to
 /// `fetchers.tick`'s own `CommandSpec` (`Execution::Queued { lane: "fetchers" }`) rather than
@@ -75,8 +81,11 @@ pub enum IntervalSpec {
 }
 
 impl IntervalSpec {
-    /// A named preset, or a raw seconds count, checked against [`MIN_INTERVAL_S`].
-    pub fn resolve(&self) -> Result<u64> {
+    /// A named preset, or a raw seconds count, checked against `floor_s`. The right floor
+    /// depends on the source's `Method` (`MIN_INTERVAL_API_S` / `MIN_INTERVAL_SCRAPE_S`), so
+    /// the caller supplies it -- only `FetchersConfig::from_value` can look a source's
+    /// `Method` up (via `crate::source::find`) to know which one applies.
+    pub fn resolve(&self, floor_s: u64) -> Result<u64> {
         let secs = match self {
             Self::Seconds(n) => *n,
             Self::Preset(name) => match name.as_str() {
@@ -90,8 +99,8 @@ impl IntervalSpec {
                 }
             },
         };
-        if secs < MIN_INTERVAL_S {
-            return Err(Error::invalid_params(format!("interval must be at least {MIN_INTERVAL_S}s, got {secs}s")));
+        if secs < floor_s {
+            return Err(Error::invalid_params(format!("interval must be at least {floor_s}s, got {secs}s")));
         }
         Ok(secs)
     }
@@ -111,16 +120,26 @@ impl FetchersConfig {
         let cfg: Self = serde_json::from_value(raw.clone())
             .map_err(|e| Error::invalid_params(format!("[modules.fetchers]: {e}")))?;
         for (id, source) in &cfg.sources {
-            source.interval.resolve().map_err(|e| Error::invalid_params(format!("sources.{id}.interval: {e}")))?;
-            match source.kind.as_deref() {
+            // Each `Method` gets its own floor (ADR 0028 §5/§7) -- a scraped page must not be
+            // pollable at an API source's much lower cadence (PR #126 review). For a `kind`
+            // entry there is no fixed `Source` to ask yet (it is only ever built by
+            // `crate::source::resolve`, lazily, per `Ctx`) -- but `sources::rss::Rss::method`
+            // always answers `Method::Api` (a feed url is a known endpoint, not a crawled
+            // page), so the `"rss"` floor can be hardcoded here rather than instantiating one
+            // just to ask.
+            let floor = match source.kind.as_deref() {
                 None => {
-                    if crate::source::find(id).is_none() {
+                    let Some(found) = crate::source::find(id) else {
                         let known_sources = crate::source::registry();
                         let known: Vec<&str> = known_sources.iter().map(|s| s.id()).collect();
                         return Err(Error::invalid_params(format!(
                             "sources.{id}: unknown source id (known: {})",
                             known.join(", ")
                         )));
+                    };
+                    match found.method() {
+                        crate::source::Method::Api => MIN_INTERVAL_API_S,
+                        crate::source::Method::Scrape => MIN_INTERVAL_SCRAPE_S,
                     }
                 }
                 Some(kind) => {
@@ -150,6 +169,7 @@ impl FetchersConfig {
                                     "sources.{id}: kind \"rss\" url must be a well-formed http:// or https:// url, got '{url}'"
                                 )));
                             }
+                            MIN_INTERVAL_API_S
                         }
                         other => {
                             return Err(Error::invalid_params(format!(
@@ -158,7 +178,8 @@ impl FetchersConfig {
                         }
                     }
                 }
-            }
+            };
+            source.interval.resolve(floor).map_err(|e| Error::invalid_params(format!("sources.{id}.interval: {e}")))?;
         }
         Ok(cfg)
     }
@@ -187,7 +208,10 @@ pub fn due_sources(
         .iter()
         .filter(|(_, c)| c.enabled)
         .filter_map(|(id, c)| {
-            let interval = c.interval.resolve().ok()?; // already validated by `FetchersConfig::load`
+            // Already validated (against the right per-`Method` floor) by
+            // `FetchersConfig::load` -- a floor of 0 here only converts units, it never
+            // re-checks anything.
+            let interval = c.interval.resolve(0).ok()?;
             let due = match last_run.get(id) {
                 None => true,
                 Some(last) => now.signed_duration_since(*last).num_seconds() >= interval as i64,
@@ -236,22 +260,39 @@ mod tests {
 
     #[test]
     fn presets_resolve_to_the_expected_seconds() {
-        assert_eq!(IntervalSpec::Preset("hourly".into()).resolve().unwrap(), 3600);
-        assert_eq!(IntervalSpec::Preset("daily".into()).resolve().unwrap(), 86_400);
-        assert_eq!(IntervalSpec::Preset("weekly".into()).resolve().unwrap(), 604_800);
+        assert_eq!(IntervalSpec::Preset("hourly".into()).resolve(0).unwrap(), 3600);
+        assert_eq!(IntervalSpec::Preset("daily".into()).resolve(0).unwrap(), 86_400);
+        assert_eq!(IntervalSpec::Preset("weekly".into()).resolve(0).unwrap(), 604_800);
     }
 
     #[test]
     fn an_unknown_preset_is_rejected() {
-        let err = IntervalSpec::Preset("fortnightly".into()).resolve().unwrap_err();
+        let err = IntervalSpec::Preset("fortnightly".into()).resolve(0).unwrap_err();
         assert_eq!(err.code, shimmer_core::ErrorCode::InvalidParams);
     }
 
     #[test]
-    fn a_raw_interval_below_the_floor_is_rejected() {
-        let err = IntervalSpec::Seconds(MIN_INTERVAL_S - 1).resolve().unwrap_err();
+    fn a_raw_interval_below_the_given_floor_is_rejected() {
+        let err = IntervalSpec::Seconds(MIN_INTERVAL_API_S - 1).resolve(MIN_INTERVAL_API_S).unwrap_err();
         assert_eq!(err.code, shimmer_core::ErrorCode::InvalidParams);
-        IntervalSpec::Seconds(MIN_INTERVAL_S).resolve().unwrap();
+        IntervalSpec::Seconds(MIN_INTERVAL_API_S).resolve(MIN_INTERVAL_API_S).unwrap();
+    }
+
+    #[test]
+    fn a_scrape_source_below_its_own_higher_floor_is_rejected_even_at_an_interval_an_api_source_would_accept() {
+        let err = FetchersConfig::from_value(&json!({
+            "sources": {"weworkremotely": {"enabled": true, "interval": 3600}}
+        }))
+        .unwrap_err();
+        assert_eq!(err.code, shimmer_core::ErrorCode::InvalidParams);
+        assert!(err.message.contains(&MIN_INTERVAL_SCRAPE_S.to_string()), "{}", err.message);
+
+        // The identical interval is fine for an API source -- the floor is per-`Method`, not
+        // one uniform number.
+        FetchersConfig::from_value(&json!({
+            "sources": {"hn-whoishiring": {"enabled": true, "interval": 3600}}
+        }))
+        .unwrap();
     }
 
     #[test]
@@ -273,7 +314,7 @@ mod tests {
         let cfg = FetchersConfig::from_value(&json!({
             "sources": {
                 "hn-whoishiring": {"enabled": true, "interval": "daily"},
-                "weworkremotely": {"enabled": false, "interval": 3600},
+                "weworkremotely": {"enabled": false, "interval": MIN_INTERVAL_SCRAPE_S},
             }
         }))
         .unwrap();
@@ -388,7 +429,7 @@ mod tests {
     #[test]
     fn a_never_run_enabled_source_is_due() {
         let mut cfg = FetchersConfig::default();
-        cfg.sources.insert("hn-whoishiring".into(), source(true, MIN_INTERVAL_S));
+        cfg.sources.insert("hn-whoishiring".into(), source(true, MIN_INTERVAL_API_S));
         let due = due_sources(&cfg, &BTreeMap::new(), at("2026-01-01T00:00:00Z"));
         assert_eq!(due, vec!["hn-whoishiring".to_string()]);
     }
@@ -396,7 +437,7 @@ mod tests {
     #[test]
     fn a_disabled_source_is_never_due() {
         let mut cfg = FetchersConfig::default();
-        cfg.sources.insert("hn-whoishiring".into(), source(false, MIN_INTERVAL_S));
+        cfg.sources.insert("hn-whoishiring".into(), source(false, MIN_INTERVAL_API_S));
         let due = due_sources(&cfg, &BTreeMap::new(), at("2026-01-01T00:00:00Z"));
         assert!(due.is_empty());
     }
