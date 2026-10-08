@@ -2,7 +2,9 @@
 
 Status: proposed · Raised by Dev A (taking over the `fetchers` module from Dev B's territory
 per handoff) · Needs sign-off: Dev A · Dev C notified (protocol change: a new op, two payload
-shapes — see §9) · No `core` change
+shapes — see §9) · No `core` change · Amended (issue #127, source kinds): §2's `Source::id()`
+signature and the registry's construction model change — see §2a. Still no `core` change and
+no `docs/protocol.md` change — `fetchers.item.found`'s payload shape (§3) is unaffected.
 
 ## Context
 
@@ -51,6 +53,92 @@ The host loops `fetch_page` up to a fixed max-pages cap, following `next_cursor`
 `None` or the cap is hit. One trait, no API-then-scrape fallback inside a single `Source` —
 a source that genuinely wants both is two `Source` impls, each ~40 lines, matching CLAUDE.md
 §8's "one `impl Source` of about forty lines."
+
+### 2a. Amendment (#127): source kinds and a config-driven registry
+
+**Why.** §2's own answer to wanting a variant — "two `Source` impls" — is fine for "API vs.
+scrape of the same site," but doesn't scale to "watch five RSS feeds" or "two job-board
+searches for two companies." Raised in review of the fetchers PR stack (#116–#126); full
+reasoning in issue #127.
+
+**Trait change.** `Source::id` stops returning a `'static` string:
+
+```rust
+pub trait Source: Send + Sync {
+    fn id(&self) -> &str;    // was: &'static str
+    fn method(&self) -> Method;
+    async fn fetch_page(&self, ctx: &Ctx, cursor: Option<&str>) -> Result<Page>;
+}
+```
+
+A runtime-built instance can't hand back a `&'static str` for an id it only learns from
+`config.toml`. `hn-whoishiring`/`weworkremotely` need only this mechanical signature change
+— each still returns its existing literal, which borrows fine as `&str` — nothing else about
+either one moves. No `core` change: `Source` lives entirely in `crates/modules/fetchers`.
+
+**Config change.** `SourceConfig` (§5) gains an optional `kind`:
+
+```toml
+[modules.fetchers.sources.hn-whoishiring]
+enabled = true
+interval = "daily"            # no `kind` -- this id must already exist in the fixed,
+                               # compiled-in registry (unchanged, today's behavior)
+
+[modules.fetchers.sources.my-team-blog]
+kind = "rss"                  # `kind` present -- the registry builds a brand-new
+enabled = true                # instance of this kind, with this id and this entry's
+interval = "hourly"           # own settings, instead of looking up a built-in
+url = "https://example.com/feed.xml"
+```
+
+`kind` absent means today's path exactly: the id must resolve against the fixed, compiled-in
+list (`hn-whoishiring`, `weworkremotely`), checked at load time (already shipped: a
+misspelled or unknown id with no `kind` is rejected at `FetchersConfig::from_value`, not left
+to fail `not_found` on the first tick). `kind` present means a new instance, validated the
+same way — a kind's own required fields (e.g. `rss`'s `url`) must be checked at load time
+too, not discovered lazily on first fetch.
+
+**Registry becomes two-layered**, not a single flat list:
+
+1. The fixed, compiled-in sources (`hn-whoishiring`, `weworkremotely`) — unchanged, always
+   present, no `kind` needed, exactly as §2/§10 describe them today.
+2. A config-driven layer: for every `[modules.fetchers.sources.<id>]` entry that has a
+   `kind`, dispatch on that string (`"rss"` → build an `Rss` instance; any other value is
+   rejected at load time, same as an unknown interval preset) to construct a `Source` with
+   this entry's id and params.
+
+This needs no `core` change — the registry is built where `fetch()` already holds a `Ctx`,
+not inside `Module::triggers()` (§5's finding about `triggers()` having no config access is
+unaffected and unrelated to this).
+
+**The `rss` kind (issue #127, first batch — `json-api`/`html-list` are a later batch, not
+decided here):**
+
+- Settings beyond `enabled`/`interval`/`kind`: one required field, `url` — the feed's URL,
+  RSS or Atom.
+- Parsing via **`feed-rs` 3.0.0** (MIT, pure Rust — no `-sys` dependency in its tree
+  (`chrono`, `mediatype`, `quick-xml`, `regex`, `serde`, `serde_json`, `siphasher`, `url`,
+  `uuid`, `ammonia`) — handles RSS 0.x/1.0/2.0 and Atom from one parse call, 2.4M downloads,
+  last published 2026-09-27 — verified live against crates.io on 2026-10-07, same bar §7
+  already held `scraper`/`texting_robots` to.
+- `Method::Api`, not `Scrape` — a feed URL is a known, fetcher-maintained endpoint the same
+  way `hn-whoishiring`'s Firebase API is (§10); it is not a crawled site in the robots.txt
+  sense, so no robots.txt check applies.
+- Dedup key (`RawItem::source_id`): the entry's own `id`/`guid` field when the feed sets one,
+  else its `link` URL. Stated now so this isn't invented differently mid-implementation.
+- Pagination: out of scope for a feed. `fetch_page` returns every entry the feed has in one
+  `Page` with `next_cursor: None`, always a single page.
+
+**Not done in this amendment:**
+
+- The `json-api` and `html-list` kinds — a later batch (issue #127, umbrella PR's own
+  done-when).
+- Migrating `hn-whoishiring`/`weworkremotely` onto the new kind system — they stay hand-written
+  `Source` impls exactly as today; only `id()`'s return type changes.
+- §7's per-method rate-limit floor (currently a uniform, provisional 900s) — a kind-aware
+  registry could eventually expose each instance's `Method` to the scheduling layer and make
+  this precise, but that's not decided or built here.
+- CLI/TUI surface — already out of scope per this ADR's "Not done here"; unchanged.
 
 ### 3. Item event
 
