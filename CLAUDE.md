@@ -172,9 +172,8 @@ docs/
   decisions/     ADRs, one file per decision, numbered.
 ```
 
-This is the target layout. On `master` today, `modules/` holds `records` and `workspaces`;
-`fetchers`, `notify` and `calendar` (M6) and `tui` (M5) don't exist yet. `crates/app`'s
-`run_daemon` lists the modules actually registered.
+This is the target layout, not all of it built yet. `crates/app`'s `run_daemon` lists the
+modules actually registered.
 
 ### Dependency rules (enforced, not advisory)
 

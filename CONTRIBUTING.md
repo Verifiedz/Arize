@@ -185,7 +185,14 @@ fakes for every piece.
 | `bus` | Emits events | Emit only; reactions arrive through `on_event` |
 | `queue` | Enqueues tasks | Can't run them itself or skip a lane |
 | `clock`, `local_tz` | The current time and the configured timezone | Injected, so tests use a fake clock |
-| `cancel` | Cancellation for long tasks | Long tasks must poll it |
+| `cancel` | Cancellation for long tasks | Long tasks must poll it, and report how far along they are with `ctx.progress` |
+| `config` | Its own section of `config.toml` | Only its own section; it can't see any other module's settings |
+| `module_id` | Its own id | Fixed by the daemon: every event it emits is stamped with this id, and its topics must start with it |
+
+`Ctx` also has two methods. `ctx.progress(fraction, note)` reports progress from inside a queued
+task. `ctx.retry_with_backoff(policy, …)` is the one shared retry curve: retrying is the module's
+decision, never the queue's (`CLAUDE.md` §11.2), but every module uses this rather than writing
+its own.
 
 So, in module code (`CLAUDE.md` §12 rule 4):
 
