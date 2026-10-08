@@ -375,7 +375,11 @@ mod tests {
         stub(&env, "/item/45000012.json", ok(COMMENT_12));
 
         let page = HnWhoIsHiring.fetch_page(&env.ctx, None).await.unwrap();
-        assert_eq!(page.items.len(), 1, "the purged (null) and deleted comments must both be skipped, not fail the page");
+        assert_eq!(
+            page.items.len(),
+            1,
+            "the purged (null) and deleted comments must both be skipped, not fail the page"
+        );
         assert_eq!(page.items[0].source_id, "45000012");
     }
 
