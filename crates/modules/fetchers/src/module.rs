@@ -567,9 +567,10 @@ mod tests {
         stub_one_hn_comment(&env, 30, "<p>Globex<p>Hiring.");
         let progress = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let p = progress.clone();
-        let ctx = env.ctx.for_task(tokio_util::sync::CancellationToken::new(), std::sync::Arc::new(move |f, n| {
-            p.lock().unwrap().push((f, n.to_owned()))
-        }));
+        let ctx = env.ctx.for_task(
+            env.ctx.cancel.clone(),
+            std::sync::Arc::new(move |f, n| p.lock().unwrap().push((f, n.to_owned()))),
+        );
         let fetchers = Fetchers::default();
 
         let source = source::find("hn-whoishiring").unwrap();
