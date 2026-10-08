@@ -104,6 +104,8 @@ file of `data/workspaces/<id>/` to `data/workspaces/<to>/` in one transaction (s
 - **Only while `ready`**, as for `reconfigure` (ADR 0025 §9): a running or dirty workspace's stop
   and cleanup find what its launch started by its id (its temp folder, its recorded windows), so
   renaming it then would leave those behind. `to` must be a valid id, different, and free.
+  Unlike `remove`, an **unreadable state file refuses** the rename (fail closed): it may hide a
+  running or dirty workspace, and a rename, unlike a removal, isn't undone by `restore`.
 - **What the daemon can't move, it names.** A template may keep things outside the Shimmer
   folder under the id: the result's `notes` say so with the command that moves them (today: a
   separate browser window's profile, where the person logged in to sites).
