@@ -6,7 +6,7 @@ whole command:
 ```
 $ shimmer packs use anime-tropes
 ✓ active pack: anime-tropes (Anime Tropes)
-  linked 16 commands into /home/me/.local/bin
+  linked 53 commands into /home/me/.local/bin
 try it: ohayo
 
 $ ikuzo deep-work            # = shimmer workspaces activate deep-work
@@ -117,13 +117,17 @@ On the right of each alias goes the command it runs, by its op name:
 | Op | Runs |
 |---|---|
 | `core.ping`, `core.shutdown`, `core.manifest` | `shimmer ping`, `shutdown`, `manifest` |
-| `records.collections`, `.add`, `.list`, `.get`, `.update`, `.complete`, `.remove` | `shimmer records <verb>` |
-| `workspaces.list`, `.status`, `.activate`, `.cleanup`, `.force_relaunch`, `.reset` | `shimmer workspaces <verb>` |
+| `records.collections`, `.add`, `.list`, `.get`, `.update`, `.complete`, `.reopen`, `.rename`, `.remove`, `.restore`, `.trash`, `.purge`, `.import`, `.export`, `.check`, `.templates` | `shimmer records <verb>` |
+| `records.create_collection` | `shimmer records new` |
+| `records.rename_field`, `.rename_collection`, `.remove_collection`, `.restore_collection` | `shimmer records rename-field`, `rename-collection`, `remove-collection`, `restore-collection` |
+| `records.peek`, `.copy_collection`, `.edit` | `shimmer records peek`, `copy-collection`, `edit` |
+| `workspaces.list`, `.status`, `.activate`, `.cleanup`, `.reset`, `.stop`, `.remove`, `.restore`, `.rename`, `.copy`, `.reconfigure`, `.edit`, `.templates`, `.peek` | `shimmer workspaces <verb>` |
+| `workspaces.force_relaunch`, `workspaces.create` | `shimmer workspaces force-relaunch`, `new` |
 | `queue.list`, `.task`, `.cancel`, `.reorder` | `shimmer queue list`, `show`, `cancel`, `move` |
-| `scheduler.list`, `.add`, `.pause`, `.resume`, `.remove` | `shimmer scheduler <verb>` |
+| `scheduler.list`, `.get`, `.add`, `.pause`, `.resume`, `.remove` | `shimmer scheduler list`, `show`, `add`, `pause`, `resume`, `remove` |
 
-The queue and scheduler commands are optional for your own packs: name them if you like. The
-built-in packs name every command.
+`shimmer packs --help` prints the same list. Your own pack names as many or as few as you like;
+the built-in packs name every one.
 
 Then check it, and turn it on:
 
