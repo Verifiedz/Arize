@@ -822,11 +822,21 @@ fn reconfigure_changes_answers_only_while_ready_and_the_next_activate_uses_them(
 
 // ---------------------------------------------------------------- rename
 
-/// The scheduler's triggers, as JSON.
+/// The scheduler's *user*-created triggers, as JSON -- never a module's own declared one
+/// (e.g. `fetchers`' always-present heartbeat, `fetchers.tick`, ADR 0028 §5), which this test
+/// neither created nor should assert anything about. `scheduler.add` always mints a `usr-`
+/// prefixed id (`crates/daemon/src/scheduler/mod.rs`); a module's own trigger keeps whatever
+/// literal id it chose, never that prefix.
 fn triggers(sb: &Sandbox) -> Vec<serde_json::Value> {
     let o = sb.run(&["--json", "scheduler", "list"]);
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
-    v["triggers"].as_array().cloned().unwrap_or_default()
+    v["triggers"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| t["id"].as_str().is_some_and(|id| id.starts_with("usr-")))
+        .collect()
 }
 
 #[test]

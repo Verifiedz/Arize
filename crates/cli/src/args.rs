@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
+use crate::fetchers::{self, FetchersCmd};
 use crate::packs::cmd::{self as packs, PacksCmd};
 use crate::queue::{self, QueueCmd};
 use crate::records::{self, RecordsCmd};
@@ -21,6 +22,7 @@ commands:
   workspaces …          list, inspect and reset workspaces (shimmer workspaces --help)
   queue …               what's running and waiting, and cancel or reorder it (shimmer queue --help)
   scheduler …           run things on a schedule (shimmer scheduler --help)
+  fetchers …            sources that reach outward for new items (shimmer fetchers --help)
   packs …               command packs: themed aliases for these commands (shimmer packs --help)
   call OP [PARAMS]      send any op; PARAMS is a JSON object (default {})
   shutdown              stop the daemon
@@ -47,6 +49,7 @@ pub enum Command {
     Workspaces(WorkspacesCmd),
     Queue(QueueCmd),
     Scheduler(SchedulerCmd),
+    Fetchers(FetchersCmd),
     Packs(PacksCmd),
 }
 
@@ -89,6 +92,7 @@ impl Args {
             (true, Some("workspaces")) => Command::Workspaces(WorkspacesCmd::Help),
             (true, Some("queue")) => Command::Queue(QueueCmd::Help),
             (true, Some("scheduler")) => Command::Scheduler(SchedulerCmd::Help),
+            (true, Some("fetchers")) => Command::Fetchers(FetchersCmd::Help),
             (true, Some("packs")) => Command::Packs(PacksCmd::Help),
             (true, _) => Command::Help,
             (false, _) => command(words)?,
@@ -112,6 +116,9 @@ fn command(words: Vec<String>) -> Result<Command, String> {
     }
     if word == "scheduler" {
         return scheduler::parse(rest).map(Command::Scheduler);
+    }
+    if word == "fetchers" {
+        return fetchers::parse(rest).map(Command::Fetchers);
     }
     if word == "packs" {
         return packs::parse(rest).map(Command::Packs);

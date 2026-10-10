@@ -137,7 +137,11 @@ fn a_trigger_fires_and_can_be_paused_resumed_and_removed() {
     assert!(ok(&home, &["scheduler", "resume", &id]).starts_with(&format!("✓ resumed {id}")));
     assert!(ok(&home, &["scheduler", "show", &id]).starts_with(&format!("{id}  (active)")));
     assert_eq!(ok(&home, &["scheduler", "remove", &id]).trim(), format!("✓ removed {id}"));
-    assert!(ok(&home, &["scheduler", "list"]).starts_with("no triggers yet"));
+    // Not "no triggers yet": `fetchers` always declares its own heartbeat trigger
+    // (`fetchers.tick`, ADR 0028 §5), present from the moment it's registered and re-derived
+    // on every start -- only the just-removed *user* trigger should be gone.
+    let list = ok(&home, &["scheduler", "list"]);
+    assert!(!list.lines().any(|l| l.starts_with(&id)), "{list}");
 }
 
 #[test]
