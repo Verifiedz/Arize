@@ -4,9 +4,9 @@
 #   .dev/test-workspaces-34.sh               build this checkout (cargo build) and test it
 #   .dev/test-workspaces-34.sh --installed   test the shimmer on your PATH instead
 #
-# It never changes your branch or installs anything. It tests in its own throwaway Shimmer folder
-# (~/shimmer-34-test) with its own daemon, so your real Shimmer data is never touched, and it can
-# be run as often as you like. Every check runs even if an earlier one fails. Uses the smoke-test
+# It never changes your branch or installs anything. Each run tests in its own throwaway Shimmer
+# folder (~/shimmer-34-test/run-<pid>, removed at the end) with its own daemon, so your real
+# Shimmer data is never touched, and runs can even overlap. Logs stay in ~/shimmer-34-test. Every check runs even if an earlier one fails. Uses the smoke-test
 # template, which opens no windows. Post the log on #34. Works on macOS and Linux.
 
 set -u
@@ -17,7 +17,8 @@ esac
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$HOME/shimmer-34-test"
 mkdir -p "$ROOT"
-LOG="$ROOT/results-$(date +%Y%m%d-%H%M%S).log"
+LOG="$ROOT/results-$(date +%Y%m%d-%H%M%S)-$$.log"
+RUN="$ROOT/run-$$"
 exec > >(tee "$LOG") 2>&1
 
 RESULTS=""
@@ -66,15 +67,17 @@ echo "commit: $(git -C "$REPO" log -1 --oneline 2>/dev/null) ($(git -C "$REPO" r
 PATH="$(dirname "$BIN"):$PATH"
 export PATH
 
-# The throwaway Shimmer: its own folder and socket, so its own daemon.
-export SHIMMER_HOME="$ROOT/home"
-export SHIMMER_SOCKET="$ROOT/d.sock"
-"$BIN" shutdown >/dev/null 2>&1
-sleep 1
-rm -rf "$SHIMMER_HOME" "$SHIMMER_SOCKET"
+# The throwaway Shimmer: this run's own folder and socket, so its own daemon.
+export SHIMMER_HOME="$RUN/home"
+export SHIMMER_SOCKET="$RUN/d.sock"
+rm -rf "$RUN"
+mkdir -p "$RUN"
 H="$SHIMMER_HOME"
-W="$H/data/workspaces/smoke"
-ORIG="$ROOT/smoke-orig"
+# Its own workspace name too: the templates keep run-time files in $TMPDIR/shimmer-<name>, shared
+# by every Shimmer folder on the machine, so overlapping runs must not share a name.
+WS="smoke-$$"
+W="$H/data/workspaces/$WS"
+ORIG="$RUN/smoke-orig"
 case "$(uname)" in Darwin) PLATFORM=macos ;; Linux) PLATFORM=linux ;; *) PLATFORM=unknown ;; esac
 
 # ---------------------------------------------------------------- helpers
@@ -89,10 +92,17 @@ sh_() {
     echo "    [exit $rc]"
     return $rc
 }
-state() { "$BIN" workspaces status smoke --json 2>/dev/null | sed -n 's/^ *"state": *"\([a-z]*\)".*/\1/p' | head -1; }
-# The processes the test workspace starts: step 3's "sleep 300", and the "sleep 61" these tests add.
-# Matched field by field, so the matching command itself is never counted.
-procs() { ps -A -o pid=,pgid=,command= | awk '$3 == "sleep" && ($4 == "300" || $4 == "61") && NF == 4'; }
+state() { "$BIN" workspaces status "$WS" --json 2>/dev/null | sed -n 's/^ *"state": *"\([a-z]*\)".*/\1/p' | head -1; }
+# The processes this run starts sleep for durations no other process will have: step 3's
+# background sleep (BG) and the slow steps the tests add (SLOW), both unique to this run. Only
+# this user's processes are looked at, so another run, or anything else on the machine, is never
+# counted or killed. Matched field by field, so the matching command itself is never counted.
+BG=$((10000000 + $$))
+SLOW=$((20000000 + $$))
+procs() {
+    ps -U "$(id -u)" -o pid=,pgid=,command= | awk -v bg="$BG" -v slow="$SLOW" \
+        '$3 == "sleep" && ($4 == bg || $4 == slow) && NF == 4'
+}
 count() { procs | awk -v n="$1" '$4 == n' | wc -l | tr -d ' '; }
 show_procs() { echo "\$ ps (smoke-test processes)"; procs | sed 's/^/    /' || true; [ -z "$(procs)" ] && echo "    (none)"; }
 restore() {
@@ -105,12 +115,17 @@ set_wait_timeout() { perl -0pi -e "s/(name = \"wait\".*?timeout_s = )\\d+/\${1}$
 daemon_pid() { lsof -t "$SHIMMER_SOCKET" 2>/dev/null | head -1; }
 newest_check_log() { ls -t "$H/logs" 2>/dev/null | grep -- '-check\.log$' | head -1; }
 kill_leftovers() { for pid in $(procs | awk '{print $1}'); do kill "$pid" 2>/dev/null; done; }
+# Stopped early (Ctrl-C, a failed step): still end what this run started.
+trap 'kill_leftovers; "$BIN" shutdown >/dev/null 2>&1; rm -rf "$RUN"' EXIT
 
 # ---------------------------------------------------------------- the test workspace
 
 say "Creating the test workspace"
 sh_ ping
-sh_ workspaces new smoke --from smoke-test --set FAIL_AT=none
+sh_ workspaces new "$WS" --from smoke-test --set FAIL_AT=none
+# Step 3 sleeps for this run's own duration (see procs); how it runs is unchanged.
+perl -pi -e "s/^exec sleep 300\$/exec sleep $BG/" "$W/steps/03-background.sh"
+grep -q "exec sleep $BG" "$W/steps/03-background.sh" || { echo "smoke-test's step 3 changed; update this script"; exit 1; }
 mkdir -p "$ORIG"
 cp "$W/workspace.toml" "$W/cleanup.sh" "$ORIG/" && cp "$W"/steps/*.sh "$ORIG/"
 if [ ! -f "$ORIG/02-wait.sh" ]; then
@@ -121,12 +136,14 @@ fi
 # ---------------------------------------------------------------- the checks
 
 say "A (#34 item 1): supervised and detached steps activate; it goes active"
-sh_ workspaces activate smoke --wait; rc=$?
+sh_ workspaces activate "$WS" --wait; rc=$?
+# Activate returns once the detached step is started; give it a moment to be running.
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ "$(count "$BG")" -ge 1 ] && break; sleep 0.5; done
 s=$(state); show_procs
-if [ $rc -eq 0 ] && [ "$s" = active ] && [ "$(count 300)" -eq 1 ]; then
+if [ $rc -eq 0 ] && [ "$s" = active ] && [ "$(count "$BG")" -eq 1 ]; then
     pass A "activated, state active, the detached step is running"
 else
-    fail A "exit $rc, state '$s', detached steps running: $(count 300)"
+    fail A "exit $rc, state '$s', detached steps running: $(count "$BG")"
 fi
 
 say "B (#34 items 9 and 8): every SHIMMER_* variable reaches the scripts; a step reaches the daemon"
@@ -155,8 +172,8 @@ say "C (#34 item 2): detached processes outlive the daemon"
 sh_ shutdown
 sleep 2
 show_procs
-survived=$(count 300)
-sh_ workspaces stop smoke --wait; rc=$?
+survived=$(count "$BG")
+sh_ workspaces stop "$WS" --wait; rc=$?
 sleep 1
 s=$(state); show_procs
 if [ "$survived" -ge 1 ] && [ $rc -eq 0 ] && [ "$s" = ready ] && [ -z "$(procs)" ]; then
@@ -167,11 +184,11 @@ fi
 kill_leftovers
 
 say "D (#34 item 3): a failing supervised step leaves it dirty; later steps don't run; a log is written"
-sh_ workspaces reconfigure smoke --set FAIL_AT=check
+sh_ workspaces reconfigure "$WS" --set FAIL_AT=check
 before_logs=$(ls "$H/logs" | wc -l | tr -d ' ')
-sh_ workspaces activate smoke --wait; rc=$?
+sh_ workspaces activate "$WS" --wait; rc=$?
 s=$(state)
-sh_ workspaces status smoke
+sh_ workspaces status "$WS"
 show_procs
 after_logs=$(ls "$H/logs" | wc -l | tr -d ' ')
 if [ $rc -ne 0 ] && [ "$s" = dirty ] && [ -z "$(procs)" ] && echo "$OUT" | grep -q 'check' && [ "$after_logs" -gt "$before_logs" ]; then
@@ -181,7 +198,7 @@ else
 fi
 
 say "E (#34 item 5): activate on a dirty workspace is refused, naming the step and the log"
-sh_ workspaces activate smoke --wait; rc=$?
+sh_ workspaces activate "$WS" --wait; rc=$?
 if [ $rc -ne 0 ] && echo "$OUT" | grep -qi 'dirty' && echo "$OUT" | grep -q 'log'; then
     pass E "refused as dirty, with the log"
 else
@@ -189,17 +206,17 @@ else
 fi
 
 say "F (#34 item 6, part 1): cleanup succeeds, dirty -> ready"
-sh_ workspaces cleanup smoke --wait; rc=$?
+sh_ workspaces cleanup "$WS" --wait; rc=$?
 s=$(state)
 if [ $rc -eq 0 ] && [ "$s" = ready ]; then pass F "cleanup ran, state ready"; else fail F "exit $rc, state '$s'"; fi
 
 say "G (#34 item 7): force-relaunch writes workspaces.session.forced to the event log"
-sh_ workspaces activate smoke --wait
+sh_ workspaces activate "$WS" --wait
 s=$(state)
 [ "$s" = dirty ] || note "G: expected dirty before forcing, got '$s'"
 set_fail_at none
 grep '^FAIL_AT' "$W/workspace.toml"
-sh_ workspaces force-relaunch smoke --yes --wait; rc=$?
+sh_ workspaces force-relaunch "$WS" --yes --wait; rc=$?
 s=$(state)
 forced=$(cat "$H"/events/*.jsonl 2>/dev/null | grep -c 'workspaces.session.forced')
 echo "workspaces.session.forced events: $forced"
@@ -209,18 +226,18 @@ if [ $rc -eq 0 ] && [ "$s" = active ] && [ "$forced" -eq 1 ]; then
 else
     fail G "exit $rc, state '$s', session.forced events: $forced"
 fi
-sh_ workspaces stop smoke --wait
+sh_ workspaces stop "$WS" --wait
 kill_leftovers
 
 say "H (#34 item 6, part 2): with no cleanup script, only reset clears dirty"
 restore
 set_fail_at check
-sh_ workspaces activate smoke --wait
+sh_ workspaces activate "$WS" --wait
 mv "$W/cleanup.sh" "$W/cleanup.sh.off"
 perl -0pi -e 's/\[cleanup\]\ntimeout_s = \d+\n//' "$W/workspace.toml"
-sh_ workspaces cleanup smoke --wait; rc_cleanup=$?
+sh_ workspaces cleanup "$WS" --wait; rc_cleanup=$?
 s1=$(state)
-sh_ workspaces reset smoke --yes; rc_reset=$?
+sh_ workspaces reset "$WS" --yes; rc_reset=$?
 s2=$(state)
 if [ $rc_cleanup -ne 0 ] && [ "$s1" = dirty ] && [ $rc_reset -eq 0 ] && [ "$s2" = ready ]; then
     pass H "cleanup refused without a script (still dirty); reset cleared it"
@@ -232,26 +249,26 @@ restore
 
 say "I (#34 item 4): a supervised step past its timeout has its whole process group killed"
 set_wait_timeout 3
-printf 'sleep 61 &\nsleep 61\n' > "$W/steps/02-wait.sh"
+printf 'sleep %s &\nsleep %s\n' "$SLOW" "$SLOW" > "$W/steps/02-wait.sh"
 grep -A4 'name = "wait"' "$W/workspace.toml" | sed 's/^/    /'
-sh_ workspaces activate smoke --wait; rc=$?
+sh_ workspaces activate "$WS" --wait; rc=$?
 s=$(state)
 sleep 2
 show_procs
-left=$(count 61)
+left=$(count "$SLOW")
 if [ $rc -ne 0 ] && [ "$s" = dirty ] && echo "$OUT" | grep -qi 'time' && [ "$left" -eq 0 ]; then
     pass I "timed out after 3 s, state dirty, both sleeps killed"
 else
     fail I "exit $rc, state '$s', timeout mentioned: $(echo "$OUT" | grep -ci 'time'), left running: $left"
 fi
-sh_ workspaces cleanup smoke --wait
+sh_ workspaces cleanup "$WS" --wait
 kill_leftovers
 restore
 
 say "J (#34 item 11): killing the daemon mid-launch leaves the workspace dirty after the next start"
 set_wait_timeout 120
-printf 'sleep 61\n' > "$W/steps/02-wait.sh"
-sh_ workspaces activate smoke
+printf 'sleep %s\n' "$SLOW" > "$W/steps/02-wait.sh"
+sh_ workspaces activate "$WS"
 sleep 5
 pid=$(daemon_pid)
 echo "daemon pid: $pid"
@@ -259,13 +276,13 @@ if [ -n "$pid" ]; then
     kill -9 "$pid"
     sleep 1
     s=$(state)
-    sh_ workspaces status smoke
+    sh_ workspaces status "$WS"
     if [ "$s" = dirty ]; then
         pass J "after kill -9 mid-launch, the restarted daemon shows it dirty"
     else
         fail J "after kill -9 mid-launch, state is '$s' (expected dirty)"
     fi
-    sh_ workspaces cleanup smoke --wait
+    sh_ workspaces cleanup "$WS" --wait
     sleep 1
     show_procs
     if [ -n "$(procs)" ]; then
@@ -281,7 +298,7 @@ say "K (#34 item 8): a step script calls back in through SHIMMER_SOCKET"
 sh_ records new lc --from leetcode
 sh_ records add lc --title "Two Sum"
 printf '\nshimmer records complete lc/two-sum\n' >> "$W/steps/01-check.sh"
-sh_ workspaces activate smoke --wait; rc=$?
+sh_ workspaces activate "$WS" --wait; rc=$?
 sh_ records get lc/two-sum --json
 done_=$(echo "$OUT" | grep -c '"status": *"done"')
 if [ $rc -eq 0 ] && [ "$done_" -eq 1 ]; then
@@ -289,29 +306,29 @@ if [ $rc -eq 0 ] && [ "$done_" -eq 1 ]; then
 else
     fail K "activate exit $rc, two-sum done: $done_"
 fi
-sh_ workspaces stop smoke --wait
+sh_ workspaces stop "$WS" --wait
 kill_leftovers
 restore
 
 say "L (#34 item 10): scripts run through the interpreter, not the executable bit"
 chmod -x "$W"/steps/*.sh
 ls -l "$W/steps/" | sed 's/^/    /'
-sh_ workspaces activate smoke --wait; rc=$?
+sh_ workspaces activate "$WS" --wait; rc=$?
 s=$(state)
 if [ $rc -eq 0 ] && [ "$s" = active ]; then
     pass L "activated with chmod -x on every step"
 else
     fail L "exit $rc, state '$s'"
 fi
-sh_ workspaces stop smoke --wait
+sh_ workspaces stop "$WS" --wait
 kill_leftovers
 restore
 
 say "M (#34 item 9): [env] can't override SHIMMER_* variables"
 printf 'SHIMMER_HOME = "/tmp"\n' >> "$W/workspace.toml"
 tail -4 "$W/workspace.toml" | sed 's/^/    /'
-sh_ workspaces status smoke; status_out="$OUT"
-sh_ workspaces activate smoke --wait; rc=$?
+sh_ workspaces status "$WS"; status_out="$OUT"
+sh_ workspaces activate "$WS" --wait; rc=$?
 if echo "$status_out$OUT" | grep -q 'reserved' && [ $rc -ne 0 ]; then
     pass M "rejected: SHIMMER_ names are reserved; activate refused"
 else
@@ -324,7 +341,7 @@ s=$(state)
 # ---------------------------------------------------------------- tidy up and summary
 
 say "Tidying up"
-sh_ workspaces remove smoke
+sh_ workspaces remove "$WS"
 kill_leftovers
 "$BIN" shutdown >/dev/null 2>&1
 echo "left running afterwards:"; show_procs
