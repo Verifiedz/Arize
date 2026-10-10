@@ -678,9 +678,10 @@ async fn queued(client: &mut Client, kind: Queued, id: &str, wait: bool, json: b
         Ok(Followed::Finished(result)) => {
             Ok(if json { render::json(&result) } else { with_log(kind.done(id), &result) })
         }
-        // It worked; only its log lines were missed (#142).
+        // It worked; only its log lines were missed (#142). With --json, `result_missed` says so,
+        // so a script reading the usual result's fields can tell why they're absent.
         Ok(Followed::ResultMissed(task)) => Ok(if json {
-            render::json(&task)
+            render::json(&json!({"result_missed": true, "task": task}))
         } else {
             format!("{}\n  (its output was missed: some events were dropped; see {look})", kind.done(id))
         }),

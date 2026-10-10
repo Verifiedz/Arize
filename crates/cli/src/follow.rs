@@ -27,7 +27,12 @@ pub async fn follow(client: &mut Client, task: &str, notes: bool, look: &str) ->
         let ev = client.next_event().await?;
         if ev.topic == "core.stream.lagged" {
             // Events were dropped, maybe the one we wait for: ask directly instead.
-            let t = client.call("queue.task", json!({"task_id": task})).await?;
+            let t = match client.call("queue.task", json!({"task_id": task})).await {
+                Ok(t) => t,
+                // The daemon keeps only its most recent finished tasks: this one is gone too.
+                Err(e) if e.code == ErrorCode::NotFound => return Err(forgotten(task, look)),
+                Err(e) => return Err(e),
+            };
             match ended(&t, look) {
                 Some(outcome) => return outcome,
                 None => continue,
@@ -53,7 +58,7 @@ pub async fn follow(client: &mut Client, task: &str, notes: bool, look: &str) ->
 }
 
 /// From `queue.task`'s reply `t` after a lag: how the task ended, or `None` while it is still
-/// queued or running. `queue.task` carries neither the result nor the error's code, so a
+/// queued or running. `queue.task` carries neither the result nor the error's detail, so a
 /// failure names `look` for the rest.
 fn ended(t: &Value, look: &str) -> Option<Result<Followed>> {
     match t["status"].as_str() {
@@ -62,7 +67,7 @@ fn ended(t: &Value, look: &str) -> Option<Result<Followed>> {
             ErrorCode::ModuleError,
             format!(
                 "{} (some events were dropped, so details may be missing: see '{look}')",
-                t["error"].as_str().unwrap_or("the task failed")
+                bare_message(t["error"].as_str().unwrap_or("the task failed"))
             ),
         ))),
         Some("cancelled") => Some(Err(cancelled())),
@@ -78,6 +83,27 @@ pub(crate) fn task_error(payload: &Value) -> Error {
         e = e.with_detail(detail.clone());
     }
     e
+}
+
+/// `queue.task`'s `error` is the error as the daemon prints it, `"<code>: <message>"`; the
+/// `queue.task.failed` event carries the message alone. Strip the code, so a failure reads the
+/// same whether or not the stream lagged.
+fn bare_message(error: &str) -> &str {
+    match error.split_once(": ") {
+        Some((code, message)) if serde_json::from_value::<ErrorCode>(json!(code)).is_ok() => message,
+        _ => error,
+    }
+}
+
+/// After a lag, when the daemon no longer remembers the task either.
+fn forgotten(task: &str, look: &str) -> Error {
+    Error::new(
+        ErrorCode::ModuleError,
+        format!(
+            "some events were dropped and the daemon no longer remembers task {task}, so how it ended \
+             is unknown: see '{look}'"
+        ),
+    )
 }
 
 fn cancelled() -> Error {
@@ -110,6 +136,17 @@ mod tests {
     }
 
     #[test]
+    fn after_a_lag_a_failure_reads_as_it_would_without_one() {
+        // queue.task prints the error with its code in front; the event has the message alone.
+        let t = json!({"status": "failed", "error": "workspace_dirty: workspace 'site' failed at step 1/3 setup"});
+        let e = ended(&t, LOOK).unwrap().unwrap_err();
+        assert!(e.message.starts_with("workspace 'site' failed at step 1/3 setup (some events"), "{}", e.message);
+        // Only a real code is stripped.
+        assert_eq!(bare_message("step 2: it broke"), "step 2: it broke");
+        assert_eq!(bare_message("no code here"), "no code here");
+    }
+
+    #[test]
     fn after_a_lag_a_task_still_going_is_followed_further() {
         for status in ["queued", "running"] {
             assert!(ended(&json!({"status": status}), LOOK).is_none(), "{status}");
@@ -133,7 +170,7 @@ mod tests {
 
     /// A daemon that, once connected, sends `events`, then answers `queue.task` with `task`, as
     /// a lagging stream does: the events that mattered are gone.
-    async fn lagging_daemon(sock: &std::path::Path, events: Vec<shimmer_core::Event>, task: Value) {
+    async fn lagging_daemon(sock: &std::path::Path, events: Vec<shimmer_core::Event>, task: Result<Value>) {
         use shimmer_proto::{decode_client, encode, ClientFrame, ServerFrame};
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         let listener = tokio::net::UnixListener::bind(sock).unwrap();
@@ -147,7 +184,10 @@ mod tests {
                         .chain(events.iter().cloned().map(ServerFrame::event))
                         .collect(),
                     ClientFrame::Request { id, op, .. } if op == "queue.task" => {
-                        vec![ServerFrame::ok(id, task.clone())]
+                        vec![match &task {
+                            Ok(v) => ServerFrame::ok(id, v.clone()),
+                            Err(e) => ServerFrame::err(id, e.clone()),
+                        }]
                     }
                     _ => vec![],
                 };
@@ -173,7 +213,7 @@ mod tests {
             event(shimmer_proto::topics::STREAM_LAGGED, json!({"dropped": 12})),
         ];
         let view = json!({"task_id": "t1", "status": "succeeded", "error": null});
-        lagging_daemon(&sock, events, view.clone()).await;
+        lagging_daemon(&sock, events, Ok(view.clone())).await;
         let mut client = Client::connect(&sock).await.unwrap();
         let outcome = follow(&mut client, "t1", false, LOOK).await.unwrap();
         assert_eq!(outcome, Followed::ResultMissed(view));
@@ -184,7 +224,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let sock = dir.path().join("s.sock");
         let events = vec![event(shimmer_proto::topics::STREAM_LAGGED, json!({"dropped": 3}))];
-        lagging_daemon(&sock, events, json!({"task_id": "t1", "status": "failed", "error": "step 1 failed"})).await;
+        lagging_daemon(&sock, events, Ok(json!({"task_id": "t1", "status": "failed", "error": "step 1 failed"}))).await;
         let mut client = Client::connect(&sock).await.unwrap();
         let e = follow(&mut client, "t1", false, LOOK).await.unwrap_err();
         assert!(
@@ -192,5 +232,18 @@ mod tests {
             "{}",
             e.message
         );
+    }
+
+    #[tokio::test]
+    async fn a_task_the_daemon_has_forgotten_says_so_instead_of_no_task() {
+        // The daemon keeps only its most recent finished tasks; after a long lag it may not know
+        // this one any more.
+        let dir = tempfile::TempDir::new().unwrap();
+        let sock = dir.path().join("s.sock");
+        let events = vec![event(shimmer_proto::topics::STREAM_LAGGED, json!({"dropped": 5000}))];
+        lagging_daemon(&sock, events, Err(Error::not_found("no task t1"))).await;
+        let mut client = Client::connect(&sock).await.unwrap();
+        let e = follow(&mut client, "t1", false, LOOK).await.unwrap_err();
+        assert!(e.message.contains("no longer remembers task t1") && e.message.contains(LOOK), "{}", e.message);
     }
 }
