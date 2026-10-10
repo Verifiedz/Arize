@@ -364,6 +364,8 @@ fn first_problem(problems: &[String]) -> String {
 
 #[cfg(all(test, unix))]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     fn p(s: &[&str]) -> std::result::Result<PacksCmd, String> {
@@ -385,9 +387,36 @@ mod tests {
     }
 
     #[test]
-    fn usage_lists_every_command_a_pack_can_name() {
-        for t in TARGETS {
-            assert!(USAGE.contains(t.op), "{} missing from packs help", t.op);
+    fn usage_lists_exactly_the_commands_a_pack_can_name() {
+        // Both ways: nothing missing, and nothing stale or misspelled.
+        let list = USAGE.split("names one of these:").nth(1).expect("the op list in packs help");
+        let list = list.split("\n\n").next().unwrap();
+        let listed: Vec<&str> = list.split_whitespace().collect();
+        let targets: Vec<&str> = TARGETS.iter().map(|t| t.op).collect();
+        assert_eq!(listed, targets, "packs help's op list and TARGETS differ");
+    }
+
+    #[test]
+    fn every_command_in_the_help_can_be_aliased() {
+        // A command added to records, workspaces, queue or scheduler must get a target too, or a
+        // pack can't name it. Read from each one's own help, its "commands:" section.
+        for (top, usage) in [
+            ("records", crate::records::USAGE),
+            ("workspaces", crate::workspaces::USAGE),
+            ("queue", crate::queue::USAGE),
+            ("scheduler", crate::scheduler::USAGE),
+        ] {
+            let commands = usage.split("commands:\n").nth(1).unwrap().split("\n\n").next().unwrap();
+            let words: BTreeSet<&str> = commands
+                .lines()
+                .filter(|l| l.starts_with("  ") && !l.starts_with("   "))
+                .filter_map(|l| l.split_whitespace().next())
+                .collect();
+            assert!(!words.is_empty(), "no commands found in {top}'s help");
+            for word in words {
+                let named = TARGETS.iter().any(|t| t.words == [top, word]);
+                assert!(named, "'shimmer {top} {word}' has no target in packs/pack.rs, so no pack can alias it");
+            }
         }
     }
 
