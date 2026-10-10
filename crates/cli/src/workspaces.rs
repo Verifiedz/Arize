@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 use shimmer_core::{Error, ErrorCode, Result};
 
 use crate::client::Client;
+use crate::follow::{follow, Followed};
 use crate::render::{self, cell, table};
 
 pub const USAGE: &str = "usage: shimmer workspaces <command>
@@ -672,8 +673,18 @@ async fn queued(client: &mut Client, kind: Queued, id: &str, wait: bool, json: b
     if !wait {
         return Ok(if json { render::json(&handle) } else { queued_message(kind, id, task) });
     }
-    match follow(client, task, json).await {
-        Ok(result) => Ok(if json { render::json(&result) } else { with_log(kind.done(id), &result) }),
+    let look = format!("shimmer workspaces status {id}");
+    match follow(client, task, !json, &look).await {
+        Ok(Followed::Finished(result)) => {
+            Ok(if json { render::json(&result) } else { with_log(kind.done(id), &result) })
+        }
+        // It worked; only its log lines were missed (#142). With --json, `result_missed` says so,
+        // so a script reading the usual result's fields can tell why they're absent.
+        Ok(Followed::ResultMissed(task)) => Ok(if json {
+            render::json(&json!({"result_missed": true, "task": task}))
+        } else {
+            format!("{}\n  (its output was missed: some events were dropped; see {look})", kind.done(id))
+        }),
         Err(e) if json => Err(e),
         Err(e) => Err(explain(e, id)),
     }
@@ -710,65 +721,6 @@ fn shown_log(text: &str, log: &str) -> Vec<String> {
 
 fn queued_message(kind: Queued, id: &str, task: &str) -> String {
     format!("queued the {} of {id} (task {task})\ncheck on it with: shimmer workspaces status {id}", kind.what())
-}
-
-/// Follow task `task` over the subscription stream until it ends: its result, or the error it
-/// failed with (e.g. `workspace_dirty`, with its detail). Progress notes go to stderr.
-async fn follow(client: &mut Client, task: &str, json: bool) -> Result<Value> {
-    let mut last_note = String::new();
-    loop {
-        let ev = client.next_event().await?;
-        if ev.topic == "core.stream.lagged" {
-            // Events were dropped, maybe the one we wait for: ask directly instead.
-            if let Some(outcome) = finished_task(client, task).await? {
-                return outcome;
-            }
-            continue;
-        }
-        if ev.payload["task_id"] != task {
-            continue;
-        }
-        match ev.topic.as_str() {
-            "queue.task.progress" => {
-                let note = ev.payload["note"].as_str().unwrap_or_default();
-                if !json && !note.is_empty() && note != last_note {
-                    eprintln!("  {note} …");
-                    last_note = note.to_owned();
-                }
-            }
-            "queue.task.finished" => return Ok(ev.payload["result"].clone()),
-            "queue.task.failed" => return Err(task_error(&ev.payload)),
-            "queue.task.cancelled" => return Err(cancelled()),
-            _ => {}
-        }
-    }
-}
-
-/// After `core.stream.lagged`: has the task ended? `None` while it is still queued or running.
-async fn finished_task(client: &mut Client, task: &str) -> Result<Option<Result<Value>>> {
-    let t = client.call("queue.task", json!({"task_id": task})).await?;
-    Ok(match t["status"].as_str() {
-        Some("succeeded") => Some(Ok(t["result"].clone())),
-        Some("failed") => {
-            Some(Err(Error::new(ErrorCode::ModuleError, t["error"].as_str().unwrap_or("the task failed").to_owned())))
-        }
-        Some("cancelled") => Some(Err(cancelled())),
-        _ => None,
-    })
-}
-
-/// The error a `queue.task.failed` event carries, rebuilt as the daemon sent it.
-fn task_error(payload: &Value) -> Error {
-    let code: ErrorCode = serde_json::from_value(payload["code"].clone()).unwrap_or(ErrorCode::ModuleError);
-    let mut e = Error::new(code, payload["error"].as_str().unwrap_or("the task failed").to_owned());
-    if let Some(detail) = payload.get("detail").filter(|d| !d.is_null()) {
-        e = e.with_detail(detail.clone());
-    }
-    e
-}
-
-fn cancelled() -> Error {
-    Error::new(ErrorCode::ModuleError, "the task was cancelled")
 }
 
 /// For people: a dirty workspace's error says where to look and what to do (§10.3), instead
@@ -1431,6 +1383,7 @@ fn first_line(v: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::follow::task_error;
 
     fn parse_words(words: &[&str]) -> std::result::Result<WorkspacesCmd, String> {
         parse(words.iter().map(|w| w.to_string()).collect())
@@ -1496,21 +1449,6 @@ mod tests {
             "queued the forced relaunch of deep-work (task 01TASK)\ncheck on it with: shimmer workspaces status deep-work"
         );
         assert!(!m.contains("--wait"), "{m}");
-    }
-
-    #[test]
-    fn a_failed_task_keeps_its_code_and_detail() {
-        let payload = json!({"task_id": "01", "error": "workspace 'deep-work' failed at step 1/3 setup (exit code 1)",
-                             "code": "workspace_dirty",
-                             "detail": {"workspace": "deep-work", "log": "logs/x.log", "has_cleanup_script": true}});
-        let e = task_error(&payload);
-        assert_eq!(e.code, ErrorCode::WorkspaceDirty);
-        assert_eq!(e.detail.as_ref().unwrap()["log"], "logs/x.log");
-
-        let other =
-            task_error(&json!({"task_id": "01", "error": "no launch backend registered", "code": "unavailable"}));
-        assert_eq!((other.code, other.detail), (ErrorCode::Unavailable, None));
-        assert_eq!(task_error(&json!({"task_id": "01"})).code, ErrorCode::ModuleError, "unknown code still fails");
     }
 
     #[test]
