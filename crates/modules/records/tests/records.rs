@@ -1814,7 +1814,7 @@ async fn a_file_that_cant_be_read_is_reported_and_hides_nothing() {
 }
 
 /// A collection with a unique field and a reference between its own records, for #99.
-const PLAN: &str = "[collection]\nid = \"plan\"\nlabel = \"Plan\"\n\n\
+const UNREADABLE_PLAN: &str = "[collection]\nid = \"plan\"\nlabel = \"Plan\"\n\n\
 [[field]]\nname = \"title\"\ntype = \"string\"\nrequired = true\n\n\
 [[field]]\nname = \"url\"\ntype = \"string\"\nunique = true\n\n\
 [[field]]\nname = \"follows\"\ntype = \"ref\"\ncollection = \"plan\"\n";
@@ -1825,7 +1825,7 @@ async fn one_unreadable_record_never_blocks_writes_renames_imports_or_the_trash(
     // collection: unique checks on each write, reference checks, import, the trash and
     // rename_field. Now it's skipped, and reported where the person would otherwise not know.
     let (r, env) = setup().await;
-    env.ctx.store.write("collections/plan.toml", PLAN).unwrap();
+    env.ctx.store.write("collections/plan.toml", UNREADABLE_PLAN).unwrap();
     let add = |id: &str, fields: Value| json!({"collection": "plan", "id": id, "fields": fields});
     call(&r, &env, "records.add", add("a", json!({"title": "A", "url": "https://x"}))).await.unwrap();
     call(&r, &env, "records.add", add("b", json!({"title": "B", "follows": "a"}))).await.unwrap();
