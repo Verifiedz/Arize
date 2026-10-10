@@ -264,7 +264,8 @@ never committed). The editors may ask once to allow automatic tasks. It needs th
 the folder, not a single `OPEN_PATH` file.
 
 **The dev server's output and process id** go in the system temp folder,
-`${TMPDIR:-/tmp}/shimmer-<workspace id>/` (`dev-server.log`, `dev-server.pid`), never inside
+`${TMPDIR:-/tmp}/shimmer-<uid>-<Shimmer folder tag>-<workspace id>/` (`dev-server.log`,
+`dev-server.pid`), private to the user and refused if anything else is already there (#165), never inside
 `$SHIMMER_HOME`: only the daemon writes there (CLAUDE.md §2), and `logs/` is the launcher's
 (ADR 0010 §3). The temp folder is the right lifetime too: a reboot clears it, and a reboot also
 ends the server. A detached step is its own process group (ADR 0010 §3), so cleanup stops the
